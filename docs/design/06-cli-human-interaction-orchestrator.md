@@ -59,7 +59,7 @@ sources:
   repos:
     - id: fineract
       path: /abs/path/fineract
-      ref: rel/1.10.0  # 锁定稳定分支
+      ref: develop  # 锁定开发分支 commit
       include:
         - "fineract-provider/src/main/java/org/apache/fineract/accounting/**"
         - "fineract-provider/src/main/java/org/apache/fineract/portfolio/**"
@@ -220,7 +220,7 @@ runs/<run_id>/
   ],
   "failed_modules": [],
   "artifacts": {
-    "code_graph": "runs/fineract-finance-20260603-001/sources/code/fineract/rel-1.10.0/graph.json",
+    "code_graph": "runs/fineract-finance-20260603-001/sources/code/fineract/develop/graph.json",
     "doc_chunks": "runs/fineract-finance-20260603-001/sources/docs/fineract-user-manual/v1.10.0/chunks.jsonl"
   }
 }
@@ -367,7 +367,7 @@ skill-lab status fineract-finance-20260603-001
 查看产物摘要。
 
 ```bash
-skill-lab inspect graph runs/fineract-finance-20260603-001/sources/code/fineract/rel-1.10.0/graph.json
+skill-lab inspect graph runs/fineract-finance-20260603-001/sources/code/fineract/develop/graph.json
 skill-lab inspect atoms runs/fineract-finance-20260603-001/atoms/fintech/merged_atoms.jsonl
 skill-lab inspect skill runs/fineract-finance-20260603-001/optimization/best_skill.md
 ```

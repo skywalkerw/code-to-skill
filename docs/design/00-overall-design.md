@@ -491,7 +491,7 @@ code-to-skill/
 ### Phase 0：资料准备
 
 - 固定一个目标仓库（建议选择业务逻辑复杂的项目，如金融支付、ERP 核算、税务引擎等）。当前测试用例为 [Apache Fineract](https://github.com/apache/fineract)（Java，贷款/储蓄/会计分录），但系统设计不绑定任何特定仓库——更换目标只需修改 `project.yaml` 中的 `sources.repos` 配置。
-- 锁定仓库版本（commit、tag 或 release branch），确保后续运行可复现。
+- 锁定仓库版本（commit、tag 或 release branch，如 `develop`），确保后续运行可复现。
 - 配置 `include`/`exclude` 聚焦核心业务模块，排除测试和构建产物。以 Fineract 为例：
   ```yaml
   include:
