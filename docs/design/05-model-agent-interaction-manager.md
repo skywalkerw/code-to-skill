@@ -44,7 +44,7 @@
 | `tools` | 给支持 tool calling 的模型使用 |
 | `workspace` | 给 Agent/CLI harness 使用 |
 | `attachments` | 图片、PDF 页、代码片段、日志文件 |
-| `response_schema` | JSON schema 或 Pydantic schema |
+| `response_format` | JSON schema、Pydantic schema 或纯文本格式要求 |
 | `fallback_policy` | 当前请求覆盖默认 fallback |
 | `budget_hint` | 最大 token、最大费用、最大耗时 |
 | `safety_policy` | 网络、文件写入、命令执行限制 |
@@ -53,6 +53,7 @@
 
 ```json
 {
+  "schema_version": "1.0",
   "request_id": "req-20260603-0001",
   "role": "optimizer",
   "stage": "reflect_failure_minibatch",
@@ -82,7 +83,7 @@
 推荐目录：
 
 ```text
-model_interactions/<run_id>/
+runs/<run_id>/model_interactions/
 ├── config_resolved.json
 ├── routing_table.json
 ├── traces/
@@ -99,8 +100,11 @@ model_interactions/<run_id>/
 
 ### 4.1 `ModelResponse`
 
+`ModelResponse` 是 `InteractionResponse` 在裸模型 API 场景下的具体形态。
+
 ```json
 {
+  "schema_version": "1.0",
   "request_id": "req-20260603-0001",
   "backend_id": "dashscope-deepseek-v4-pro",
   "backend_type": "llm_api",
@@ -126,10 +130,11 @@ model_interactions/<run_id>/
 
 ### 4.2 `AgentResponse`
 
-调用其他智能体时，返回同一抽象，但要额外包含执行轨迹。
+`AgentResponse` 是 `InteractionResponse` 在智能体后端场景下的具体形态，需要额外包含执行轨迹。
 
 ```json
 {
+  "schema_version": "1.0",
   "request_id": "req-rollout-0042",
   "backend_id": "codex-cli-target",
   "backend_type": "agent_cli",
@@ -170,6 +175,7 @@ model_interactions/<run_id>/
 
 ```json
 {
+  "schema_version": "1.0",
   "request": {},
   "resolved_route": {
     "role": "optimizer",
@@ -455,7 +461,7 @@ backends:
 
 ### 7.6 步骤 5：解析与校验
 
-如果请求声明 `response_schema`：
+如果请求声明 `response_format`：
 
 1. 优先使用 provider 原生 structured output。
 2. 不支持时用 prompt 约束 + JSON 提取。

@@ -22,7 +22,7 @@
 | `source_type` | enum | `markdown` / `pdf` / `wiki_export` / `html` / `docx` / `text` |
 | `source_version` | string | 文档版本、导出时间或 hash |
 | `source_owner` | string | 来源系统或责任团队 |
-| `output_root` | path | 规范化产物目录 |
+| `output_root` | path | 规范化产物目录，通常为 `runs/<run_id>/sources/docs/` |
 
 ### 2.2 可选输入
 
@@ -31,7 +31,7 @@
 | `authority_level` | 文档权威等级，解决冲突时使用 |
 | `valid_from` / `valid_to` | 生效时间范围 |
 | `language` | `zh`、`en` 等 |
-| `ocr_enabled` | 扫描 PDF 或图片是否启用 OCR |
+| `ocr_enabled` | 扫描 PDF 页或图片型文档是否启用 OCR |
 | `redaction_policy` | 脱敏规则 |
 | `domain_tags` | 领域标签，例如 payment、monitoring |
 
@@ -47,7 +47,7 @@
 推荐目录：
 
 ```text
-sources/docs/<source_id>/<source_version>/
+runs/<run_id>/sources/docs/<source_id>/<source_version>/
 ├── manifest.json
 ├── document_index.json
 ├── chunks.jsonl
@@ -64,6 +64,7 @@ sources/docs/<source_id>/<source_version>/
 
 ```json
 {
+  "schema_version": "1.0",
   "source_id": "payment-runbook",
   "source_uri": "kb/payment/runbook.md",
   "source_type": "markdown",
@@ -81,6 +82,7 @@ sources/docs/<source_id>/<source_version>/
 
 ```json
 {
+  "schema_version": "1.0",
   "title": "支付系统故障处理手册",
   "sections": [
     {
@@ -114,6 +116,7 @@ sources/docs/<source_id>/<source_version>/
   "authority_level": "team_runbook",
   "validity": "active",
   "sensitivity": "none",
+  "quality_flags": [],
   "tags": ["payment", "timeout", "retry"]
 }
 ```
@@ -124,6 +127,7 @@ sources/docs/<source_id>/<source_version>/
 
 ```json
 {
+  "schema_version": "1.0",
   "table_id": "payment-runbook:table-error-codes",
   "caption": "错误码处理表",
   "columns": ["错误码", "含义", "处理方式"],
@@ -140,6 +144,7 @@ sources/docs/<source_id>/<source_version>/
 
 ```json
 {
+  "schema_version": "1.0",
   "asset_id": "payment-runbook:asset-003",
   "asset_type": "image",
   "source_ref": "page 8",
@@ -203,10 +208,10 @@ flowchart TD
 OCR 结果处理：
 
 1. 每页 OCR 后生成 `ocr_confidence` 评分（0-1）。
-2. `ocr_confidence < 0.6` 的 chunk 标记 `quality=low`，在 `content_type` 中追加 `ocr_degraded`。
+2. `ocr_confidence < 0.6` 的 chunk 标记 `quality_flags=["ocr_degraded"]`，不改变 `content_type` 的枚举值。
 3. 低质量 OCR chunk 不进入高置信 SkillAtom 抽取，仅作为辅助参考。
 4. OCR 识别出的表格尝试恢复行列结构；恢复失败时保留原始文本块。
-5. 扫描件中的图片生成 `asset` 记录，不做 OCR（避免无意义乱码）。
+5. 整页扫描图像按页做 OCR；文档内嵌示意图、架构图、截图默认只生成 `asset` 记录，不做 OCR。若启用 `asset_ocr_enabled=true`，才对内嵌图片单独 OCR，并将结果写入 `assets.jsonl` 的 `ocr_text`。
 
 ### 4.2.2 多平台 Wiki 适配策略
 
@@ -269,6 +274,7 @@ chunk 切分以语义完整为优先级：
 | `semantic_unit` | `section` / `qa_pair` / `table_rows` / `step_list` |
 | `token_estimate` | 估算 token |
 | `source_ref` | 页码或 Wiki anchor |
+| `quality_flags` | 质量标记，例如 `ocr_degraded`、`layout_uncertain` |
 
 ### 4.6 步骤 5：内容类型识别
 

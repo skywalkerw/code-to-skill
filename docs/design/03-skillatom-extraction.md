@@ -44,7 +44,7 @@
 推荐目录：
 
 ```text
-atoms/<domain>/<run_id>/
+runs/<run_id>/atoms/<domain>/
 ├── atom_manifest.json
 ├── raw_atoms.jsonl
 ├── merged_atoms.jsonl
@@ -110,6 +110,19 @@ atoms/<domain>/<run_id>/
 | `output_format` | 回答或报告格式 | “事故复盘必须包含影响范围、时间线、根因、行动项” |
 | `coding_convention` | 项目代码约定 | “数据库写操作必须在 transaction helper 内执行” |
 | `validation` | 测试、脚本、人工核验策略 | “触及 refund 逻辑必须跑 refund integration tests” |
+
+### 3.3 Atom 状态
+
+`status` 使用以下枚举，避免 `candidate`、`accepted`、`needs_review` 混用：
+
+| `status` | 存储位置 | 含义 |
+|---|---|---|
+| `candidate` | `raw_atoms.jsonl` | 初始抽取结果，尚未完成合并、冲突和置信度处理 |
+| `accepted` | `merged_atoms.jsonl` | 已通过来源、适用条件、置信度和冲突检查，可用于生成初始 Skill |
+| `needs_review` | `diagnostics/conflicts.json` 或 `raw_atoms.jsonl` | 存在冲突、高风险或低置信，需要人工审批 |
+| `rejected` | `rejected_atoms.jsonl` | 来源无效、过宽、重复、过期或不适合作为 Skill 规则 |
+
+下游文档中提到的 `accepted atom` 均指 `merged_atoms.jsonl` 中 `status=accepted` 的记录。
 
 ## 4. 执行过程
 
@@ -178,7 +191,7 @@ Focus on patterns that an Agent should know when working with this codebase.
    - "checks": 1-3 verifiable assertions
 
 4. Do NOT invent facts not present in the code.
-5. If confidence is low, set "confidence" < 0.5 and add "risk": "needs_review".
+5. If confidence is low, set "confidence" < 0.5 and "status": "needs_review".
 
 ## Output
 Return a JSON array of SkillAtom objects.
@@ -289,7 +302,7 @@ CRITICAL RULES:
 
 | 分数 | 处理 |
 |---:|---|
-| `>= 0.80` | 可进入 `merged_atoms.jsonl` |
+| `>= 0.80` | 以 `status=accepted` 进入 `merged_atoms.jsonl` |
 | `0.60-0.79` | 可进入候选，但需要人工抽检或只放 references |
 | `0.40-0.59` | 低可信，仅用于 benchmark seed 或诊断 |
 | `< 0.40` | 进入 rejected |
@@ -329,6 +342,7 @@ CRITICAL RULES:
 
 ```json
 {
+  "schema_version": "1.0",
   "seed_id": "seed-payment-timeout-001",
   "atom_ids": ["payment.timeout.retry-idempotency"],
   "task_template": "review_risky_code",

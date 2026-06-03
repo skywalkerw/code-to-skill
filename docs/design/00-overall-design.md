@@ -64,10 +64,10 @@ flowchart LR
   T[历史任务轨迹 / CI / Review] --> M3
 
   M3 --> M4[模块 4<br/>SkillOpt 优化循环]
-  M5[模块 5<br/>模型与智能体交互管理] --> M1
-  M5 --> M2
-  M5 --> M3
-  M5 --> M4
+  M1 --> M5[模块 5<br/>模型与智能体交互管理]
+  M2 --> M5
+  M3 --> M5
+  M4 --> M5
 
   M4 --> S[SkillBundle]
   S --> P[发布 / 回滚 / 在线反馈]
@@ -81,7 +81,7 @@ flowchart LR
   CLI --> P
 ```
 
-整体架构按“来源接入 -> 证据规范化 -> 技能原子抽取 -> Skill 优化 -> 发布回流”组织。模块 1 和模块 2 是证据生产层；模块 3 是证据到 Skill 语义的转换层；模块 4 是优化与评测层；模块 5 是模型能力适配层；模块 6 是用户入口和编排层。
+整体架构按“来源接入 -> 证据规范化 -> 技能原子抽取 -> Skill 优化 -> 发布回流”组织。模块 1 和模块 2 是证据生产层；模块 3 是证据到 Skill 语义的转换层；模块 4 是优化与评测层；模块 5 是模型能力适配层；模块 6 是用户入口和编排层。图中模块 1-4 指向模块 5 表示“调用统一交互接口”，不是模块 5 反向依赖业务模块。
 
 **分层依赖规则**：模块 5 是基础设施层，处于最底层。模块 1-4 只允许依赖模块 5 的接口定义（`InteractionBackend` 抽象类、`InteractionRequest`/`InteractionResponse` 等标准类型），不得直接依赖任何具体 backend 实现。模块 4 调用 target Agent 或 optimizer 模型时，通过依赖注入接收已配置好的 backend 实例，避免在模块 4 内部 import 模块 5 的具体类。CLI（模块 6）负责在启动时将配置好的 backend 实例注入各模块。
 
@@ -91,9 +91,9 @@ flowchart LR
 |---|---|---|---|
 | 1. 代码仓库到代码图谱与模块树 | [01-code-repo-to-code-graph-module-tree.md](01-code-repo-to-code-graph-module-tree.md) | 解析仓库快照，抽取符号、依赖、调用链、入口点和模块层级 | `graph.json`、`module_tree.json`、`leaf_contexts/` |
 | 2. 知识库/PDF/Wiki 到文档规范化 | [02-knowledge-pdf-wiki-normalization.md](02-knowledge-pdf-wiki-normalization.md) | 统一解析多格式文档，恢复结构、切分 chunk、保留来源锚点 | `document_index.json`、`chunks.jsonl`、`tables.jsonl` |
-| 3. SkillAtom 抽取 | [03-skillatom-extraction.md](03-skillatom-extraction.md) | 将代码证据和文档证据转成可执行、可验证的技能原子 | `skill_atoms.jsonl`、`conflicts.jsonl`、`bench_seed.jsonl` |
-| 4. SkillOpt 优化循环 | [04-skillopt-loop.md](04-skillopt-loop.md) | 基于 rollout、反思、聚合、选择、更新、评测循环优化 Skill | `candidate_skill/`、`history.json`、`eval_report.json` |
-| 5. 模型与智能体交互管理 | [05-model-agent-interaction-manager.md](05-model-agent-interaction-manager.md) | 提供可插拔模型、外部 Agent、路由、预算、追踪和结构化输出能力 | `model_trace.jsonl`、`ModelResponse`、`AgentResponse` |
+| 3. SkillAtom 抽取 | [03-skillatom-extraction.md](03-skillatom-extraction.md) | 将代码证据和文档证据转成可执行、可验证的技能原子 | `raw_atoms.jsonl`、`merged_atoms.jsonl`、`benchmark_seeds.jsonl` |
+| 4. SkillOpt 优化循环 | [04-skillopt-loop.md](04-skillopt-loop.md) | 基于 rollout、反思、聚合、选择、更新、评测循环优化 Skill | `best_skill.md`、`skill_bundle.json`、`history.json`、`final_eval/` |
+| 5. 模型与智能体交互管理 | [05-model-agent-interaction-manager.md](05-model-agent-interaction-manager.md) | 提供可插拔模型、外部 Agent、路由、预算、追踪和结构化输出能力 | `traces/`、`token_usage.jsonl`、`cost_usage.jsonl` |
 | 6. CLI 人机交互与模块编排 | [06-cli-human-interaction-orchestrator.md](06-cli-human-interaction-orchestrator.md) | 提供命令行入口、运行计划、审批、状态、恢复、发布和报告 | `run_manifest.json`、`run_state.json`、`events.jsonl` |
 
 模块之间通过文件化中间产物和稳定 schema 解耦。除 CLI 外，其它模块应优先设计为可被库调用，也可被单独命令执行。
@@ -183,20 +183,22 @@ flowchart LR
   "included_atoms": ["api-error-handling.retry-timeout"],
   "references": ["references/api-contracts.md"],
   "scripts": ["scripts/check_payment_patch.py"],
-  "eval_report": "evals/payment-agent-skill/v0.3.0.json"
+  "eval_report": "final_eval/report.json"
 }
 ```
 
-### 6.4 `ModelRequest` 与 `AgentRequest`
+### 6.4 `InteractionRequest` 与 `InteractionResponse`
 
-模型交互统一通过模块 5 的请求对象进入，避免各模块直接绑定某个供应商、模型名称或外部智能体协议。
+模型交互统一通过模块 5 的 `InteractionRequest` 进入，避免各模块直接绑定某个供应商、模型名称或外部智能体协议。`ModelResponse` 与 `AgentResponse` 是 `InteractionResponse` 的两种具体返回形态。
 
 ```json
 {
+  "schema_version": "1.0",
+  "request_id": "req-20260603-0001",
   "role": "atom_extractor",
   "task": "extract_skill_atoms",
-  "input_refs": ["runs/2026-06-03/chunks.jsonl"],
-  "output_schema": "SkillAtom[]",
+  "input_refs": ["runs/payment-skill-20260603-001/sources/docs/payment-runbook/v2026-05-28/chunks.jsonl"],
+  "response_format": {"type": "json_schema", "schema_name": "SkillAtomList"},
   "budget": {"max_tokens": 4000, "max_cost_usd": 1.5}
 }
 ```
@@ -308,10 +310,13 @@ code-to-skill/
 │   └── <run_id>/
 │       ├── run_manifest.json
 │       ├── run_state.json
-│       ├── code/
-│       ├── docs/
+│       ├── sources/
+│       │   ├── code/
+│       │   └── docs/
 │       ├── atoms/
+│       ├── benchmarks/
 │       ├── optimization/
+│       ├── model_interactions/
 │       └── reports/
 ├── skills/
 │   └── <skill_name>/
@@ -345,7 +350,7 @@ code-to-skill/
 ### Phase 0：资料准备
 
 - 固定一个目标仓库、一个知识库目录和一组 PDF/Wiki 导出材料。
-- 建立 `config.yaml`、运行目录规范和模型路由配置。
+- 建立 `project.yaml`、运行目录规范和模型路由配置。
 - 准备最小 benchmark：10 到 20 个真实任务或历史失败样本。
 
 ### Phase 1：离线证据构建
@@ -373,11 +378,15 @@ code-to-skill/
 
 ## 13. 产物版本兼容性策略
 
-系统各模块产出的中间文件（`graph.json`、`chunks.jsonl`、`skill_atoms.jsonl` 等）在迭代中 schema 会演进。为避免模块间隐性不兼容，所有中间产物必须遵守以下规则：
+系统各模块产出的中间文件（`graph.json`、`chunks.jsonl`、`merged_atoms.jsonl` 等）在迭代中 schema 会演进。为避免模块间隐性不兼容，所有中间产物必须遵守以下规则：
 
 ### 13.1 强制 `schema_version` 字段
 
-每个模块产出的 JSON/JSONL 文件必须包含顶层 `schema_version` 字段（语义化版本 `MAJOR.MINOR`）。消费模块在读取时必须校验：
+每个模块产出的结构化产物必须声明 `schema_version`（语义化版本 `MAJOR.MINOR`）。消费模块在读取时必须校验：
+
+- **JSON 文件**：顶层包含 `schema_version`。
+- **JSONL 文件**：每一行记录包含 `schema_version`；如果文件由同一 schema 的大量记录组成，也可以在同目录 manifest 中声明 `record_schema_version`，但记录级字段仍是推荐方式。
+- **Markdown Skill 产物**：不强制在正文写 `schema_version`，由同目录 `skill_bundle.json` 记录 Skill 包版本、来源和评测结果。
 
 - **MAJOR 不变**：向后兼容，可正常读取。
 - **MAJOR 升级**：消费模块必须拒绝读取，报告不兼容错误，并建议重新运行生产模块。
@@ -394,19 +403,19 @@ code-to-skill/
 
 ### 13.2 各模块产物当前目标版本
 
-| 产物 | 生产模块 | `schema_version` | 说明 |
+| 产物 | 生产模块 | 版本位置 | 说明 |
 |---|---|---|---|
-| `graph.json` | 模块 1 | `1.0` | 代码图谱节点与边 |
-| `module_tree.json` | 模块 1 | `1.0` | 模块分层结构 |
-| `leaf_contexts/*.json` | 模块 1 | `1.0` | 叶子模块上下文包 |
-| `chunks.jsonl` | 模块 2 | `1.0` | 规范化文档块 |
-| `tables.jsonl` | 模块 2 | `1.0` | 结构化表格 |
-| `document_index.json` | 模块 2 | `1.0` | 文档结构索引 |
-| `merged_atoms.jsonl` | 模块 3 | `1.0` | 已合并 SkillAtom |
-| `benchmark_seeds.jsonl` | 模块 3 | `1.0` | 评测种子 |
-| `best_skill.md` | 模块 4 | `1.0` | 最终 Skill 产物 |
-| `history.json` | 模块 4 | `1.0` | 训练历史 |
-| `run_state.json` | 模块 6 | `1.0` | 运行状态 |
+| `graph.json` | 模块 1 | 顶层 `schema_version=1.0` | 代码图谱节点与边 |
+| `module_tree.json` | 模块 1 | 顶层 `schema_version=1.0` | 模块分层结构 |
+| `leaf_contexts/*.json` | 模块 1 | 顶层 `schema_version=1.0` | 叶子模块上下文包 |
+| `chunks.jsonl` | 模块 2 | 每行 `schema_version=1.0` | 规范化文档块 |
+| `tables.jsonl` | 模块 2 | 每行 `schema_version=1.0` | 结构化表格 |
+| `document_index.json` | 模块 2 | 顶层 `schema_version=1.0` | 文档结构索引 |
+| `merged_atoms.jsonl` | 模块 3 | 每行 `schema_version=1.0` | 已合并 SkillAtom |
+| `benchmark_seeds.jsonl` | 模块 3 | 每行 `schema_version=1.0` | 评测种子 |
+| `skill_bundle.json` | 模块 4 | 顶层 `schema_version=1.0` | 最终 Skill 包元数据 |
+| `history.json` | 模块 4 | 顶层 `schema_version=1.0` | 训练历史 |
+| `run_state.json` | 模块 6 | 顶层 `schema_version=1.0` | 运行状态 |
 
 ### 13.3 版本升级流程
 

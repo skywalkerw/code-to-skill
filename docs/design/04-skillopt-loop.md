@@ -28,7 +28,7 @@ epoch 末尾可选执行 slow update 和 meta skill。
 | `adapter` | EnvAdapter | 实现 build env、rollout、reflect |
 | `target_backend` | model/harness | 被优化的冻结 Agent |
 | `optimizer_backend` | model | 负责反思、合并、排序、slow/meta update |
-| `out_root` | path | 所有训练产物输出目录 |
+| `out_root` | path | 所有训练产物输出目录，通常为 `runs/<run_id>/optimization/` |
 
 ### 2.2 Benchmark item 要求
 
@@ -36,6 +36,7 @@ epoch 末尾可选执行 slow update 和 meta skill。
 
 ```json
 {
+  "schema_version": "1.0",
   "id": "payment_code_042",
   "question": "这段退款重试逻辑有什么风险？",
   "task_type": "code_review",
@@ -80,11 +81,12 @@ Adapter 负责在 rollout 前根据 `context_mode` 构造 prompt。当使用 `in
 推荐目录与 SkillOpt 实现保持一致：
 
 ```text
-outputs/<run_id>/
+runs/<run_id>/optimization/
 ├── config.json
 ├── runtime_state.json
 ├── history.json
 ├── best_skill.md
+├── skill_bundle.json
 ├── skills/
 │   ├── skill_v0000.md
 │   └── skill_v0001.md
@@ -109,6 +111,7 @@ outputs/<run_id>/
 │   └── epoch_02/
 │       └── meta_skill_result.json
 └── final_eval/
+    └── report.json
 ```
 
 ### 3.1 `history.json`
@@ -135,10 +138,10 @@ step 级完整摘要，便于恢复和审计。它应记录 candidate hash、app
 {
   "schema_version": "1.0",
   "last_completed_step": 4,
-  "current_skill_path": "outputs/run/skills/skill_v0004.md",
+  "current_skill_path": "runs/payment-skill-20260603-001/optimization/skills/skill_v0004.md",
   "current_score": 0.72,
   "current_origin": "step_0004",
-  "best_skill_path": "outputs/run/best_skill.md",
+  "best_skill_path": "runs/payment-skill-20260603-001/optimization/best_skill.md",
   "best_score": 0.75,
   "best_step": 3,
   "best_origin": "step_0003",
@@ -148,7 +151,7 @@ step 级完整摘要，便于恢复和审计。它应记录 candidate hash、app
     "rollout_completed": 18,
     "rollout_total": 40,
     "last_minibatch_completed": 2,
-    "current_batch_file": "outputs/run/steps/step_0005/rollout/batch_003.jsonl"
+    "current_batch_file": "runs/payment-skill-20260603-001/optimization/steps/step_0005/rollout/batch_003.jsonl"
   }
 }
 ```
@@ -160,6 +163,23 @@ step 级完整摘要，便于恢复和审计。它应记录 candidate hash、app
 3. 若 `phase=aggregate` 或之后：视为当前 step 大部分已完成，回退到 step 开头重做或继续——由 `--strict-resume` 参数控制。
 
 Step 内中间文件按 minibatch 编号独立保存，确保恢复时不重复、不遗漏。
+
+### 3.4 `skill_bundle.json`
+
+记录最终可发布 Skill 包的元数据，`best_skill.md` 本身保持为标准 Skill Markdown。
+
+```json
+{
+  "schema_version": "1.0",
+  "skill_id": "payment-agent-skill",
+  "version": "0.3.0",
+  "entry_file": "best_skill.md",
+  "included_atoms": ["payment.timeout.retry-idempotency"],
+  "history_file": "history.json",
+  "final_eval_report": "final_eval/report.json",
+  "created_from_run": "payment-skill-20260603-001"
+}
+```
 
 ## 4. 执行过程
 
@@ -218,6 +238,7 @@ flowchart TD
 
 ```json
 {
+  "schema_version": "1.0",
   "id": "task-id",
   "hard": 0,
   "soft": 0.25,
@@ -330,6 +351,7 @@ Return JSON: {"scores": [{"dimension": "...", "score": 0.X, "justification": "..
 
 ```json
 {
+  "schema_version": "1.0",
   "source_type": "failure",
   "batch_size": 8,
   "failure_summary": [
@@ -429,7 +451,7 @@ Patch mode 支持：
 执行：
 
 1. 对 candidate Skill 计算**语义 hash**——先做空白归一化（trim + collapse whitespace），再计算 SHA256。相同语义内容的 Skill 共享同一 hash，避免微小格式差异导致缓存失效。
-2. 用语义 hash 查 selection cache（存储在 `outputs/<run_id>/cache/selection_scores.json`）。
+2. 用语义 hash 查 selection cache（存储在 `runs/<run_id>/optimization/cache/selection_scores.json`）。
 3. 未命中则在 selection split 上 rollout 并评分。
 4. 计算 hard/soft score。
 5. 根据 `gate_metric` 投影为单一 gate score。
@@ -441,7 +463,7 @@ Patch mode 支持：
 
 ```json
 {
-  "cache_version": "1.0",
+  "schema_version": "1.0",
   "entries": {
     "abc123def": {
       "skill_semantic_hash": "abc123def",
@@ -563,9 +585,9 @@ Meta skill 是优化器侧记忆，不进入部署 Skill。
 本模块期望上游提供：
 
 - `initial_skill.md`
-- `benchmarks/train/items.json`
-- `benchmarks/selection/items.json`
-- `benchmarks/test/items.json`
+- `runs/<run_id>/benchmarks/train/items.json`
+- `runs/<run_id>/benchmarks/selection/items.json`
+- `runs/<run_id>/benchmarks/test/items.json`
 - scorer 配置
 - adapter 实现
 
@@ -574,7 +596,8 @@ Meta skill 是优化器侧记忆，不进入部署 Skill。
 下游部署模块只读取：
 
 - `best_skill.md`
-- `summary.json` 或最终评测报告
+- `skill_bundle.json`
+- `final_eval/report.json`
 - 可选 `skills/skill_vXXXX.md` 用于回滚
 
 审计模块读取：

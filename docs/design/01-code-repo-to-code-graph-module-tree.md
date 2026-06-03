@@ -23,7 +23,7 @@
 | `snapshot_ref` | string | commit SHA、tag 或归档版本号 |
 | `include_patterns` | string[] | 需要分析的源码路径或 glob |
 | `exclude_patterns` | string[] | 必须排除的目录和文件，例如 `.git`、`node_modules`、`dist`、测试快照、大文件产物 |
-| `output_root` | path | 本模块产物写入目录 |
+| `output_root` | path | 本模块产物写入目录，通常为 `runs/<run_id>/sources/code/` |
 
 ### 2.2 可选输入
 
@@ -48,7 +48,7 @@
 推荐目录：
 
 ```text
-sources/code/<repo_id>/<snapshot_ref>/
+runs/<run_id>/sources/code/<repo_id>/<snapshot_ref>/
 ├── manifest.json
 ├── file_inventory.json
 ├── graph.json
@@ -71,6 +71,7 @@ sources/code/<repo_id>/<snapshot_ref>/
 
 ```json
 {
+  "schema_version": "1.0",
   "repo_id": "payment-service",
   "repo_root": "/abs/path/payment-service",
   "snapshot_ref": "abc123",
@@ -148,18 +149,21 @@ sources/code/<repo_id>/<snapshot_ref>/
 
 ```json
 {
-  "payment_api": {
-    "path": "src/payment",
-    "reason": "API handlers and payment service orchestration",
-    "components": [
-      "src/payment/controller.py::PaymentController",
-      "src/payment/service.py::PaymentService"
-    ],
-    "children": {
-      "refund_flow": {
-        "path": "src/refund",
-        "components": ["src/refund/client.py::retry_refund"],
-        "children": {}
+  "schema_version": "1.0",
+  "root_modules": {
+    "payment_api": {
+      "path": "src/payment",
+      "reason": "API handlers and payment service orchestration",
+      "components": [
+        "src/payment/controller.py::PaymentController",
+        "src/payment/service.py::PaymentService"
+      ],
+      "children": {
+        "refund_flow": {
+          "path": "src/refund",
+          "components": ["src/refund/client.py::retry_refund"],
+          "children": {}
+        }
       }
     }
   }
@@ -172,6 +176,7 @@ sources/code/<repo_id>/<snapshot_ref>/
 
 ```json
 {
+  "schema_version": "1.0",
   "leaf_id": "refund_flow",
   "module_path": ["payment_api", "refund_flow"],
   "component_ids": ["src/refund/client.py::retry_refund"],
@@ -180,6 +185,10 @@ sources/code/<repo_id>/<snapshot_ref>/
   "source_snippets": [],
   "tests": [],
   "risk_notes": [],
+  "cross_ref_ids": [],
+  "parent_leaf": null,
+  "split_reason": null,
+  "requires_source_read": false,
   "token_estimate": 5400
 }
 ```
@@ -336,23 +345,28 @@ Each component has an ID, file path, and type label.
 5. Module names must use ASCII snake_case.
 
 ## Output Format
-Return a valid JSON object where keys are module names and values are objects with:
-- "components": list of component IDs assigned to this module
-- "children": nested modules (same structure)
-- "reason": one-sentence justification
+Return a valid JSON object with:
+- "schema_version": "1.0"
+- "root_modules": object whose keys are module names and values contain:
+  - "components": list of component IDs assigned to this module
+  - "children": nested modules (same structure)
+  - "reason": one-sentence justification
 
 ```json
 {
-  "payment_api": {
-    "components": ["src/payment/controller.py::PaymentController"],
-    "children": {
-      "refund_flow": {
-        "components": ["src/refund/client.py::retry_refund"],
-        "children": {},
-        "reason": "handles refund lifecycle including retry and idempotency"
-      }
-    },
-    "reason": "API handlers and payment service orchestration"
+  "schema_version": "1.0",
+  "root_modules": {
+    "payment_api": {
+      "components": ["src/payment/controller.py::PaymentController"],
+      "children": {
+        "refund_flow": {
+          "components": ["src/refund/client.py::retry_refund"],
+          "children": {},
+          "reason": "handles refund lifecycle including retry and idempotency"
+        }
+      },
+      "reason": "API handlers and payment service orchestration"
+    }
   }
 }
 ```

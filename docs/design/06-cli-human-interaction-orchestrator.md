@@ -118,7 +118,7 @@ model_layer:
 
 # === 输出与发布 ===
 output:
-  root: outputs/
+  root: runs/
   publish_target: ~/.codex/skills/payment-agent
 
 # === 审批策略 ===
@@ -143,6 +143,13 @@ runs/<run_id>/
 ├── events.jsonl
 ├── approvals.jsonl
 ├── module_outputs.json
+├── sources/
+│   ├── code/
+│   └── docs/
+├── atoms/
+├── benchmarks/
+├── optimization/
+├── model_interactions/
 ├── reports/
 │   ├── summary.md
 │   ├── diagnostics.md
@@ -188,8 +195,8 @@ runs/<run_id>/
   ],
   "failed_modules": [],
   "artifacts": {
-    "code_graph": "sources/code/payment-service/abc123/graph.json",
-    "doc_chunks": "sources/docs/payment-runbook/v2026-05-28/chunks.jsonl"
+    "code_graph": "runs/payment-skill-20260603-001/sources/code/payment-service/abc123/graph.json",
+    "doc_chunks": "runs/payment-skill-20260603-001/sources/docs/payment-runbook/v2026-05-28/chunks.jsonl"
   }
 }
 ```
@@ -200,12 +207,13 @@ runs/<run_id>/
 
 ```json
 {
+  "schema_version": "1.0",
   "ts": "2026-06-03T00:00:00Z",
   "level": "info",
   "module": "document_normalization",
   "event": "chunks_written",
   "message": "Wrote 128 document chunks.",
-  "artifact": "sources/docs/payment-runbook/v2026-05-28/chunks.jsonl"
+  "artifact": "runs/payment-skill-20260603-001/sources/docs/payment-runbook/v2026-05-28/chunks.jsonl"
 }
 ```
 
@@ -215,6 +223,7 @@ runs/<run_id>/
 
 ```json
 {
+  "schema_version": "1.0",
   "approval_id": "appr-001",
   "requested_action": "invoke_agent_cli_with_workspace_write",
   "module": "skillopt_loop",
@@ -251,11 +260,10 @@ skill-lab init --workspace ./agent-skill-lab --domain payment
 生成：
 
 - `project.yaml`
-- `sources/`
-- `atoms/`
-- `benchmarks/`
-- `outputs/`
 - `runs/`
+- `skills/`
+- `configs/`
+- `fixtures/`
 
 ### 4.3 `config validate`
 
@@ -298,7 +306,7 @@ skill-lab run all --config project.yaml
 skill-lab run code-graph --repo ../payment-service
 skill-lab run normalize-docs --docs ./kb --domain payment
 skill-lab run extract-atoms --from sources/
-skill-lab run optimize-skill --benchmark benchmarks/payment
+skill-lab run optimize-skill --benchmark runs/payment-skill-20260603-001/benchmarks
 ```
 
 支持范围：
@@ -334,9 +342,9 @@ skill-lab status payment-skill-20260603-001
 查看产物摘要。
 
 ```bash
-skill-lab inspect graph sources/code/payment-service/abc123/graph.json
-skill-lab inspect atoms atoms/payment/run-001/merged_atoms.jsonl
-skill-lab inspect skill outputs/payment/best_skill.md
+skill-lab inspect graph runs/payment-skill-20260603-001/sources/code/payment-service/abc123/graph.json
+skill-lab inspect atoms runs/payment-skill-20260603-001/atoms/payment/merged_atoms.jsonl
+skill-lab inspect skill runs/payment-skill-20260603-001/optimization/best_skill.md
 ```
 
 ### 4.7 `approve`
@@ -361,7 +369,7 @@ skill-lab approve appr-001 --deny
 对指定 Skill 运行评测。
 
 ```bash
-skill-lab eval outputs/payment/best_skill.md --split test
+skill-lab eval runs/payment-skill-20260603-001/optimization/best_skill.md --split test
 ```
 
 调用模块 4 的 eval-only 能力，并通过模块 5 调用 target/judge。
@@ -476,7 +484,7 @@ CLI 调用模块时传递标准上下文：
   "workspace": "/abs/path/agent-skill-lab",
   "input_paths": {},
   "output_root": "runs/payment-skill-20260603-001",
-  "interaction_config": "project.yaml#model_interactions",
+  "interaction_config": "project.yaml#model_layer",
   "mode": "interactive"
 }
 ```
@@ -485,6 +493,7 @@ CLI 调用模块时传递标准上下文：
 
 ```json
 {
+  "schema_version": "1.0",
   "status": "ok",
   "artifacts": {},
   "metrics": {},
@@ -528,7 +537,7 @@ CLI 必须保证：
     Only normalize documents
     Only optimize existing skill
 
-? This run will call external model route `optimizer.deepseek-v4-pro`.
+? This run will call external model route `optimizer.dashscope-deepseek-v4-pro`.
   Estimated max cost: $3.20.
   Approve? [y/N]
 
