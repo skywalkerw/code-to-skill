@@ -490,26 +490,21 @@ code-to-skill/
 
 ### Phase 0：资料准备
 
-- **固定目标仓库**：[Apache Fineract](https://github.com/apache/fineract)（Java，金融核心系统）。
-  - 选定原因：纯金融业务——贷款发放、还款计划、利息计算、储蓄产品、会计分录、过账规则——业务复杂度高、领域术语密集，是检验 Skill 抽取和优化的理想靶场。
-  - 锁定 commit：`rel/1.10.0`（2025 年稳定分支），确保可复现。
-  - 分析范围（`include`）聚焦核心业务模块，排除基础设施和测试：
-    ```yaml
-    include:
-      - "fineract-provider/src/main/java/org/apache/fineract/accounting/**"
-      - "fineract-provider/src/main/java/org/apache/fineract/portfolio/**"
-      - "fineract-core/src/main/java/org/apache/fineract/accounting/**"
-      - "fineract-core/src/main/java/org/apache/fineract/portfolio/**"
-    exclude:
-      - "**/test/**"
-      - "**/integration-tests/**"
-      - "**/node_modules/**"
-      - "**/target/**"
-    ```
-  - tree-sitter Java grammar 覆盖良好，模块 1 的 AST 解析无额外适配成本。
-- 固定一个知识库目录（Fineract 官方文档的 Markdown 导出）和一组 PDF（Apache Fineract 用户手册）。
+- 固定一个目标仓库（建议选择业务逻辑复杂的项目，如金融支付、ERP 核算、税务引擎等）。当前测试用例为 [Apache Fineract](https://github.com/apache/fineract)（Java，贷款/储蓄/会计分录），但系统设计不绑定任何特定仓库——更换目标只需修改 `project.yaml` 中的 `sources.repos` 配置。
+- 锁定仓库版本（commit、tag 或 release branch），确保后续运行可复现。
+- 配置 `include`/`exclude` 聚焦核心业务模块，排除测试和构建产物。以 Fineract 为例：
+  ```yaml
+  include:
+    - "fineract-provider/src/main/java/org/apache/fineract/accounting/**"
+    - "fineract-provider/src/main/java/org/apache/fineract/portfolio/**"
+  exclude:
+    - "**/test/**"
+    - "**/integration-tests/**"
+    - "**/target/**"
+  ```
+- 固定一个知识库目录（目标仓库的官方文档 Markdown 导出）和一组相关 PDF。
 - 建立 `project.yaml`、运行目录规范和模型路由配置。
-- 准备最小 benchmark：10 到 20 个真实任务（从 Fineract 的 GitHub Issues 和 PR review 中抽取金融业务相关的 bug fix、feature request、code review 场景）。
+- 准备最小 benchmark：10 到 20 个真实任务（从目标仓库的 Issues、PR review、故障工单中抽取）。
 
 ### Phase 1：离线证据构建
 
