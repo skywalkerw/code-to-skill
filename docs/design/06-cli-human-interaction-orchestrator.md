@@ -66,15 +66,24 @@ sources:
   docs:
     - id: payment-runbook
       path: kb/payment/runbook.md
+      provider: local_file          # local_file（默认）/ feishu_api / confluence_api / notion_api
       type: markdown
       version: "2026-05-28"
       authority: team_runbook
       domain_tags: [payment, refund, timeout]
     - id: payment-api-spec
       path: kb/payment/api-spec.pdf
+      provider: local_file
       type: pdf
       ocr_enabled: true
       authority: official_spec
+    # 远程知识源示例（预留，provider 未实现时 config validate 给出警告）
+    # - id: feishu-sop
+    #   path: doc_token:B4Jkdm1YboR1Rxxx
+    #   provider: feishu_api
+    #   type: wiki_export
+    #   version: "latest"
+    #   authority: team_runbook
 
 # === 模块 1：代码图谱与模块树 ===
 code_graph:
@@ -94,6 +103,14 @@ document_normalizer:
   ocr_confidence_threshold: 0.6
   chunk_max_tokens: 2000
   redaction_policy: standard
+  # 远程 provider 凭证（仅当使用 feishu_api / confluence_api 等远程 source 时需要）
+  # knowledge_sources:
+  #   feishu_api:
+  #     app_id: ${FEISHU_APP_ID}
+  #     app_secret: ${FEISHU_APP_SECRET}
+  #   confluence_api:
+  #     base_url: https://your-domain.atlassian.net/wiki
+  #     personal_access_token: ${CONFLUENCE_PAT}
 
 # === 模块 3：SkillAtom 抽取 ===
 atom_extractor:
