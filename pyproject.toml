@@ -23,6 +23,12 @@ dependencies = [
 ocr = ["pytesseract>=0.3", "pillow>=10.0"]
 lxml = ["lxml>=5.0"]
 
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-dir]
+"code_to_skill" = "src/code_to_skill"
+
 [build-system]
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
