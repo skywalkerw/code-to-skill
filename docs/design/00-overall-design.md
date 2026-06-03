@@ -345,7 +345,148 @@ code-to-skill/
 
 参考实现只提供结构与算法启发。实际落地时应通过本系统 schema、CLI、模型交互层和质量门禁重新封装，避免把研究代码中的路径假设、模型调用方式或临时评测逻辑直接暴露给生产流程。
 
-## 12. MVP 路线
+## 12. 技术选型
+
+本节定义系统的语言、依赖栈与离线部署策略。
+
+### 12.1 主语言与版本
+
+- **语言**：Python
+- **最低版本**：3.10（匹配 SkillOpt 上游的最低要求，同时 3.10 的 `match-case` 和更完善的类型系统对结构化数据管线友好）
+- **包管理**：[uv](https://github.com/astral-sh/uv) 或 pip + `requirements.txt`。推荐 uv，安装速度更快、lock 文件可复现，且支持离线安装（`--offline`）。
+
+### 12.2 依赖分层与选型原则
+
+按模块边界将依赖分为 5 层，每层只引入生态中最主流的包。**选型原则**：
+
+1. **优先标准库**：能用 `pathlib`、`json`、`hashlib`、`argparse`、`logging` 等功能就不引入第三方包。
+2. **选择生态最主流的包**：同类包中选 GitHub Stars 最高、维护最活跃、Python 版本支持最广的。
+3. **零 C 扩展依赖或提供 wheel**：避免需要本地编译的包（如旧版 `lxml` 需要 C 编译器），优先选择有预编译 wheel（包括 ARM64 macOS）的包。必需 C 扩展的包（如 OCR 引擎）作为可选依赖。
+4. **离线友好**：所有依赖必须能通过 `pip download` 或 `uv sync --offline` 落地到本地目录，在无网环境通过 `--find-links` 或 `--no-index` 安装。
+
+### 12.3 核心依赖清单
+
+#### 第 1 层：基础工具（全模块共用）
+
+| 包 | 用途 | 为何选它 |
+|---|---|---|
+| `pyyaml` | 解析 `project.yaml` 和各模块 YAML 配置 | YAML 生态事实标准，无 C 依赖 |
+| `pydantic>=2.0` | 所有模块的 schema 校验（`graph.json`、`SkillAtom`、`RunState` 等） | 纯 Python、类型安全、JSON Schema 导出、生态最主流 |
+| `tiktoken` | token 估算（模块 1 叶子上下文预算） | OpenAI 出品，cl100k_base 编码，纯 Python + 数据文件 |
+
+#### 第 2 层：代码分析（模块 1）
+
+| 包 | 用途 | 为何选它 |
+|---|---|---|
+| `tree-sitter` + 语言 grammar（python/java/typescript/go/rust） | 多语言 AST 解析，生成 `graph.json` 节点和边 | 增量解析、多语言统一 API、纯 C 但预编译 wheel 齐全 |
+| `paths` → **标准库 `pathlib`** | 文件遍历、glob 匹配、路径管理 | 标准库，零依赖 |
+
+**不使用**：`jedi`（仅 Python）、`ast-grep`（较新，生态不够成熟）。tree-sitter 是编译器前端领域最广泛使用的增量解析器，Neovim、Helix 编辑器均内置。
+
+#### 第 3 层：文档规范化（模块 2）
+
+| 包 | 用途 | 为何选它 |
+|---|---|---|
+| `markdown-it-py` 或 `mistune` | Markdown → 结构化 blocks | `markdown-it-py` 是 VS Code Markdown 预览的渲染器，`mistune` 是 Jupyter 系的解析器，二者均为纯 Python |
+| `pdfplumber` | PDF 文本抽取 + 表格提取 | 纯 Python，比 `pdfminer.six` API 更友好，表格提取能力强 |
+| `python-docx` | DOCX 解析 | 事实标准，纯 Python |
+| `beautifulsoup4` + `lxml`（可选 wheel） | HTML / Wiki 导出解析 | `lxml` 有预编译 wheel，安装无需 C 编译器；若离线环境无 wheel 可用，退化为 `html.parser`（标准库） |
+
+**可选依赖**（仅在需要时安装）：
+
+| 包 | 用途 | 备注 |
+|---|---|---|
+| `pytesseract` + 系统 Tesseract 二进制 | PDF 扫描件 OCR | 需要系统安装 Tesseract（`brew install tesseract` / `apt install tesseract-ocr`）。离线环境下 Tesseract 需预先安装。 |
+| `pillow` | OCR 预处理（图像缩放、二值化） | 有预编译 wheel，纯 Python 模式也可工作 |
+
+#### 第 4 层：模型与 Agent 交互（模块 5）
+
+| 包 | 用途 | 为何选它 |
+|---|---|---|
+| `openai` | OpenAI-compatible API 调用（百炼、vLLM、Ollama 等） | 生态事实标准，支持 `base_url` 指向任意兼容服务 |
+| `httpx` | 异步 HTTP 客户端，Agent backend 调用第三方服务 | 比 `requests` 更现代，支持 HTTP/2、async，生态主流 |
+| `tenacity` | 重试策略（指数退避、fallback） | 比 `retry` 更灵活，装饰器 + 上下文管理器 |
+
+#### 第 5 层：CLI 与人机交互（模块 6）
+
+| 包 | 用途 | 为何选它 |
+|---|---|---|
+| `rich` | 终端美化输出（进度条、表格、syntax highlight、Markdown 渲染） | 生态最主流的终端美化库，纯 Python |
+| `click` | CLI 命令定义与参数解析 | Flask 生态标准，比 `argparse` 更简洁；也可用标准库 `argparse` 而零依赖 |
+
+**不使用**：`textual`（TUI 框架，功能过重，MVP 不需要 TUI 仪表盘）、`typer`（依赖 `click`，增加一层抽象但好处有限）。
+
+#### 汇总
+
+```
+# requirements.txt（有网环境通过 pip install -r requirements.txt 安装）
+pyyaml>=6.0
+pydantic>=2.0
+tiktoken>=0.5
+tree-sitter>=0.21
+pdfplumber>=0.10
+python-docx>=1.0
+beautifulsoup4>=4.12
+markdown-it-py>=3.0
+openai>=1.0
+httpx>=0.27
+tenacity>=8.0
+rich>=13.0
+click>=8.0
+
+# 可选依赖
+# pytesseract>=0.3
+# pillow>=10.0
+# lxml>=5.0
+```
+
+### 12.4 离线部署策略
+
+目标：在一台无互联网访问的服务器上，仅通过 U 盘/共享目录拷贝即可完成环境搭建。
+
+**方案 A：pip download + requirements.txt（推荐 MVP）**
+
+```bash
+# 在有网机器上
+mkdir vendor
+pip download -r requirements.txt -d vendor/
+
+# 将 vendor/ 目录拷贝到离线机器
+# 在离线机器上
+pip install --no-index --find-links=vendor/ -r requirements.txt
+```
+
+**方案 B：uv 离线 lock + sync**
+
+```bash
+# 在有网机器上
+uv lock                          # 生成 uv.lock
+uv sync --frozen                 # 安装到 .venv
+uv export --no-hashes > requirements.frozen.txt
+
+# 将 .venv/lib/python3.10/site-packages/ 打包为 wheels.tar.gz
+
+# 在离线机器上
+uv sync --frozen --offline       # 从 uv.lock 直接还原
+```
+
+**方案 C：嵌入式 Python + vendor（最彻底的离线方案）**
+
+适用于目标机器不允许 pip 安装任何包的极端环境。将 CPython 解释器 + site-packages + 本系统源码打包为一个自包含目录。uv 的 `--python` 参数指向嵌入式 Python 即可。
+
+### 12.5 包管理文件约定
+
+```
+code-to-skill/
+├── pyproject.toml          # 项目元数据 + 依赖声明
+├── requirements.txt        # pip 兼容格式（由 pyproject.toml 导出）
+├── requirements-opt.txt    # 可选依赖
+├── vendor/                 # 离线依赖缓存（.gitignore）
+└── scripts/
+    └── install_offline.sh  # 一键离线安装脚本
+```
+
+## 13. MVP 路线
 
 ### Phase 0：资料准备
 
@@ -376,7 +517,7 @@ code-to-skill/
 - 支持多仓库、多 Skill、多模型后端和增量更新。
 - 建立 rejected-edit buffer 与发布回滚策略。
 
-## 13. 产物版本兼容性策略
+## 14. 产物版本兼容性策略
 
 系统各模块产出的中间文件（`graph.json`、`chunks.jsonl`、`merged_atoms.jsonl` 等）在迭代中 schema 会演进。为避免模块间隐性不兼容，所有中间产物必须遵守以下规则：
 
@@ -424,7 +565,7 @@ code-to-skill/
 3. 消费模块同步更新读取逻辑以支持新版本。
 4. 旧版本产物不会被自动迁移——需通过 CLI 的 `--from-step` 重跑生产模块。
 
-## 14. 主要风险与应对
+## 15. 主要风险与应对
 
 | 风险 | 表现 | 应对 |
 |---|---|---|
@@ -435,7 +576,7 @@ code-to-skill/
 | 模型供应商绑定 | 各模块直接调用固定模型 | 统一走模块 5 的 provider/router/capability 抽象 |
 | 运行不可恢复 | 长任务失败后无法定位阶段 | CLI 维护 `run_state.json`、事件日志和幂等输出目录 |
 
-## 15. 成功标准
+## 16. 成功标准
 
 系统达到可用状态时，应满足以下标准：
 

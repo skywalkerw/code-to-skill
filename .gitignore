@@ -1,3 +1,4 @@
 external/
+vendor/
 .DS_Store
 *.log
