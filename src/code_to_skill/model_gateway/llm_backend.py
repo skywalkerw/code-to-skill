@@ -39,15 +39,18 @@ _ENV_MAP = {
 }
 
 
-def create_llm_backend(backend_id: str = "deepseek-api") -> InteractionBackend:
+def create_llm_backend(backend_id: str | None = None) -> InteractionBackend:
     """从环境变量创建 LLM backend，不可用时降级为 MockBackend。
 
     Args:
-        backend_id: 预配置的 backend ID
+        backend_id: 预配置的 backend ID。为 None 时从 SKILL_LAB_LLM_BACKEND 环境变量读取，
+                   未设置则默认 "deepseek-api"
 
     Returns:
         InteractionBackend 实例（真实 LLM 或 Mock）
     """
+    if backend_id is None:
+        backend_id = os.environ.get("SKILL_LAB_LLM_BACKEND", "deepseek-api")
     cfg = _ENV_MAP.get(backend_id)
     if cfg is None:
         logger.warning("Unknown backend_id '%s', falling back to mock", backend_id)
@@ -79,8 +82,10 @@ def _create_mock(backend_id: str) -> MockReplayBackend:
     return MockReplayBackend(backend_id=backend_id, fixture_dir=fixture_dir)
 
 
-def is_llm_available(backend_id: str = "deepseek-api") -> bool:
+def is_llm_available(backend_id: str | None = None) -> bool:
     """检查 LLM backend 是否可用（API key 已设置）。"""
+    if backend_id is None:
+        backend_id = os.environ.get("SKILL_LAB_LLM_BACKEND", "deepseek-api")
     cfg = _ENV_MAP.get(backend_id)
     if cfg is None:
         return False
