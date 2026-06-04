@@ -36,7 +36,7 @@ class SkillAtom(BaseModel):
     evidence_summary: str = ""
     checks: list[str] = Field(default_factory=list)
     confidence: float = 0.5
-    risk: Literal["low", "medium", "high"] = "medium"
+    risk: Literal["low", "medium", "high", "needs_review"] = "medium"
     status: Literal["candidate", "accepted", "rejected", "needs_review"] = "candidate"
 
 

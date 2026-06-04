@@ -29,7 +29,7 @@ ATOM_SCHEMA = {
             "source_refs": {"type": "array", "items": {"type": "object", "properties": {"type": {"type": "string"}, "id": {"type": "string"}}}},
             "checks": {"type": "array", "items": {"type": "string"}},
             "confidence": {"type": "number"},
-            "risk": {"type": "string", "enum": ["low", "medium", "high"]},
+            "risk": {"type": "string", "enum": ["low", "medium", "high", "needs_review"]},
         },
         "required": ["atom_id", "kind", "claim", "source_refs"]
     }
@@ -83,23 +83,29 @@ def extract_from_code_llm(leaf_contexts: list[dict]) -> list[RawAtom]:
                             refs.append(SourceRef(**r))
                         elif isinstance(r, str):
                             refs.append(SourceRef(type="code", id=r))
-                    atom = SkillAtom(
-                        atom_id=item.get("atom_id", f"llm-{len(atoms)}"),
-                        kind=item.get("kind", "concept"),
-                        claim=item.get("claim", ""),
-                        action=item.get("action", ""),
-                        negative_rule=item.get("negative_rule", ""),
-                        source_refs=refs,
-                        checks=item.get("checks", []),
-                        confidence=item.get("confidence", 0.6),
-                        risk=item.get("risk", "medium"),
-                    )
-                    atoms.append(RawAtom(
-                        raw_id=f"llm-code-{len(atoms):04d}",
-                        atom=atom,
-                        extractor_confidence=0.75,
-                        extraction_stage="llm_code",
-                    ))
+                    try:
+                        risk_val = item.get("risk", "medium")
+                        if risk_val not in ("low", "medium", "high", "needs_review"):
+                            risk_val = "medium"
+                        atom = SkillAtom(
+                            atom_id=item.get("atom_id", f"llm-{len(atoms)}"),
+                            kind=item.get("kind", "concept"),
+                            claim=item.get("claim", ""),
+                            action=item.get("action", ""),
+                            negative_rule=item.get("negative_rule", ""),
+                            source_refs=refs,
+                            checks=item.get("checks", []),
+                            confidence=item.get("confidence", 0.6),
+                            risk=risk_val,
+                        )
+                        atoms.append(RawAtom(
+                            raw_id=f"llm-code-{len(atoms):04d}",
+                            atom=atom,
+                            extractor_confidence=0.75,
+                            extraction_stage="llm_code",
+                        ))
+                    except Exception as e:
+                        logger.warning("Failed to create atom from LLM output: %s", e)
         except Exception as e:
             logger.warning("LLM code extraction failed: %s", e)
 
@@ -143,23 +149,29 @@ def extract_from_docs_llm(chunks: list[dict]) -> list[RawAtom]:
                         refs.append(SourceRef(**r))
                     elif isinstance(r, str):
                         refs.append(SourceRef(type="doc", id=r))
-                atom = SkillAtom(
-                    atom_id=item.get("atom_id", f"llm-doc-{len(atoms)}"),
-                    kind=item.get("kind", "concept"),
-                    claim=item.get("claim", ""),
-                    action=item.get("action", ""),
-                    negative_rule=item.get("negative_rule", ""),
-                    source_refs=refs,
-                    checks=item.get("checks", []),
-                    confidence=item.get("confidence", 0.55),
-                    risk=item.get("risk", "medium"),
-                )
-                atoms.append(RawAtom(
-                    raw_id=f"llm-doc-{len(atoms):04d}",
-                    atom=atom,
-                    extractor_confidence=0.7,
-                    extraction_stage="llm_doc",
-                ))
+                try:
+                    risk_val = item.get("risk", "medium")
+                    if risk_val not in ("low", "medium", "high", "needs_review"):
+                        risk_val = "medium"
+                    atom = SkillAtom(
+                        atom_id=item.get("atom_id", f"llm-doc-{len(atoms)}"),
+                        kind=item.get("kind", "concept"),
+                        claim=item.get("claim", ""),
+                        action=item.get("action", ""),
+                        negative_rule=item.get("negative_rule", ""),
+                        source_refs=refs,
+                        checks=item.get("checks", []),
+                        confidence=item.get("confidence", 0.55),
+                        risk=risk_val,
+                    )
+                    atoms.append(RawAtom(
+                        raw_id=f"llm-doc-{len(atoms):04d}",
+                        atom=atom,
+                        extractor_confidence=0.7,
+                        extraction_stage="llm_doc",
+                    ))
+                except Exception as e:
+                    logger.warning("Failed to create doc atom from LLM output: %s", e)
     except Exception as e:
         logger.warning("LLM doc extraction failed: %s", e)
 
