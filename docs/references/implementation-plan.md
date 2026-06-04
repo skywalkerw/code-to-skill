@@ -100,24 +100,24 @@
 
 ### Phase 3：工程完善
 
-| 优先级 | 任务 | 说明 |
+| 优先级 | 任务 | 状态 |
 |--------|------|------|
-| P0 | M6 status/inspect/resume 实现 | 读取 run_state 展示进度 + 断点恢复 |
-| P1 | 多仓库支持 | 当前只处理 `sources.repos[0]`，扩展到全部 |
-| P1 | 真实 LLM rollout（替换规则模拟） | 接入 DeepSeek API 做 M4 rollout |
-| P1 | selection/test split 补充 | 当前仅 train，缺少 held-out gate |
-| P2 | 增量更新 | 检测 commit diff → 仅重新解析变更文件 |
-| P2 | CI 集成 | GitHub Actions 自动化测试 |
+| P0 | M6 status/inspect/resume 实现 | ✅ |
+| P1 | 多仓库支持 | ✅ |
+| P1 | 真实 LLM rollout | ✅ |
+| P1 | selection/test split 补充 | ✅ |
+| P2 | CI 集成 | ✅ |
+| P2 | 增量更新 | ⬜ 待实现 |
 
 ### Phase 4：文档与社区
 
-| 优先级 | 任务 | 
-|--------|------|
-| P0 | 编码规范（`docs/coding-standards.md` ✅ 已完成） |
-| P1 | 端到端演示 |
-| P1 | API 文档 |
-| P1 | 贡献指南 |
-| P2 | 示例项目包 |
+| 优先级 | 任务 | 状态 |
+|--------|------|------|
+| P0 | 编码规范 | ✅ |
+| P1 | API 文档 | ✅ |
+| P1 | 贡献指南 | ✅ |
+| P1 | 准备指南 | ✅ |
+| P2 | 示例项目包 | ⬜ 待实现 |
 
 ---
 
