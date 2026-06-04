@@ -1,0 +1,256 @@
+"""SkillOpt 优化循环（模块 4）。
+
+主训练循环：rollout → reflect → aggregate → select → update → evaluate
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+
+from .types import (
+    BenchmarkItem, RolloutResult, RawPatch, EditOp,
+    MergedPatch, RankedEdit, CandidateSkill,
+    StepRecord, HistoryEntry,
+)
+
+
+# ── Scorer ──────────────────────────────────────────────────
+
+def score_rollout_result(predicted: str, expected_checks: list[str]) -> dict:
+    """确定性 scorer：基于 keyword/regex 检查。"""
+    passed = 0
+    for check in expected_checks:
+        if _check_keyword(predicted, check):
+            passed += 1
+
+    total = len(expected_checks) if expected_checks else 1
+    soft = passed / total
+    hard = 1 if soft == 1.0 else 0
+
+    return {"hard": hard, "soft": round(soft, 3), "passed": passed, "total": total}
+
+
+def _check_keyword(text: str, check: str) -> bool:
+    """检查文本中是否包含预期关键词。"""
+    lower = text.lower()
+    return check.lower() in lower
+
+
+# ── Updater ──────────────────────────────────────────────────
+
+def apply_edits(skill_content: str, edits: list[EditOp]) -> str:
+    """将编辑应用到 Skill 文档。"""
+    lines = skill_content.split("\n")
+
+    for edit in edits:
+        if edit.op == "append":
+            lines.append(edit.content)
+        elif edit.op == "replace":
+            new_lines = []
+            for line in lines:
+                if edit.target in line and edit.target:
+                    new_lines.append(edit.content)
+                else:
+                    new_lines.append(line)
+            lines = new_lines
+        elif edit.op == "delete":
+            lines = [l for l in lines if edit.target not in l or not edit.target]
+        elif edit.op == "insert_after":
+            new_lines = []
+            for line in lines:
+                new_lines.append(line)
+                if edit.target in line and edit.target:
+                    new_lines.append(edit.content)
+            lines = new_lines
+
+    return "\n".join(lines)
+
+
+def compute_semantic_hash(content: str) -> str:
+    """计算语义 hash（空白归一化后 SHA256）。"""
+    normalized = re.sub(r"\s+", " ", content).strip()
+    return hashlib.sha256(normalized.encode()).hexdigest()[:12]
+
+
+# ── State Manager ────────────────────────────────────────────
+
+def save_runtime_state(output_dir: str, step: int, current_score: float,
+                       best_score: float, best_step: int, current_skill: str = ""):
+    """保存断点续训状态。"""
+    state = {
+        "schema_version": "1.0",
+        "last_completed_step": step,
+        "current_score": current_score,
+        "best_score": best_score,
+        "best_step": best_step,
+        "current_skill_path": current_skill,
+        "step_internal": None,
+    }
+    os.makedirs(output_dir, exist_ok=True)
+    with open(os.path.join(output_dir, "runtime_state.json"), "w") as f:
+        json.dump(state, f, indent=2)
+
+
+# ── Training Loop ────────────────────────────────────────────
+
+def run_skillopt_loop(
+    initial_skill: str,
+    benchmark_items: list[dict],
+    output_dir: str,
+    num_epochs: int = 3,
+    batch_size: int = 20,
+    edit_budget: int = 3,
+    selection_split_ratio: float = 0.3,
+) -> dict:
+    """运行 SkillOpt 优化循环（简化版）。
+
+    当前实现：用确定性 scorer 做 rollout/evaluate，
+    用基于规则的 patch 生成替代 LLM reflect。
+    完整版需接入 M5 backend。
+
+    Returns:
+        {"best_skill": str, "history": list, "best_score": float}
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Split: train / selection
+    split_idx = int(len(benchmark_items) * (1 - selection_split_ratio))
+    train_items = benchmark_items[:split_idx]
+    selection_items = benchmark_items[split_idx:]
+
+    current_skill = initial_skill
+    best_skill = initial_skill
+    current_score = 0.0
+    best_score = 0.0
+    best_step = 0
+    history: list[dict] = []
+
+    # Initial evaluation
+    if selection_items:
+        current_score = _evaluate_skill(current_skill, selection_items)
+        best_score = current_score
+
+    step_counter = 0
+
+    for epoch in range(num_epochs):
+        for batch_start in range(0, len(train_items), batch_size):
+            batch = train_items[batch_start:batch_start + batch_size]
+            step_counter += 1
+
+            # 1. Rollout
+            results = _run_rollout(current_skill, batch)
+
+            # 2. Reflect (rule-based)
+            patches = _generate_patches(results, current_skill)
+
+            # 3. Aggregate
+            merged = _merge_patches(patches)
+
+            # 4. Select
+            ranked = _select_edits(merged.edits, edit_budget)
+
+            # 5. Update
+            candidate_content = apply_edits(current_skill, [e.edit for e in ranked])
+            candidate_hash = compute_semantic_hash(candidate_content)
+
+            # 6. Evaluate
+            candidate_score = _evaluate_skill(candidate_content, selection_items)
+
+            # Gate
+            action = "reject"
+            if candidate_score > best_score:
+                action = "accept_new_best"
+                best_score = candidate_score
+                best_skill = candidate_content
+                best_step = step_counter
+            elif candidate_score > current_score:
+                action = "accept"
+
+            current_score = candidate_score if action != "reject" else current_score
+            if action != "reject":
+                current_skill = candidate_content
+
+            record = {
+                "step": step_counter,
+                "epoch": epoch + 1,
+                "rollout_score": round(sum(r["soft"] for r in results) / max(len(results), 1), 3),
+                "selection_score": round(candidate_score, 3),
+                "gate_action": action,
+                "best_score": round(best_score, 3),
+                "edit_count": len(ranked),
+            }
+            history.append(record)
+
+        # Epoch end: save state
+        save_runtime_state(output_dir, step_counter, current_score, best_score, best_step)
+
+    # Final
+    final = {"best_skill": best_skill, "history": history, "best_score": best_score}
+
+    with open(os.path.join(output_dir, "best_skill.md"), "w") as f:
+        f.write(best_skill)
+    with open(os.path.join(output_dir, "history.json"), "w") as f:
+        json.dump(history, f, indent=2)
+
+    print(f"[M4] SkillOpt 完成: {step_counter} steps, best_score={best_score:.3f}")
+    return final
+
+
+# ── 内部函数 ─────────────────────────────────────────────────
+
+def _run_rollout(skill: str, items: list[dict]) -> list[dict]:
+    """确定性 rollout：无需 LLM，直接用规则评分。"""
+    results = []
+    for item in items:
+        # 用 skill + question 生成模拟回答
+        predicted = f"根据 Skill 指导：{skill[:100]}\n\n针对问题：{item.get('question', '')}\n回答略"
+        scores = score_rollout_result(predicted, item.get("expected_checks", []))
+        results.append({
+            "id": item.get("id", ""),
+            "hard": scores["hard"],
+            "soft": scores["soft"],
+            "predicted_answer": predicted,
+            "task_type": item.get("task_type", ""),
+        })
+    return results
+
+
+def _evaluate_skill(skill: str, items: list[dict]) -> float:
+    """在 selection split 上评估 Skill。"""
+    if not items:
+        return 0.0
+    results = _run_rollout(skill, items)
+    return sum(r["soft"] for r in results) / len(results)
+
+
+def _generate_patches(results: list[dict], skill: str) -> list[dict]:
+    """基于规则的 patch 生成（替代 LLM reflect）。"""
+    patches = []
+    failed = [r for r in results if r["hard"] == 0]
+    if failed:
+        patches.append({
+            "source_type": "failure",
+            "batch_size": len(failed),
+            "failure_summary": [{"type": "check_missed", "count": len(failed)}],
+            "edits": [{"op": "append", "content": "# TODO: 改进规则以覆盖失败场景", "target": "", "source_type": "failure"}],
+        })
+    return patches
+
+
+def _merge_patches(patches: list[dict]) -> MergedPatch:
+    """简单合并 patches。"""
+    edits = []
+    for p in patches:
+        for e in p.get("edits", []):
+            edits.append(EditOp(**e) if isinstance(e, dict) else e)
+    return MergedPatch(edits=edits)
+
+
+def _select_edits(edits: list[EditOp], budget: int) -> list[RankedEdit]:
+    """按 budget 截断。"""
+    ranked = []
+    for i, e in enumerate(edits[:budget]):
+        ranked.append(RankedEdit(edit=e, rank=i + 1, support_count=1, score=1.0))
+    return ranked
