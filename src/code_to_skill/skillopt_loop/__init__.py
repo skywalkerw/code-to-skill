@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 
@@ -14,6 +15,8 @@ from .types import (
     MergedPatch, RankedEdit, CandidateSkill,
     StepRecord, HistoryEntry,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ── Scorer ──────────────────────────────────────────────────
@@ -129,38 +132,58 @@ def run_skillopt_loop(
     history: list[dict] = []
 
     # Initial evaluation
+    logger.info("[M4] 开始训练: skill=%d chars, train=%d items, selection=%d items, epochs=%d, batch=%d",
+                len(initial_skill), len(train_items), len(selection_items), num_epochs, batch_size)
     if selection_items:
         current_score = _evaluate_skill(current_skill, selection_items, use_llm=use_llm_rollout)
         best_score = current_score
+        logger.info("[M4] 初始评分: %.3f", current_score)
 
     step_counter = 0
 
     for epoch in range(num_epochs):
+        logger.info("[M4] === Epoch %d/%d ===", epoch + 1, num_epochs)
         for batch_start in range(0, len(train_items), batch_size):
             batch = train_items[batch_start:batch_start + batch_size]
             step_counter += 1
 
             # 1. Rollout
             results = _run_rollout(current_skill, batch, use_llm=use_llm_rollout)
+            rollout_avg = sum(r["soft"] for r in results) / max(len(results), 1)
+            passed = sum(1 for r in results if r["hard"] == 1)
+            failed = sum(1 for r in results if r["hard"] == 0)
+            logger.info("[M4] step=%d batch=%d/%d | rollout: avg=%.2f passed=%d failed=%d",
+                         step_counter, len(batch), len(train_items), rollout_avg, passed, failed)
+            for r in results:
+                if r["hard"] == 0:
+                    logger.info("  ✗ %s: soft=%.2f reason=%s", r["id"], r["soft"], r.get("fail_reason", "")[:60])
 
             # 2. Reflect（优先 LLM，降级规则）
             from .llm_components import reflect_llm
             patches = reflect_llm(results, current_skill)
+            logger.info("[M4] reflect: %d patches", len(patches))
 
             # 3. Aggregate
             merged = _merge_patches(patches)
+            logger.info("[M4] aggregate: %d edits", len(merged.edits))
 
             # 4. Select（优先 LLM，降级规则）
             from .llm_components import select_edits_llm
             ranked_dicts = select_edits_llm(merged.edits, current_skill, edit_budget)
             ranked = [RankedEdit(**r) if isinstance(r, dict) else r for r in ranked_dicts]
+            for i, r in enumerate(ranked):
+                logger.info("[M4] select #%d: [%s] %s", i + 1, r.edit.op, r.edit.content[:60])
 
             # 5. Update
             candidate_content = apply_edits(current_skill, [e.edit for e in ranked])
             candidate_hash = compute_semantic_hash(candidate_content)
+            size_delta = len(candidate_content) - len(current_skill)
+            logger.info("[M4] update: hash=%s delta=%+d chars", candidate_hash[:8], size_delta)
 
             # 6. Evaluate
             candidate_score = _evaluate_skill(candidate_content, selection_items, use_llm=use_llm_rollout)
+            logger.info("[M4] evaluate: selection_score=%.3f (current=%.3f, best=%.3f)",
+                         candidate_score, current_score, best_score)
 
             # Gate
             action = "reject"
@@ -169,8 +192,12 @@ def run_skillopt_loop(
                 best_score = candidate_score
                 best_skill = candidate_content
                 best_step = step_counter
+                logger.info("[M4] gate: ⭐ NEW BEST score=%.3f step=%d", best_score, step_counter)
             elif candidate_score > current_score:
                 action = "accept"
+                logger.info("[M4] gate: ✓ accepted score=%.3f", candidate_score)
+            else:
+                logger.info("[M4] gate: ✗ rejected score=%.3f (≤ current=%.3f)", candidate_score, current_score)
 
             current_score = candidate_score if action != "reject" else current_score
             if action != "reject":
@@ -179,7 +206,7 @@ def run_skillopt_loop(
             record = {
                 "step": step_counter,
                 "epoch": epoch + 1,
-                "rollout_score": round(sum(r["soft"] for r in results) / max(len(results), 1), 3),
+                "rollout_score": round(rollout_avg, 3),
                 "selection_score": round(candidate_score, 3),
                 "gate_action": action,
                 "best_score": round(best_score, 3),
