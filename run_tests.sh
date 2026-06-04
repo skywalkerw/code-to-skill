@@ -37,8 +37,11 @@ elif [ "$1" = "M5" ] || [ "$1" = "M6" ]; then
     python3 -m pytest tests/test_m5_types.py "${@:2}"
 elif [ "$1" = "e2e" ]; then
     echo ">> 端到端全链路 (skill-lab CLI)"
-    CONFIG=".test-data/project.yaml"
-    python3 -m code_to_skill.cli.main run all --config-path "$CONFIG"
+
+    # 确保 CLI 已安装
+    pip install -e . -q 2>/dev/null
+
+    python3 -m code_to_skill.cli.main run all --config-path ".test-data/project.yaml"
     echo "  ✅ 全链路通过"
 else
     echo "用法: $0 [M1|M2|M3|M4|M5|M6|e2e] [-v]"
