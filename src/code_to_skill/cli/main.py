@@ -197,20 +197,26 @@ def run_all(ctx, config_path: str, from_step: str | None, to_step: str | None, d
     output_root = os.path.join(cfg.output_root, run_id)
     os.makedirs(output_root, exist_ok=True)
 
-    # M1: 代码图谱
+    # M1: 代码图谱（支持多仓库）
     click.echo("📊 [1/4] 构建代码图谱...")
+    all_leaf_ctxs = []
+    total_nodes = 0
+    total_edges = 0
     if cfg.repos:
-        repo = cfg.repos[0]
         from code_to_skill.code_graph import run_code_graph_pipeline
-        m1 = run_code_graph_pipeline(
-            repo_root=repo.path,
-            include=repo.include,
-            exclude=repo.exclude,
-            max_leaf_tokens=cfg.code_graph.get("max_leaf_tokens", 8000),
-            max_module_depth=cfg.code_graph.get("max_module_depth", 3),
-            output_root=os.path.join(output_root, "sources", "code", repo.id, repo.ref),
-        )
-        click.echo(f"   图谱节点: {len(m1['graph'].nodes)} | 边: {len(m1['graph'].edges)}")
+        for repo in cfg.repos:
+            m1 = run_code_graph_pipeline(
+                repo_root=repo.path,
+                include=repo.include,
+                exclude=repo.exclude,
+                max_leaf_tokens=cfg.code_graph.get("max_leaf_tokens", 8000),
+                max_module_depth=cfg.code_graph.get("max_module_depth", 3),
+                output_root=os.path.join(output_root, "sources", "code", repo.id, repo.ref),
+            )
+            total_nodes += len(m1['graph'].nodes)
+            total_edges += len(m1['graph'].edges)
+            all_leaf_ctxs.extend([ctx.model_dump() for ctx in m1.get("leaf_contexts", [])])
+        click.echo(f"   图谱: {total_nodes} nodes, {total_edges} edges ({len(cfg.repos)} repos)")
 
     # M2: 文档规范化
     click.echo("📄 [2/4] 规范化文档...")
@@ -229,9 +235,8 @@ def run_all(ctx, config_path: str, from_step: str | None, to_step: str | None, d
     # M3: Atom 抽取
     click.echo("🧩 [3/4] 抽取 SkillAtom...")
     from code_to_skill.atom_extractor import run_atom_extraction
-    leaf_ctxs = [ctx.model_dump() for ctx in m1.get("leaf_contexts", [])] if cfg.repos else []
     m3 = run_atom_extraction(
-        leaf_contexts=leaf_ctxs,
+        leaf_contexts=all_leaf_ctxs,
         document_chunks=doc_chunks,
         output_root=os.path.join(output_root, "atoms"),
     )
@@ -262,19 +267,21 @@ def run_all(ctx, config_path: str, from_step: str | None, to_step: str | None, d
 def run_code_graph(repo: str | None, config_path: str):
     """运行模块 1：代码图谱与模块树。"""
     cfg = load_project_config(config_path)
-    repo_path = repo or (cfg.repos[0].path if cfg.repos else None)
-    if not repo_path:
+    targets = cfg.repos
+    if repo:
+        targets = [r for r in cfg.repos if r.id == repo or r.path == repo] or cfg.repos
+    if not targets:
         click.echo("❌ 未指定仓库")
         return
     from code_to_skill.code_graph import run_code_graph_pipeline
-    r = cfg.repos[0] if cfg.repos else None
-    m1 = run_code_graph_pipeline(
-        repo_root=repo_path,
-        include=r.include if r else None,
-        exclude=r.exclude if r else None,
-        output_root=os.path.join(cfg.output_root, "sources", "code", r.id if r else "repo", "latest"),
-    )
-    click.echo(f"✅ 图谱: {len(m1['graph'].nodes)} nodes, {len(m1['graph'].edges)} edges")
+    for r in targets:
+        m1 = run_code_graph_pipeline(
+            repo_root=r.path,
+            include=r.include if r.include else None,
+            exclude=r.exclude if r.exclude else None,
+            output_root=os.path.join(cfg.output_root, "sources", "code", r.id, r.ref),
+        )
+        click.echo(f"✅ {r.id}: {len(m1['graph'].nodes)} nodes, {len(m1['graph'].edges)} edges")
 
 
 @run.command(name="normalize-docs")
