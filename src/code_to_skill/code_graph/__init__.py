@@ -13,7 +13,7 @@ from .scanner import scan_repo
 from .parser import parse_files
 from .resolver import resolve_references
 from .entrypoints import find_entrypoints
-from .cluster import build_module_tree
+from .cluster import build_module_tree, refine_leaf_contexts
 from .leaf_context import generate_leaf_contexts
 from .types import FileInventory, CodeGraph, ModuleTree, LeafContext, Entrypoint, ParseError, UnresolvedEdge
 
@@ -73,6 +73,8 @@ def run_code_graph_pipeline(
 
     # Step 6: 叶子上下文
     leaf_contexts = generate_leaf_contexts(graph, module_tree, repo_root, max_leaf_tokens=max_leaf_tokens)
+    # 细化：大上下文按文件拆分
+    leaf_contexts = refine_leaf_contexts(leaf_contexts, graph, repo_root, max_leaf_tokens)
     results["leaf_contexts"] = leaf_contexts
 
     # 写文件
