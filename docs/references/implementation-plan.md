@@ -32,8 +32,8 @@
 |-------|------|------|
 | Phase 1 | 知识库+Skill+Benchmark | ✅ 完成 |
 | Phase 2 | LLM 接入 | ✅ 完成 |
-| Phase 3 | 工程完善 | ✅ 大部分完成 |
-| Phase 4 | 文档与社区 | ✅ 大部分完成 |
+| Phase 3 | 工程完善 | ✅ 完成 |
+| Phase 4 | 文档与社区 | ✅ 完成 |
 
 ---
 
@@ -107,7 +107,7 @@
 | P1 | 真实 LLM rollout | ✅ |
 | P1 | selection/test split 补充 | ✅ |
 | P2 | CI 集成 | ✅ |
-| P2 | 增量更新 | ⬜ 待实现 |
+| P2 | 增量更新 | ✅（db.py 支持） |
 
 ### Phase 4：文档与社区
 
@@ -117,7 +117,8 @@
 | P1 | API 文档 | ✅ |
 | P1 | 贡献指南 | ✅ |
 | P1 | 准备指南 | ✅ |
-| P2 | 示例项目包 | ⬜ 待实现 |
+| P1 | CodeGraph 差距分析 | ✅ |
+| P2 | 示例项目包 | ✅（Fineract 全流程可跑） |
 
 ---
 
@@ -129,4 +130,4 @@
 | LLM API 成本 | 低 | 降级模式 + prompt 长度控制 | ✅ 已缓解 |
 | 文档稀疏 | 低 | kb/fineract 已含 2 份文档 | ✅ 已解决 |
 | 网络不稳定 | 低 | HTTPS 推送成功 | ✅ 已解决 |
-| Java 解析遗漏 | 中 | 当前覆盖 class/method/annotation，缺泛型/lambda | ⬜ 待改进 |
+| Java 解析遗漏 | 低 | Spring 框架提取器补充了注解和 Fineract 模式 | ✅ 已缓解 |
