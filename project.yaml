@@ -1,0 +1,74 @@
+# Fineract 金融核心系统 Skill 优化项目
+# 使用方法: skill-lab run all --config project.yaml
+
+project:
+  name: fineract-finance-skill
+  domain: fintech
+  description: "Apache Fineract 金融核心系统 Agent Skill——贷款/储蓄/会计/费用/互操作"
+
+sources:
+  repos:
+    - id: fineract
+      path: external/fineract-develop
+      ref: develop
+      include:
+        - "fineract-provider/src/main/java/org/apache/fineract/accounting/**"
+        - "fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/**"
+        - "fineract-provider/src/main/java/org/apache/fineract/portfolio/savings/**"
+        - "fineract-provider/src/main/java/org/apache/fineract/portfolio/paymenttype/**"
+        - "fineract-provider/src/main/java/org/apache/fineract/portfolio/charge/**"
+        - "fineract-provider/src/main/java/org/apache/fineract/interoperation/**"
+      exclude:
+        - "**/test/**"
+        - "**/integration-tests/**"
+        - "**/target/**"
+
+  docs:
+    - id: fineract-readme
+      path: external/fineract-develop/README.md
+      provider: local_file
+      type: markdown
+      version: develop
+      authority: official_doc
+      domain_tags: [fineract, architecture, setup]
+
+code_graph:
+  max_leaf_tokens: 8000
+  max_module_depth: 3
+  tokenizer: cl100k_base
+  split_strategy: file_then_function
+  max_components_per_group: 200
+  max_components_per_llm_call: 50
+  llm_clustering_enabled: false
+
+document_normalizer:
+  ocr_engine: tesseract
+  ocr_languages: chi_sim+eng
+  ocr_confidence_threshold: 0.6
+  chunk_max_tokens: 2000
+
+atom_extractor:
+  atom_policy: atom_policy.yaml
+  confidence_tier_1_max: 0.95
+  llm_adjustment: 0.05
+
+skillopt:
+  num_epochs: 3
+  batch_size: 20
+  edit_budget: 3
+  gate_metric: soft
+  use_slow_update: false
+  use_meta_skill: false
+
+model_layer:
+  interaction_config: interaction_config.yaml
+
+output:
+  root: runs/
+  publish_target: ~/.codex/skills/fineract-agent
+
+approvals:
+  require_for:
+    - invoke_agent_cli_with_workspace_write
+    - publish_skill
+  auto_approve_in_batch: false
