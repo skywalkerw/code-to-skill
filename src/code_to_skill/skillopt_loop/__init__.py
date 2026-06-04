@@ -12,8 +12,8 @@ import re
 
 from .types import (
     BenchmarkItem, RolloutResult, RawPatch, EditOp,
-    MergedPatch, RankedEdit, CandidateSkill,
-    StepRecord, HistoryEntry,
+    MergedPatch, RankedEdit, CandidateSkill, FailureSummaryEntry,
+    StepRecord, HistoryEntry, StepBuffer,
 )
 
 logger = logging.getLogger(__name__)
@@ -22,7 +22,14 @@ logger = logging.getLogger(__name__)
 # ── Scorer ──────────────────────────────────────────────────
 
 def score_rollout_result(predicted: str, expected_checks: list[str]) -> dict:
-    """确定性 scorer：基于 keyword/regex 检查。"""
+    """确定性 scorer：keyword/regex 检查 + accuracy/precision/F1。
+
+    对齐 external/SkillOpt 的评分机制：
+    - hard: 所有 checks 通过 → 1, 否则 → 0
+    - soft: 通过的 checks / 总数
+    - accuracy: hard pass rate
+    - F1: 2 * precision * recall / (precision + recall)
+    """
     passed = 0
     for check in expected_checks:
         if _check_keyword(predicted, check):
@@ -32,7 +39,21 @@ def score_rollout_result(predicted: str, expected_checks: list[str]) -> dict:
     soft = passed / total
     hard = 1 if soft == 1.0 else 0
 
-    return {"hard": hard, "soft": round(soft, 3), "passed": passed, "total": total}
+    # Precision/Recall/F1（简单版本：expected checks 作为 ground truth）
+    precision = passed / max(len(predicted.split()), 1)
+    recall = soft  # simplified: pass rate = recall
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+
+    return {
+        "hard": hard,
+        "soft": round(soft, 3),
+        "passed": passed,
+        "total": total,
+        "accuracy": float(hard),
+        "precision": round(precision, 3),
+        "recall": round(recall, 3),
+        "f1": round(f1, 3),
+    }
 
 
 def _check_keyword(text: str, check: str) -> bool:
@@ -135,9 +156,11 @@ def run_skillopt_loop(
     logger.info("[M4] 开始训练: skill=%d chars, train=%d items, selection=%d items, epochs=%d, batch=%d",
                 len(initial_skill), len(train_items), len(selection_items), num_epochs, batch_size)
     if selection_items:
-        current_score = _evaluate_skill(current_skill, selection_items, use_llm=use_llm_rollout)
+        eval_result = _evaluate_skill(current_skill, selection_items, use_llm=use_llm_rollout)
+        current_score = eval_result["soft"]
         best_score = current_score
-        logger.info("[M4] 初始评分: %.3f", current_score)
+        logger.info("[M4] 初始评分: soft=%.3f acc=%.3f f1=%.3f",
+                     eval_result["soft"], eval_result["accuracy"], eval_result["f1"])
 
     step_counter = 0
 
@@ -181,9 +204,11 @@ def run_skillopt_loop(
             logger.info("[M4] update: hash=%s delta=%+d chars", candidate_hash[:8], size_delta)
 
             # 6. Evaluate
-            candidate_score = _evaluate_skill(candidate_content, selection_items, use_llm=use_llm_rollout)
-            logger.info("[M4] evaluate: selection_score=%.3f (current=%.3f, best=%.3f)",
-                         candidate_score, current_score, best_score)
+            eval_result = _evaluate_skill(candidate_content, selection_items, use_llm=use_llm_rollout)
+            candidate_score = eval_result["soft"]
+            logger.info("[M4] evaluate: soft=%.3f acc=%.3f f1=%.3f (current=%.3f, best=%.3f)",
+                         eval_result["soft"], eval_result["accuracy"], eval_result["f1"],
+                         current_score, best_score)
 
             # Gate
             action = "reject"
@@ -301,12 +326,17 @@ def _run_rollout(skill: str, items: list[dict], use_llm: bool = False) -> list[d
     return results
 
 
-def _evaluate_skill(skill: str, items: list[dict], use_llm: bool = False) -> float:
-    """在 selection split 上评估 Skill。"""
+def _evaluate_skill(skill: str, items: list[dict], use_llm: bool = False) -> dict:
+    """在 selection split 上评估 Skill，返回完整指标。"""
     if not items:
-        return 0.0
+        return {"soft": 0.0, "accuracy": 0.0, "f1": 0.0}
     results = _run_rollout(skill, items, use_llm=use_llm)
-    return sum(r["soft"] for r in results) / len(results)
+    n = max(len(results), 1)
+    return {
+        "soft": round(sum(r["soft"] for r in results) / n, 3),
+        "accuracy": round(sum(r["accuracy"] for r in results) / n, 3),
+        "f1": round(sum(r["f1"] for r in results) / n, 3),
+    }
 
 
 def _generate_patches(results: list[dict], skill: str) -> list[dict]:
