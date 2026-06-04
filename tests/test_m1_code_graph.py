@@ -12,7 +12,7 @@ from code_to_skill.code_graph.resolver import resolve_references, _extract_impor
 from code_to_skill.code_graph import run_code_graph_pipeline
 
 
-FINERACT_ROOT = "external/fineract-develop"
+FINERACT_ROOT = ".test-data/fineract-develop"
 HAS_FINERACT = Path(FINERACT_ROOT).exists()
 
 _ACCTG_INCLUDE = ["fineract-provider/src/main/java/org/apache/fineract/accounting/**"]

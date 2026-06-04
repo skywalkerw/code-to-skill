@@ -49,7 +49,7 @@ os.makedirs(SKILL_DIR, exist_ok=True)
 
 print('[1/4] M1 代码图谱...')
 m1 = run_code_graph_pipeline(
-    repo_root='external/fineract-develop',
+    repo_root='.test-data/fineract-develop',
     include=['fineract-provider/src/main/java/org/apache/fineract/accounting/**'],
     exclude=['**/test/**','**/target/**'],
     output_root=f'{SKILL_DIR}/sources', use_cache=False, max_leaf_tokens=8000,
