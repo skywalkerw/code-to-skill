@@ -106,9 +106,9 @@ runs/<run_id>/model_interactions/
 {
   "schema_version": "1.0",
   "request_id": "req-20260603-0001",
-  "backend_id": "deepseek-v4-pro",
+  "backend_id": "deepseek",
   "backend_type": "llm_api",
-  "model": "deepseek-v4-pro",
+  "model": "deepseek",
   "role": "optimizer",
   "stage": "reflect_failure_minibatch",
   "content": "{\"patch\": {\"edits\": []}}",
@@ -179,8 +179,8 @@ runs/<run_id>/model_interactions/
   "request": {},
   "resolved_route": {
     "role": "optimizer",
-    "backend_id": "deepseek-v4-pro",
-    "fallback_chain": ["deepseek-v4-pro", "azure-gpt-4o"]
+    "backend_id": "deepseek",
+    "fallback_chain": ["deepseek", "azure-gpt-4o"]
   },
   "response": {},
   "retries": [],
@@ -267,12 +267,12 @@ class InteractionBackend:
 
 ```yaml
 backends:
-  deepseek-v4-pro:
+  deepseek:
     type: llm_api
     provider: openai_compatible
     base_url: ${DASHSCOPE_BASE_URL}
     api_key_env: DASHSCOPE_API_KEY
-    model: deepseek-v4-pro
+    model: deepseek
     context_window: 1000000
     timeout_seconds: 180
 
@@ -295,11 +295,11 @@ backends:
 
 routes:
   extractor:
-    primary: deepseek-v4-pro
+    primary: deepseek
     fallback: [qwen-local-target]
 
   optimizer:
-    primary: deepseek-v4-pro
+    primary: deepseek
     fallback: [azure-gpt-4o]
 
   target:
@@ -308,7 +308,7 @@ routes:
 
   judge:
     primary: azure-gpt-4o
-    fallback: [deepseek-v4-pro]
+    fallback: [deepseek]
 
 policies:
   default_retries: 3
@@ -526,7 +526,7 @@ Judge 或高风险抽取可配置多模型：
 routes:
   judge:
     strategy: quorum
-    backends: [azure-gpt-4o, deepseek-v4-pro, claude-sonnet]
+    backends: [azure-gpt-4o, deepseek, claude-sonnet]
     quorum: 2
 ```
 

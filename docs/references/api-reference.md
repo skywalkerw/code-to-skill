@@ -12,10 +12,10 @@
 from code_to_skill.model_gateway.llm_backend import create_llm_backend, is_llm_available
 
 # 检查 LLM 是否可用（DEEPSEEK_API_KEY 已设置）
-is_llm_available(backend_id="deepseek-v4-pro") -> bool
+is_llm_available(backend_id="deepseek") -> bool
 
 # 创建 backend 实例（有 API key → OpenAI 兼容，无 → MockBackend）
-create_llm_backend(backend_id="deepseek-v4-pro") -> InteractionBackend
+create_llm_backend(backend_id="deepseek") -> InteractionBackend
 ```
 
 ### 类型

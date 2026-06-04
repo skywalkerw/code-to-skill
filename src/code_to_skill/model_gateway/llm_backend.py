@@ -15,14 +15,7 @@ logger = logging.getLogger(__name__)
 
 # 环境变量映射
 _ENV_MAP = {
-    "deepseek-api": {
-        "base_url_env": "DEEPSEEK_BASE_URL",
-        "api_key_env": "DEEPSEEK_API_KEY",
-        "model_env": "DEEPSEEK_MODEL",
-        "default_model": "deepseek-chat",
-        "default_base_url": "https://api.deepseek.com",
-    },
-    "deepseek-v4-pro": {
+    "deepseek": {
         "base_url_env": "DEEPSEEK_BASE_URL",
         "api_key_env": "DEEPSEEK_API_KEY",
         "model_env": "DEEPSEEK_MODEL",
@@ -44,13 +37,13 @@ def create_llm_backend(backend_id: str | None = None) -> InteractionBackend:
 
     Args:
         backend_id: 预配置的 backend ID。为 None 时从 SKILL_LAB_LLM_BACKEND 环境变量读取，
-                   未设置则默认 "deepseek-api"
+                   未设置则默认 "deepseek"
 
     Returns:
         InteractionBackend 实例（真实 LLM 或 Mock）
     """
     if backend_id is None:
-        backend_id = os.environ.get("SKILL_LAB_LLM_BACKEND", "deepseek-api")
+        backend_id = os.environ.get("SKILL_LAB_LLM_BACKEND", "deepseek")
     cfg = _ENV_MAP.get(backend_id)
     if cfg is None:
         logger.warning("Unknown backend_id '%s', falling back to mock", backend_id)
@@ -85,7 +78,7 @@ def _create_mock(backend_id: str) -> MockReplayBackend:
 def is_llm_available(backend_id: str | None = None) -> bool:
     """检查 LLM backend 是否可用（API key 已设置）。"""
     if backend_id is None:
-        backend_id = os.environ.get("SKILL_LAB_LLM_BACKEND", "deepseek-api")
+        backend_id = os.environ.get("SKILL_LAB_LLM_BACKEND", "deepseek")
     cfg = _ENV_MAP.get(backend_id)
     if cfg is None:
         return False

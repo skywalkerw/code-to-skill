@@ -63,7 +63,7 @@
 ### LLM Backend（`model_gateway/llm_backend.py`）
 - `is_llm_available()` — 检测 `DEEPSEEK_API_KEY` 环境变量
 - `create_llm_backend()` — 自动创建 DeepSeek API 或降级 MockBackend
-- 配置：`deepseek-api` / `deepseek-v4-pro`（base_url=https://api.deepseek.com）
+- 配置：`deepseek`（base_url=https://api.deepseek.com）
 
 ### M3 LLM 抽取（`atom_extractor/extractor/llm_extractor.py`）
 - `extract_from_code_llm()` — 调用 L1 structured_output

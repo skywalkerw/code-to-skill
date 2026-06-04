@@ -562,7 +562,7 @@ CLI 必须保证：
     Only normalize documents
     Only optimize existing skill
 
-? This run will call external model route `optimizer.deepseek-v4-pro`.
+? This run will call external model route `optimizer.deepseek`.
   Estimated max cost: $3.20.
   Approve? [y/N]
 
