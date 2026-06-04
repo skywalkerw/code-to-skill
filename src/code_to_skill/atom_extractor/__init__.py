@@ -12,6 +12,7 @@ from .types import SkillAtom, RawAtom, SourceRef
 from .extractor import extract_from_code, extract_from_docs
 from .scorer import score_atoms
 from .merger import merge_atoms, cluster_by_domain, generate_benchmark_seeds
+from .aligner import align_atoms
 
 
 def run_atom_extraction(
@@ -47,6 +48,9 @@ def run_atom_extraction(
 
     # Step 3: 合并
     merged = merge_atoms(scored)
+
+    # Step 3.5: 证据对齐（跨来源匹配 + 置信度提升）
+    merged = align_atoms(merged)
 
     # Step 4: 聚类
     clusters = cluster_by_domain(merged)
