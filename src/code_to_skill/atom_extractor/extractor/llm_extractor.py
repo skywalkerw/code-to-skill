@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import logging
 
-from code_to_skill.llm_backend import create_llm_backend, is_llm_available
+from code_to_skill.model_gateway.llm_backend import create_llm_backend, is_llm_available
 from code_to_skill.model_gateway.types import InteractionRequest
 from code_to_skill.model_gateway.structured_output import invoke_with_structured_output
 
