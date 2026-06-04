@@ -38,10 +38,17 @@ def run_atom_extraction(
     leaf_contexts = leaf_contexts or []
     document_chunks = document_chunks or []
 
-    # Step 1: 抽取
+    # Step 1: 抽取（规则模式 + LLM 模式并行，自动降级）
+    from .extractor.llm_extractor import extract_from_code_llm, extract_from_docs_llm
+
     code_atoms = extract_from_code(leaf_contexts)
     doc_atoms = extract_from_docs(document_chunks)
-    raw_atoms = code_atoms + doc_atoms
+
+    # LLM 增强：当 API key 可用时，与规则模式合并
+    code_llm_atoms = extract_from_code_llm(leaf_contexts)
+    doc_llm_atoms = extract_from_docs_llm(document_chunks)
+
+    raw_atoms = code_atoms + doc_atoms + code_llm_atoms + doc_llm_atoms
 
     # Step 2: 评分
     scored = score_atoms(raw_atoms)

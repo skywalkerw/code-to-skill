@@ -142,14 +142,17 @@ def run_skillopt_loop(
             # 1. Rollout
             results = _run_rollout(current_skill, batch)
 
-            # 2. Reflect (rule-based)
-            patches = _generate_patches(results, current_skill)
+            # 2. Reflect（优先 LLM，降级规则）
+            from .llm_components import reflect_llm
+            patches = reflect_llm(results, current_skill)
 
             # 3. Aggregate
             merged = _merge_patches(patches)
 
-            # 4. Select
-            ranked = _select_edits(merged.edits, edit_budget)
+            # 4. Select（优先 LLM，降级规则）
+            from .llm_components import select_edits_llm
+            ranked_dicts = select_edits_llm(merged.edits, current_skill, edit_budget)
+            ranked = [RankedEdit(**r) if isinstance(r, dict) else r for r in ranked_dicts]
 
             # 5. Update
             candidate_content = apply_edits(current_skill, [e.edit for e in ranked])
