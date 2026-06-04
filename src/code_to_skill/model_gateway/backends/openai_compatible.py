@@ -52,7 +52,7 @@ class OpenAICompatibleBackend(InteractionBackend):
         }
 
     def invoke(self, request: InteractionRequest) -> InteractionResponse:
-        log_llm_input("openai", request.role, request.stage,
+        log_llm_input("openai", request.role, request.stage, self.model,
                       request.messages, request.max_output_tokens)
         start = time.monotonic()
         try:
@@ -97,11 +97,11 @@ class OpenAICompatibleBackend(InteractionBackend):
                     "total_tokens": completion.usage.total_tokens if completion.usage else 0,
                 },
             )
-            log_llm_output("openai", content, response.usage, latency_ms)
+            log_llm_output("openai", self.model, content, response.usage, latency_ms)
             return response
         except Exception as exc:
             latency_ms = int((time.monotonic() - start) * 1000)
-            log_llm_output("openai", f"[ERROR] {exc}", {"prompt_tokens": 0, "completion_tokens": 0}, latency_ms, "error")
+            log_llm_output("openai", self.model, f"[ERROR] {exc}", {"prompt_tokens": 0, "completion_tokens": 0}, latency_ms, "error")
             return ModelResponse(
                 request_id=request.request_id,
                 backend_id=self.backend_id,
