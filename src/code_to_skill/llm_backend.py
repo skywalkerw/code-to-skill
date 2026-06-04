@@ -15,6 +15,12 @@ logger = logging.getLogger(__name__)
 
 # 环境变量映射
 _ENV_MAP = {
+    "deepseek-api": {
+        "base_url_env": "DEEPSEEK_BASE_URL",
+        "api_key_env": "DEEPSEEK_API_KEY",
+        "model": "deepseek-chat",
+        "default_base_url": "https://api.deepseek.com",
+    },
     "dashscope-deepseek-v4-pro": {
         "base_url_env": "DASHSCOPE_BASE_URL",
         "api_key_env": "DASHSCOPE_API_KEY",
@@ -30,7 +36,7 @@ _ENV_MAP = {
 }
 
 
-def create_llm_backend(backend_id: str = "dashscope-deepseek-v4-pro") -> InteractionBackend:
+def create_llm_backend(backend_id: str = "deepseek-api") -> InteractionBackend:
     """从环境变量创建 LLM backend，不可用时降级为 MockBackend。
 
     Args:
@@ -69,7 +75,7 @@ def _create_mock(backend_id: str) -> MockReplayBackend:
     return MockReplayBackend(backend_id=backend_id, fixture_dir=fixture_dir)
 
 
-def is_llm_available(backend_id: str = "dashscope-deepseek-v4-pro") -> bool:
+def is_llm_available(backend_id: str = "deepseek-api") -> bool:
     """检查 LLM backend 是否可用（API key 已设置）。"""
     cfg = _ENV_MAP.get(backend_id)
     if cfg is None:

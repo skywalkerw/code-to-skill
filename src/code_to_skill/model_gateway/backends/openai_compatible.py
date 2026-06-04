@@ -44,7 +44,7 @@ class OpenAICompatibleBackend(InteractionBackend):
             "json_schema": self._supports_native_json_schema(),
             "tool_calling": True,
             "vision": False,
-            "structured_output_level": 3 if self._supports_native_json_schema() else 2,
+            "structured_output_level": 1,  # L1: prompt-based (safer for all backends)
             "context_window": self.context_window,
             "max_output_tokens": 16000,
             "timeout_seconds": self.timeout_seconds,

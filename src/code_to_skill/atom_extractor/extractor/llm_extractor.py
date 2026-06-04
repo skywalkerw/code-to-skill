@@ -76,7 +76,13 @@ def extract_from_code_llm(leaf_contexts: list[dict]) -> list[RawAtom]:
             response = invoke_with_structured_output(backend, request, target_schema=ATOM_SCHEMA)
             if response.parsed:
                 for item in response.parsed if isinstance(response.parsed, list) else []:
-                    refs = [SourceRef(**r) if isinstance(r, dict) else r for r in item.get("source_refs", [])]
+                    raw_refs = item.get("source_refs", [])
+                    refs = []
+                    for r in raw_refs:
+                        if isinstance(r, dict):
+                            refs.append(SourceRef(**r))
+                        elif isinstance(r, str):
+                            refs.append(SourceRef(type="code", id=r))
                     atom = SkillAtom(
                         atom_id=item.get("atom_id", f"llm-{len(atoms)}"),
                         kind=item.get("kind", "concept"),
@@ -130,7 +136,13 @@ def extract_from_docs_llm(chunks: list[dict]) -> list[RawAtom]:
         response = invoke_with_structured_output(backend, request, target_schema=ATOM_SCHEMA)
         if response.parsed:
             for item in (response.parsed if isinstance(response.parsed, list) else []):
-                refs = [SourceRef(**r) if isinstance(r, dict) else r for r in item.get("source_refs", [])]
+                raw_refs = item.get("source_refs", [])
+                refs = []
+                for r in raw_refs:
+                    if isinstance(r, dict):
+                        refs.append(SourceRef(**r))
+                    elif isinstance(r, str):
+                        refs.append(SourceRef(type="doc", id=r))
                 atom = SkillAtom(
                     atom_id=item.get("atom_id", f"llm-doc-{len(atoms)}"),
                     kind=item.get("kind", "concept"),
