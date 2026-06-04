@@ -19,21 +19,21 @@ _ENV_MAP = {
         "base_url_env": "DEEPSEEK_BASE_URL",
         "api_key_env": "DEEPSEEK_API_KEY",
         "model_env": "DEEPSEEK_MODEL",
-        "model": "deepseek-chat",
+        "default_model": "deepseek-chat",
         "default_base_url": "https://api.deepseek.com",
     },
     "deepseek-v4-pro": {
         "base_url_env": "DEEPSEEK_BASE_URL",
         "api_key_env": "DEEPSEEK_API_KEY",
         "model_env": "DEEPSEEK_MODEL",
-        "model": "deepseek-chat",
+        "default_model": "deepseek-chat",
         "default_base_url": "https://api.deepseek.com",
     },
     "openai-gpt-4o": {
         "base_url_env": "OPENAI_BASE_URL",
         "api_key_env": "OPENAI_API_KEY",
         "model_env": "OPENAI_MODEL",
-        "model": "gpt-4o",
+        "default_model": "gpt-4o",
         "default_base_url": "https://api.openai.com/v1",
     },
 }
@@ -60,7 +60,7 @@ def create_llm_backend(backend_id: str = "deepseek-api") -> InteractionBackend:
         return _create_mock(backend_id)
 
     base_url = os.environ.get(cfg["base_url_env"], cfg["default_base_url"])
-    model = os.environ.get(cfg.get("model_env", ""), cfg["model"])
+    model = os.environ.get(cfg.get("model_env", ""), cfg["default_model"])
 
     logger.info("Creating %s backend (base_url=%s, model=%s)", backend_id, base_url, model)
     return OpenAICompatibleBackend(
