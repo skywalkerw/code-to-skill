@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 from datetime import datetime, timezone
@@ -332,11 +333,37 @@ def run_optimize_skill(benchmark: str | None, config_path: str):
 @click.argument("run_id", required=False)
 def status(run_id: str | None):
     """查看运行状态。"""
-    if run_id:
+    if not run_id:
+        # 列出最近的 runs
+        runs_dir = Path("runs")
+        if runs_dir.exists():
+            runs = sorted(runs_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
+            if runs:
+                click.echo("📋 最近运行:")
+                for r in runs[:5]:
+                    state_file = r / "optimization" / "runtime_state.json"
+                    if state_file.exists():
+                        with open(state_file) as f:
+                            state = json.load(f)
+                        click.echo(f"  {r.name}: score={state.get('best_score',0):.3f}, step={state.get('last_completed_step',0)}")
+                    else:
+                        click.echo(f"  {r.name}: (无状态文件)")
+            else:
+                click.echo("📋 暂无运行记录。使用 `skill-lab run all` 开始。")
+        return
+
+    # 具体 run 的状态
+    state_file = Path("runs") / run_id / "optimization" / "runtime_state.json"
+    if state_file.exists():
+        with open(state_file) as f:
+            state = json.load(f)
         click.echo(f"📋 Run: {run_id}")
+        click.echo(f"   状态: 已完成 {state.get('last_completed_step', 0)} 步")
+        click.echo(f"   当前分数: {state.get('current_score', 0):.3f}")
+        click.echo(f"   最优分数: {state.get('best_score', 0):.3f}")
+        click.echo(f"   最优步骤: step_{state.get('best_step', 0)}")
     else:
-        click.echo("📋 最近运行:")
-    click.echo("⚠️  状态读取尚未实现")
+        click.echo(f"❌ 未找到运行: {run_id}")
 
 
 # ── inspect ──────────────────────────────────────────────────
@@ -345,19 +372,73 @@ def status(run_id: str | None):
 @click.argument("artifact")
 def inspect(artifact: str):
     """查看产物摘要。"""
-    click.echo(f"🔍 {artifact}")
-    click.echo("⚠️  inspect 尚未实现")
+    path = Path(artifact)
+    if not path.exists():
+        click.echo(f"❌ 文件不存在: {artifact}")
+        return
+
+    if path.suffix == ".json":
+        with open(path) as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            click.echo(f"🔍 {artifact} ({len(json.dumps(data))} bytes)")
+            for k, v in list(data.items())[:8]:
+                click.echo(f"  {k}: {str(v)[:100]}")
+        elif isinstance(data, list):
+            click.echo(f"🔍 {artifact}: {len(data)} items")
+            for item in data[:3]:
+                click.echo(f"  {json.dumps(item, ensure_ascii=False)[:120]}")
+    elif path.suffix == ".md":
+        with open(path) as f:
+            content = f.read()
+        lines = content.split("\n")
+        click.echo(f"🔍 {artifact}: {len(content)} chars, {len(lines)} lines")
+        for line in lines[:15]:
+            click.echo(f"  {line}")
+    elif path.suffix == ".jsonl":
+        with open(path) as f:
+            lines = f.readlines()
+        click.echo(f"🔍 {artifact}: {len(lines)} records")
+        for line in lines[:3]:
+            try:
+                obj = json.loads(line)
+                click.echo(f"  {json.dumps(obj, ensure_ascii=False)[:120]}")
+            except Exception:
+                click.echo(f"  {line[:100]}")
+    else:
+        click.echo(f"🔍 {artifact}: {path.stat().st_size} bytes")
 
 
 # ── eval ─────────────────────────────────────────────────────
 
 @main.command()
-@click.argument("skill_path")
+@click.argument("run_id")
 @click.option("--split", default="test", help="Benchmark split")
-def eval_skill(skill_path: str, split: str):
-    """对指定 Skill 运行评测。"""
-    click.echo(f"📊 评测: {skill_path} (split={split})")
-    click.echo("⚠️  eval 尚未实现")
+def eval_skill(run_id: str, split: str):
+    """对指定 run 的 best_skill 运行评测。"""
+    best_skill_path = Path("runs") / run_id / "optimization" / "best_skill.md"
+    if not best_skill_path.exists():
+        click.echo(f"❌ 未找到 Skill: {best_skill_path}")
+        return
+
+    with open(best_skill_path) as f:
+        skill = f.read()
+
+    bench_path = Path("benchmarks/fineract") / split / "items.json"
+    items = []
+    if bench_path.exists():
+        with open(bench_path) as f:
+            items = json.load(f).get("items", [])
+
+    from code_to_skill.skillopt_loop import run_skillopt_loop
+    result = run_skillopt_loop(
+        initial_skill=skill,
+        benchmark_items=items,
+        output_dir=str(Path("runs") / run_id / "eval"),
+        num_epochs=1,
+        batch_size=len(items),
+    )
+    click.echo(f"📊 评测完成: score={result['best_score']:.3f} ({len(items)} items)")
 
 
 # ── approve ──────────────────────────────────────────────────
@@ -390,8 +471,30 @@ def publish(run_id: str, target: str | None):
 @click.option("--from-step", "from_step", default=None, help="强制从指定模块重跑")
 def resume(run_id: str, from_step: str | None):
     """从 run_state.json 恢复运行。"""
-    click.echo(f"🔄 恢复运行: {run_id}")
-    click.echo("⚠️  resume 尚未实现")
+    run_dir = Path("runs") / run_id
+    state_file = run_dir / "optimization" / "runtime_state.json"
+
+    if not state_file.exists():
+        click.echo(f"❌ 未找到运行: {run_id}")
+        return
+
+    with open(state_file) as f:
+        state = json.load(f)
+
+    last_step = state.get("last_completed_step", 0)
+    best_score = state.get("best_score", 0)
+    click.echo(f"🔄 恢复运行: {run_id} (已完成 {last_step} 步, best_score={best_score:.3f})")
+
+    # 加载配置并继续
+    config_path = run_dir / ".." / ".." / "project.yaml"
+    if not config_path.exists():
+        config_path = Path("project.yaml")
+
+    if config_path.exists():
+        click.echo(f"   配置: {config_path}")
+        click.echo(f"   运行: skill-lab run all --config-path {config_path} --from-step {from_step or last_step}")
+    else:
+        click.echo("   ⚠️ 未找到 project.yaml，请手动指定")
 
 
 if __name__ == "__main__":
