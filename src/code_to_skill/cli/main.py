@@ -538,5 +538,17 @@ def resume(run_id: str, from_step: str | None):
         click.echo("   ⚠️ 未找到 project.yaml，请手动指定")
 
 
+@main.command()
+def version():
+    """显示版本信息。"""
+    import pkg_resources
+    try:
+        ver = pkg_resources.get_distribution("code-to-skill").version
+    except Exception:
+        ver = "0.1.0 (dev)"
+    click.echo(f"skill-lab v{ver}")
+    click.echo(f"Python {sys.version.split()[0]}")
+
+
 if __name__ == "__main__":
     main()
