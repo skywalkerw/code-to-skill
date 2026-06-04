@@ -103,6 +103,7 @@ def run_skillopt_loop(
     batch_size: int = 20,
     edit_budget: int = 3,
     selection_split_ratio: float = 0.3,
+    use_llm_rollout: bool = False,
 ) -> dict:
     """运行 SkillOpt 优化循环（简化版）。
 
@@ -129,7 +130,7 @@ def run_skillopt_loop(
 
     # Initial evaluation
     if selection_items:
-        current_score = _evaluate_skill(current_skill, selection_items)
+        current_score = _evaluate_skill(current_skill, selection_items, use_llm=use_llm_rollout)
         best_score = current_score
 
     step_counter = 0
@@ -140,7 +141,7 @@ def run_skillopt_loop(
             step_counter += 1
 
             # 1. Rollout
-            results = _run_rollout(current_skill, batch)
+            results = _run_rollout(current_skill, batch, use_llm=use_llm_rollout)
 
             # 2. Reflect（优先 LLM，降级规则）
             from .llm_components import reflect_llm
@@ -159,7 +160,7 @@ def run_skillopt_loop(
             candidate_hash = compute_semantic_hash(candidate_content)
 
             # 6. Evaluate
-            candidate_score = _evaluate_skill(candidate_content, selection_items)
+            candidate_score = _evaluate_skill(candidate_content, selection_items, use_llm=use_llm_rollout)
 
             # Gate
             action = "reject"
@@ -203,27 +204,63 @@ def run_skillopt_loop(
 
 # ── 内部函数 ─────────────────────────────────────────────────
 
-def _run_rollout(skill: str, items: list[dict]) -> list[dict]:
-    """确定性 rollout：无需 LLM，用 skill 内容 + 预期检查生成回答。
+def _run_rollout(skill: str, items: list[dict], use_llm: bool = False) -> list[dict]:
+    """Rollout：用 skill 对 benchmark items 生成回答并评分。
 
-    生成的回答包含 expected_checks 中的关键词，使得确定性 scorer 能打分。
-    完整的 LLM rollout 需接入 M5 backend。
+    Args:
+        skill: 当前 Skill 内容
+        items: benchmark item 列表
+        use_llm: 是否使用 LLM 生成回答（默认 False 用规则模拟）
+
+    当 use_llm=True 且 LLM 可用时，调用 DeepSeek API 实际回答；
+    否则用规则模拟（skill 关键词匹配）。
     """
     results = []
+
+    # 尝试 LLM rollout
+    backend = None
+    if use_llm:
+        try:
+            from code_to_skill.model_gateway.llm_backend import is_llm_available, create_llm_backend
+            if is_llm_available():
+                backend = create_llm_backend()
+        except Exception:
+            pass
+
     for item in items:
         checks = item.get("expected_checks", [])
         question = item.get("task_template", item.get("question", ""))
 
-        # 构建一个包含 skill 关键规则 + checks 相关内容的回答
-        skill_lines = skill.split("\n")
-        relevant_lines = []
-        for line in skill_lines:
-            line_lower = line.lower()
-            if any(c.lower() in line_lower for c in checks):
-                relevant_lines.append(line)
-
-        relevant_text = "\n".join(relevant_lines[:10]) if relevant_lines else skill[:300]
-        predicted = f"基于以下规则分析：\n{relevant_text}\n\n检查项: {', '.join(checks)}"
+        if backend:
+            # 真实 LLM rollout
+            from code_to_skill.model_gateway.types import InteractionRequest
+            try:
+                resp = backend.invoke(InteractionRequest(
+                    role="target",
+                    stage="rollout",
+                    messages=[
+                        {"role": "system", "content": f"You are an expert code reviewer. Use this skill:\n\n{skill[:2000]}"},
+                        {"role": "user", "content": question[:1000]},
+                    ],
+                    max_output_tokens=512,
+                    temperature=0.3,
+                ))
+                predicted = resp.content
+                fail_reason = ""
+            except Exception as e:
+                predicted = f"[LLM error: {e}]"
+                fail_reason = str(e)[:100]
+        else:
+            # 规则模拟（当 LLM 不可用或未启用）
+            skill_lines = skill.split("\n")
+            relevant_lines = []
+            for line in skill_lines:
+                line_lower = line.lower()
+                if any(c.lower() in line_lower for c in checks):
+                    relevant_lines.append(line)
+            relevant_text = "\n".join(relevant_lines[:10]) if relevant_lines else skill[:300]
+            predicted = f"基于以下规则分析：\n{relevant_text}\n\n检查项: {', '.join(checks)}"
+            fail_reason = ""
 
         scores = score_rollout_result(predicted, checks)
         results.append({
@@ -231,16 +268,17 @@ def _run_rollout(skill: str, items: list[dict]) -> list[dict]:
             "hard": scores["hard"],
             "soft": scores["soft"],
             "predicted_answer": predicted,
+            "fail_reason": fail_reason or ("check_missed" if scores["hard"] == 0 else ""),
             "task_type": item.get("task_type", ""),
         })
     return results
 
 
-def _evaluate_skill(skill: str, items: list[dict]) -> float:
+def _evaluate_skill(skill: str, items: list[dict], use_llm: bool = False) -> float:
     """在 selection split 上评估 Skill。"""
     if not items:
         return 0.0
-    results = _run_rollout(skill, items)
+    results = _run_rollout(skill, items, use_llm=use_llm)
     return sum(r["soft"] for r in results) / len(results)
 
 
