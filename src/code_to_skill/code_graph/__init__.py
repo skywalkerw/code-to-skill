@@ -11,11 +11,13 @@ from pathlib import Path
 
 from .scanner import scan_repo
 from .parser import parse_files
+from .framework import extract_spring_metadata
 from .resolver import resolve_references
 from .entrypoints import find_entrypoints
 from .cluster import build_module_tree, refine_leaf_contexts
 from .leaf_context import generate_leaf_contexts
 from .traversal import GraphTraverser
+from .db import GraphDB
 from .types import FileInventory, CodeGraph, ModuleTree, LeafContext, Entrypoint, ParseError, UnresolvedEdge
 
 
@@ -26,6 +28,7 @@ def run_code_graph_pipeline(
     max_leaf_tokens: int = 8000,
     max_module_depth: int = 3,
     output_root: str | None = None,
+    use_cache: bool = False,
 ) -> dict:
     """运行完整的代码图谱构建流水线。
 
@@ -50,6 +53,24 @@ def run_code_graph_pipeline(
     """
     results: dict = {}
 
+    # Step 0: 尝试从缓存加载
+    if use_cache and output_root:
+        db_path = os.path.join(output_root, "graph.db")
+        db = GraphDB(db_path)
+        if db.is_fresh(repo_root):
+            cached_graph = db.load_graph()
+            if cached_graph and len(cached_graph.nodes) > 0:
+                results["graph"] = cached_graph
+                results["inventory"] = scan_repo(repo_root, include=include, exclude=exclude)
+                results["errors"] = []
+                results["unresolved_edges"] = []
+                results["entrypoints"] = find_entrypoints(cached_graph, repo_root)
+                module_tree = build_module_tree(cached_graph, repo_root, max_module_depth=max_module_depth)
+                results["module_tree"] = module_tree
+                results["leaf_contexts"] = generate_leaf_contexts(cached_graph, module_tree, repo_root, max_leaf_tokens)
+                print(f"[M1] 从缓存加载: {len(cached_graph.nodes)} nodes")
+                return results
+
     # Step 1: 扫描
     inventory = scan_repo(repo_root, include=include, exclude=exclude)
     results["inventory"] = inventory
@@ -59,6 +80,13 @@ def run_code_graph_pipeline(
     graph, parse_errors = parse_files(source_files, repo_root)
     results["graph"] = graph
     results["errors"] = parse_errors
+
+    # Step 2.5: 框架提取（Spring/Fineract 注解）
+    java_files = [f for f in source_files if f.endswith(".java")]
+    if java_files:
+        fw_nodes, fw_edges = extract_spring_metadata(java_files, repo_root, graph)
+        graph.nodes.extend(fw_nodes)
+        graph.edges.extend(fw_edges)
 
     # Step 3: 引用解析
     unresolved = resolve_references(graph, repo_root)
@@ -78,9 +106,13 @@ def run_code_graph_pipeline(
     leaf_contexts = refine_leaf_contexts(leaf_contexts, graph, repo_root, max_leaf_tokens)
     results["leaf_contexts"] = leaf_contexts
 
-    # 写文件
+    # 写文件 + 缓存
     if output_root:
         _write_outputs(results, output_root, repo_root)
+        if use_cache:
+            db_path = os.path.join(output_root, "graph.db")
+            GraphDB(db_path).save_graph(results["graph"])
+            print(f"[M1] 缓存已保存: {db_path}")
 
     return results
 

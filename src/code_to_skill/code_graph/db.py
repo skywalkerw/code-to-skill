@@ -169,11 +169,10 @@ class GraphDB:
         conn = self._connect()
         return conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
 
-    def is_fresh(self, repo_root: str) -> bool:
-        """检查数据库是否包含指定仓库的数据。"""
+    def is_fresh(self, repo_root: str = "") -> bool:
+        """检查数据库是否包含数据。"""
         conn = self._connect()
-        # 检查是否有以 repo 路径开头的文件
-        row = conn.execute("SELECT COUNT(*) FROM files WHERE path LIKE ?", (f"{repo_root}%",)).fetchone()
+        row = conn.execute("SELECT COUNT(*) FROM nodes").fetchone()
         return (row[0] if row else 0) > 0
 
     def close(self):
