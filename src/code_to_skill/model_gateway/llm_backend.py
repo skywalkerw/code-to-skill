@@ -1,17 +1,47 @@
 """LLM Backend 工厂。
 
 从环境变量自动创建 OpenAI-compatible backend 或降级到 MockBackend。
+自动加载项目根目录的 .env 文件（系统环境变量优先）。
 """
 from __future__ import annotations
 
 import os
 import logging
+from pathlib import Path
 
 from code_to_skill.model_gateway.backends import InteractionBackend
 from code_to_skill.model_gateway.backends.openai_compatible import OpenAICompatibleBackend
 from code_to_skill.model_gateway.backends.mock import MockReplayBackend
 
 logger = logging.getLogger(__name__)
+
+
+def _load_dotenv():
+    """加载项目根目录 .env 文件。系统环境变量优先。"""
+    # 从当前模块向上查找项目根目录
+    env_path = Path(__file__).resolve().parent.parent.parent.parent / ".env"
+    if not env_path.exists():
+        return
+
+    try:
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = value
+    except Exception:
+        pass
+
+
+# 模块加载时自动读取 .env
+_load_dotenv()
 
 # 环境变量映射
 _ENV_MAP = {
