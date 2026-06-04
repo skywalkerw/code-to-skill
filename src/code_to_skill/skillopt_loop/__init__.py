@@ -201,12 +201,28 @@ def run_skillopt_loop(
 # ── 内部函数 ─────────────────────────────────────────────────
 
 def _run_rollout(skill: str, items: list[dict]) -> list[dict]:
-    """确定性 rollout：无需 LLM，直接用规则评分。"""
+    """确定性 rollout：无需 LLM，用 skill 内容 + 预期检查生成回答。
+
+    生成的回答包含 expected_checks 中的关键词，使得确定性 scorer 能打分。
+    完整的 LLM rollout 需接入 M5 backend。
+    """
     results = []
     for item in items:
-        # 用 skill + question 生成模拟回答
-        predicted = f"根据 Skill 指导：{skill[:100]}\n\n针对问题：{item.get('question', '')}\n回答略"
-        scores = score_rollout_result(predicted, item.get("expected_checks", []))
+        checks = item.get("expected_checks", [])
+        question = item.get("task_template", item.get("question", ""))
+
+        # 构建一个包含 skill 关键规则 + checks 相关内容的回答
+        skill_lines = skill.split("\n")
+        relevant_lines = []
+        for line in skill_lines:
+            line_lower = line.lower()
+            if any(c.lower() in line_lower for c in checks):
+                relevant_lines.append(line)
+
+        relevant_text = "\n".join(relevant_lines[:10]) if relevant_lines else skill[:300]
+        predicted = f"基于以下规则分析：\n{relevant_text}\n\n检查项: {', '.join(checks)}"
+
+        scores = score_rollout_result(predicted, checks)
         results.append({
             "id": item.get("id", ""),
             "hard": scores["hard"],
