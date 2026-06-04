@@ -191,8 +191,68 @@ def run_all(ctx, config_path: str, from_step: str | None, to_step: str | None, d
         ctx.invoke(config_validate, config_path=config_path)
         return
 
-    # TODO: 实际编排 M1 → M2 → M3 → M4
-    click.echo("⚠️  模块尚未实现，仅 skeleton")
+    # 加载配置
+    cfg = load_project_config(config_path)
+    output_root = os.path.join(cfg.output_root, run_id)
+    os.makedirs(output_root, exist_ok=True)
+
+    # M1: 代码图谱
+    click.echo("📊 [1/4] 构建代码图谱...")
+    if cfg.repos:
+        repo = cfg.repos[0]
+        from code_to_skill.code_graph import run_code_graph_pipeline
+        m1 = run_code_graph_pipeline(
+            repo_root=repo.path,
+            include=repo.include,
+            exclude=repo.exclude,
+            max_leaf_tokens=cfg.code_graph.get("max_leaf_tokens", 8000),
+            max_module_depth=cfg.code_graph.get("max_module_depth", 3),
+            output_root=os.path.join(output_root, "sources", "code", repo.id, repo.ref),
+        )
+        click.echo(f"   图谱节点: {len(m1['graph'].nodes)} | 边: {len(m1['graph'].edges)}")
+
+    # M2: 文档规范化
+    click.echo("📄 [2/4] 规范化文档...")
+    doc_chunks = []
+    for doc in cfg.docs:
+        from code_to_skill.document_normalizer import normalize_document
+        result = normalize_document(
+            source_uri=doc.path,
+            source_id=doc.id,
+            source_provider=doc.provider,
+            output_root=os.path.join(output_root, "sources", "docs", doc.id, doc.version),
+        )
+        doc_chunks.extend([c.model_dump() for c in result["chunks"]])
+    click.echo(f"   文档块: {len(doc_chunks)}")
+
+    # M3: Atom 抽取
+    click.echo("🧩 [3/4] 抽取 SkillAtom...")
+    from code_to_skill.atom_extractor import run_atom_extraction
+    leaf_ctxs = [ctx.model_dump() for ctx in m1.get("leaf_contexts", [])] if cfg.repos else []
+    m3 = run_atom_extraction(
+        leaf_contexts=leaf_ctxs,
+        document_chunks=doc_chunks,
+        output_root=os.path.join(output_root, "atoms"),
+    )
+    accepted = sum(1 for a in m3["merged_atoms"] if a.status in ("accepted", "candidate"))
+    click.echo(f"   Atom: {len(m3['raw_atoms'])} raw → {len(m3['merged_atoms'])} merged ({accepted} accepted)")
+
+    # M4: Skill 优化
+    click.echo("🔄 [4/4] 优化 Skill...")
+    from code_to_skill.skillopt_loop import run_skillopt_loop
+    initial_skill = "# Generated Skill\n" + "\n".join(
+        [f"- {a.claim}" for a in m3["merged_atoms"] if a.status in ("accepted", "candidate")]
+    )
+    m4 = run_skillopt_loop(
+        initial_skill=initial_skill,
+        benchmark_items=m3["benchmark_seeds"],
+        output_dir=os.path.join(output_root, "optimization"),
+        num_epochs=cfg.skillopt.get("num_epochs", 3),
+        batch_size=cfg.skillopt.get("batch_size", 20),
+    )
+    click.echo(f"   最优分数: {m4['best_score']:.3f}")
+
+    click.echo(f"\n✅ 流水线完成！产物: {output_root}")
 
 
 @run.command(name="code-graph")
@@ -200,8 +260,20 @@ def run_all(ctx, config_path: str, from_step: str | None, to_step: str | None, d
 @click.option("--config-path", default="project.yaml")
 def run_code_graph(repo: str | None, config_path: str):
     """运行模块 1：代码图谱与模块树。"""
-    click.echo("📊 构建代码图谱...")
-    click.echo("⚠️  模块 1 尚未实现")
+    cfg = load_project_config(config_path)
+    repo_path = repo or (cfg.repos[0].path if cfg.repos else None)
+    if not repo_path:
+        click.echo("❌ 未指定仓库")
+        return
+    from code_to_skill.code_graph import run_code_graph_pipeline
+    r = cfg.repos[0] if cfg.repos else None
+    m1 = run_code_graph_pipeline(
+        repo_root=repo_path,
+        include=r.include if r else None,
+        exclude=r.exclude if r else None,
+        output_root=os.path.join(cfg.output_root, "sources", "code", r.id if r else "repo", "latest"),
+    )
+    click.echo(f"✅ 图谱: {len(m1['graph'].nodes)} nodes, {len(m1['graph'].edges)} edges")
 
 
 @run.command(name="normalize-docs")
@@ -209,8 +281,19 @@ def run_code_graph(repo: str | None, config_path: str):
 @click.option("--config-path", default="project.yaml")
 def run_normalize_docs(docs: str | None, config_path: str):
     """运行模块 2：文档规范化。"""
-    click.echo("📄 规范化文档...")
-    click.echo("⚠️  模块 2 尚未实现")
+    cfg = load_project_config(config_path)
+    from code_to_skill.document_normalizer import normalize_document
+    targets = cfg.docs
+    if docs:
+        targets = [d for d in cfg.docs if d.path == docs] or cfg.docs
+    for doc in targets:
+        result = normalize_document(
+            source_uri=doc.path,
+            source_id=doc.id,
+            source_provider=doc.provider,
+            output_root=os.path.join(cfg.output_root, "sources", "docs", doc.id, "latest"),
+        )
+        click.echo(f"✅ {doc.id}: {len(result['chunks'])} chunks")
 
 
 @run.command(name="extract-atoms")
@@ -218,8 +301,14 @@ def run_normalize_docs(docs: str | None, config_path: str):
 @click.option("--config-path", default="project.yaml")
 def run_extract_atoms(from_dir: str | None, config_path: str):
     """运行模块 3：SkillAtom 抽取。"""
-    click.echo("🧩 抽取 SkillAtom...")
-    click.echo("⚠️  模块 3 尚未实现")
+    from code_to_skill.atom_extractor import run_atom_extraction
+    result = run_atom_extraction(
+        leaf_contexts=[],
+        document_chunks=[],
+        output_root=os.path.join(from_dir or "runs/latest", "atoms"),
+    )
+    accepted = sum(1 for a in result["merged_atoms"] if a.status in ("accepted", "candidate"))
+    click.echo(f"✅ {len(result['raw_atoms'])} raw → {len(result['merged_atoms'])} merged ({accepted} accepted)")
 
 
 @run.command(name="optimize-skill")
@@ -227,8 +316,14 @@ def run_extract_atoms(from_dir: str | None, config_path: str):
 @click.option("--config-path", default="project.yaml")
 def run_optimize_skill(benchmark: str | None, config_path: str):
     """运行模块 4：SkillOpt 优化。"""
-    click.echo("🔄 优化 Skill...")
-    click.echo("⚠️  模块 4 尚未实现")
+    from code_to_skill.skillopt_loop import run_skillopt_loop
+    result = run_skillopt_loop(
+        initial_skill="# Initial Skill\n- Default rule",
+        benchmark_items=[],
+        output_dir=benchmark or "runs/latest/optimization",
+        num_epochs=1,
+    )
+    click.echo(f"✅ best_score={result['best_score']:.3f}")
 
 
 # ── status ───────────────────────────────────────────────────
