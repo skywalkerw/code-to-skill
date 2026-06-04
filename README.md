@@ -109,7 +109,7 @@ skill-lab resume <run_id>       # 恢复运行
 
 ## 配置
 
-`project.yaml` 完整示例见 `.test-data/project.yaml`。核心配置项：
+`project.yaml` 完整示例见 `test-data/project.yaml`。核心配置项：
 
 ```yaml
 project:

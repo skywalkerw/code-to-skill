@@ -7,7 +7,7 @@
 
 ## 一、知识库准备
 
-code-to-skill 从两个来源提取 SkillAtom：**代码仓库**（M1）和 **知识文档**（M2）。代码仓库准备好 `.test-data/fineract-develop` 即可（见 README），下面对知识文档做详细说明。
+code-to-skill 从两个来源提取 SkillAtom：**代码仓库**（M1）和 **知识文档**（M2）。代码仓库准备好 `test-data/fineract-develop` 即可（见 README），下面对知识文档做详细说明。
 
 ### 1.1 文档类型与优先级
 
@@ -30,8 +30,8 @@ mkdir -p kb/fineract
 
 ```bash
 # 从目标仓库直接复制
-cp .test-data/fineract-develop/README.md kb/fineract/
-cp .test-data/fineract-develop/CONTRIBUTING.md kb/fineract/
+cp test-data/fineract-develop/README.md kb/fineract/
+cp test-data/fineract-develop/CONTRIBUTING.md kb/fineract/
 
 # 从官方 Wiki 导出
 # - GitHub Wiki: git clone https://github.com/apache/fineract.wiki.git kb/fineract/wiki
@@ -90,7 +90,7 @@ sources:
 sources:
   docs:
     - id: repo-readme
-      path: .test-data/fineract-develop/README.md
+      path: test-data/fineract-develop/README.md
       provider: local_file
       type: markdown
 ```
