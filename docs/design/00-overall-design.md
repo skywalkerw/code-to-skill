@@ -146,7 +146,7 @@ flowchart LR
   "manifest_id": "skill-src-2026-06-03",
   "repos": [{"path": "repo/payment", "commit": "abc123"}],
   "documents": [{"path": "docs/paybook.md", "sha256": "..."}],
-  "pdfs": [{"path": "docs/CodeWiki_paper.pdf", "sha256": "..."}],
+  "pdfs": [{"path": "docs/references/CodeWiki_paper.pdf", "sha256": "..."}],
   "extractor_versions": {"codegraph": "local", "document_normalizer": "0.1.0"},
   "created_at": "2026-06-03T00:00:00Z"
 }
@@ -340,8 +340,8 @@ code-to-skill/
 | `external/CodeWiki` | 代码依赖图、模块聚类、面向模块的文档生成流程 | 模块 1 的模块树构建与上下文分包 |
 | `external/codegraph` | 符号搜索、调用关系、影响分析、上下文检索接口 | 模块 1 的图谱查询与模块 3 的代码证据对齐 |
 | `external/SkillOpt` | rollout、reflect、aggregate、select、update、evaluate 循环 | 模块 4 的优化主循环和发布门禁 |
-| `docs/skillopt_2605.23904.pdf` | 将 Skill 视为可优化外部状态的训练思路 | 模块 4 的整体算法设计 |
-| `docs/CodeWiki_paper.pdf` | 大仓库分层理解、上下文控制和模块级文档生成 | 模块 1 与模块 3 的大仓库分治策略 |
+| `docs/references/skillopt_2605.23904.pdf` | 将 Skill 视为可优化外部状态的训练思路 | 模块 4 的整体算法设计 |
+| `docs/references/CodeWiki_paper.pdf` | 大仓库分层理解、上下文控制和模块级文档生成 | 模块 1 与模块 3 的大仓库分治策略 |
 
 参考实现只提供结构与算法启发。实际落地时应通过本系统 schema、CLI、模型交互层和质量门禁重新封装，避免把研究代码中的路径假设、模型调用方式或临时评测逻辑直接暴露给生产流程。
 
