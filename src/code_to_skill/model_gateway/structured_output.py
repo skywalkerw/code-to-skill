@@ -14,6 +14,7 @@ from typing import Any
 
 from .types import InteractionRequest, InteractionResponse
 from .backends import InteractionBackend
+from .tracker import log_llm_input, log_llm_output
 
 logger = logging.getLogger(__name__)
 
@@ -43,15 +44,20 @@ def invoke_with_structured_output(
 
     if level >= 3 and target_schema:
         # L3: 原生
+        logger.info("[structured] Using L3 (native JSON schema)")
         request.response_format = {"type": "json_schema", "schema": target_schema}
-        return backend.invoke(request)
+        response = backend.invoke(request)
+        logger.info("[structured] L3 result: %d chars", len(response.content))
+        return response
 
     elif level >= 2:
         # L2: tool calling 模拟
+        logger.info("[structured] Using L2 (tool_calling)")
         return _invoke_via_tool_calling(backend, request, target_schema)
 
     else:
         # L1: prompt 约束
+        logger.info("[structured] Using L1 (prompt+parse)")
         return _invoke_via_prompt(backend, request)
 
 

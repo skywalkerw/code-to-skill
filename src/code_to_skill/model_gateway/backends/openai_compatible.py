@@ -12,6 +12,7 @@ from openai import OpenAI
 
 from . import InteractionBackend
 from ..types import InteractionRequest, InteractionResponse, ModelResponse, HealthStatus
+from ..tracker import log_llm_input, log_llm_output
 
 
 class OpenAICompatibleBackend(InteractionBackend):
@@ -51,6 +52,8 @@ class OpenAICompatibleBackend(InteractionBackend):
         }
 
     def invoke(self, request: InteractionRequest) -> InteractionResponse:
+        log_llm_input("openai", request.role, request.stage,
+                      request.messages, request.max_output_tokens)
         start = time.monotonic()
         try:
             kwargs: dict[str, Any] = {
@@ -80,7 +83,7 @@ class OpenAICompatibleBackend(InteractionBackend):
                 except json.JSONDecodeError:
                     pass
 
-            return ModelResponse(
+            response = ModelResponse(
                 request_id=request.request_id,
                 backend_id=self.backend_id,
                 model=self.model,
@@ -94,8 +97,11 @@ class OpenAICompatibleBackend(InteractionBackend):
                     "total_tokens": completion.usage.total_tokens if completion.usage else 0,
                 },
             )
+            log_llm_output("openai", content, response.usage, latency_ms)
+            return response
         except Exception as exc:
             latency_ms = int((time.monotonic() - start) * 1000)
+            log_llm_output("openai", f"[ERROR] {exc}", {"prompt_tokens": 0, "completion_tokens": 0}, latency_ms, "error")
             return ModelResponse(
                 request_id=request.request_id,
                 backend_id=self.backend_id,
