@@ -1,0 +1,89 @@
+{
+  "schema_version": "1.0",
+  "items": [
+    {
+      "id": "fin_loan_001",
+      "question": "审查以下贷款 disbursement 代码的风险。代码中直接调用了 loanRepo.save() 而没有创建 JournalEntry。\n\n```java\npublic void disburse(Long loanId) {\n    Loan loan = loanRepo.findById(loanId);\n    loan.setStatus(LoanStatus.ACTIVE);\n    loan.setDisbursedAmount(loan.getPrincipal());\n    loanRepo.save(loan);\n}\n```",
+      "task_type": "code_review",
+      "expected_checks": ["JournalEntry", "audit", "GL Account", "disbursement"],
+      "scorer": "deterministic"
+    },
+    {
+      "id": "fin_loan_002",
+      "question": "修改贷款利率从 declining balance 改为 flat 时，需要考虑哪些下游影响？",
+      "task_type": "qa",
+      "expected_checks": ["interest", "schedule", "repayment", "amortization"],
+      "scorer": "deterministic"
+    },
+    {
+      "id": "fin_loan_003",
+      "question": "添加新的费用类型 'early_settlement_fee' 时，正确的步骤是什么？",
+      "task_type": "qa",
+      "expected_checks": ["charge", "GL Account", "mapping", "authorized"],
+      "scorer": "deterministic"
+    },
+    {
+      "id": "fin_journal_001",
+      "question": "以下 JournalEntry 创建代码有哪些问题？\n\n```java\nJournalEntry entry = new JournalEntry();\nentry.addDebit(glAccount, BigDecimal.valueOf(100.50));\nentry.addCredit(glAccount2, BigDecimal.valueOf(100.51));\njournalEntryRepository.save(entry);\n```",
+      "task_type": "code_review",
+      "expected_checks": ["isBalanced", "BigDecimal", "precision", "equal amounts"],
+      "scorer": "deterministic"
+    },
+    {
+      "id": "fin_journal_002",
+      "question": "修复一个 bug：用户还款后利息计算出现负值（-12.50）。可能的原因和修复方向是什么？",
+      "task_type": "qa",
+      "expected_checks": ["prepayment", "recalculation", "interest", "negative"],
+      "scorer": "deterministic"
+    },
+    {
+      "id": "fin_savings_001",
+      "question": "实现储蓄账户利息计提功能时，需要确保哪些约束？",
+      "task_type": "qa",
+      "expected_checks": ["accrual", "JournalEntry", "precision", "savings"],
+      "scorer": "deterministic"
+    },
+    {
+      "id": "fin_interop_001",
+      "question": "互操作支付回调收到重复的 transferCode 时，正确的处理方式是什么？",
+      "task_type": "qa",
+      "expected_checks": ["idempotency", "transferCode", "duplicate", "幂等"],
+      "scorer": "deterministic"
+    },
+    {
+      "id": "fin_constraint_001",
+      "question": "在 Fineract 中，直接修改 loan 的 outstanding balance 而不创建 JournalEntry 会导致什么问题？",
+      "task_type": "qa",
+      "expected_checks": ["JournalEntry", "audit", "balance", "GL Account"],
+      "scorer": "deterministic"
+    },
+    {
+      "id": "fin_constraint_002",
+      "question": "代码审查：发现某处使用了 `double interest = principal * rate` 计算利息。问题是什么？",
+      "task_type": "code_review",
+      "expected_checks": ["BigDecimal", "precision", "double", "金融"],
+      "scorer": "deterministic"
+    },
+    {
+      "id": "fin_charge_001",
+      "question": "修改罚金上限从 5% 提高到 10% 时，需要经过哪些步骤？",
+      "task_type": "qa",
+      "expected_checks": ["penalty", "limit", "approval", "charge"],
+      "scorer": "deterministic"
+    },
+    {
+      "id": "fin_charge_002",
+      "question": "用户投诉费用被重复扣款两次。排查方向是什么？",
+      "task_type": "qa",
+      "expected_checks": ["duplicate", "idempotency", "charge", "transferCode"],
+      "scorer": "deterministic"
+    },
+    {
+      "id": "fin_tx_001",
+      "question": "以下代码中，`@Transactional` 的范围是否合适？\n\n```java\n@Transactional\npublic void processLoanRepayment(LoanRepaymentCommand cmd) {\n    Loan loan = loanRepo.findById(cmd.getLoanId());\n    loan.applyRepayment(cmd.getAmount());\n    loanRepo.save(loan);\n    notifyExternalSystem(cmd); // 外部 HTTP 调用\n}\n```",
+      "task_type": "code_review",
+      "expected_checks": ["transaction", "Transactional", "external", "边界"],
+      "scorer": "deterministic"
+    }
+  ]
+}

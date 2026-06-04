@@ -25,12 +25,19 @@ sources:
 
   docs:
     - id: fineract-readme
-      path: external/fineract-develop/README.md
+      path: kb/fineract/README.md
       provider: local_file
       type: markdown
       version: develop
       authority: official_doc
       domain_tags: [fineract, architecture, setup]
+    - id: fineract-contrib
+      path: kb/fineract/CONTRIBUTING.md
+      provider: local_file
+      type: markdown
+      version: develop
+      authority: official_doc
+      domain_tags: [fineract, guidelines, contribution]
 
 code_graph:
   max_leaf_tokens: 8000
