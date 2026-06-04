@@ -1,0 +1,29 @@
+{
+  "schema_version": "1.0",
+  "items": [
+    {
+      "id": "fin_charge_002",
+      "question": "\u7528\u6237\u6295\u8bc9\u8d39\u7528\u88ab\u91cd\u590d\u6263\u6b3e\u4e24\u6b21\u3002\u6392\u67e5\u65b9\u5411\u662f\u4ec0\u4e48\uff1f",
+      "task_type": "qa",
+      "expected_checks": [
+        "duplicate",
+        "idempotency",
+        "charge",
+        "transferCode"
+      ],
+      "scorer": "deterministic"
+    },
+    {
+      "id": "fin_tx_001",
+      "question": "\u4ee5\u4e0b\u4ee3\u7801\u4e2d\uff0c`@Transactional` \u7684\u8303\u56f4\u662f\u5426\u5408\u9002\uff1f\n\n```java\n@Transactional\npublic void processLoanRepayment(LoanRepaymentCommand cmd) {\n    Loan loan = loanRepo.findById(cmd.getLoanId());\n    loan.applyRepayment(cmd.getAmount());\n    loanRepo.save(loan);\n    notifyExternalSystem(cmd); // \u5916\u90e8 HTTP \u8c03\u7528\n}\n```",
+      "task_type": "code_review",
+      "expected_checks": [
+        "transaction",
+        "Transactional",
+        "external",
+        "\u8fb9\u754c"
+      ],
+      "scorer": "deterministic"
+    }
+  ]
+}

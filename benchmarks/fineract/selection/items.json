@@ -1,0 +1,41 @@
+{
+  "schema_version": "1.0",
+  "items": [
+    {
+      "id": "fin_constraint_001",
+      "question": "\u5728 Fineract \u4e2d\uff0c\u76f4\u63a5\u4fee\u6539 loan \u7684 outstanding balance \u800c\u4e0d\u521b\u5efa JournalEntry \u4f1a\u5bfc\u81f4\u4ec0\u4e48\u95ee\u9898\uff1f",
+      "task_type": "qa",
+      "expected_checks": [
+        "JournalEntry",
+        "audit",
+        "balance",
+        "GL Account"
+      ],
+      "scorer": "deterministic"
+    },
+    {
+      "id": "fin_constraint_002",
+      "question": "\u4ee3\u7801\u5ba1\u67e5\uff1a\u53d1\u73b0\u67d0\u5904\u4f7f\u7528\u4e86 `double interest = principal * rate` \u8ba1\u7b97\u5229\u606f\u3002\u95ee\u9898\u662f\u4ec0\u4e48\uff1f",
+      "task_type": "code_review",
+      "expected_checks": [
+        "BigDecimal",
+        "precision",
+        "double",
+        "\u91d1\u878d"
+      ],
+      "scorer": "deterministic"
+    },
+    {
+      "id": "fin_charge_001",
+      "question": "\u4fee\u6539\u7f5a\u91d1\u4e0a\u9650\u4ece 5% \u63d0\u9ad8\u5230 10% \u65f6\uff0c\u9700\u8981\u7ecf\u8fc7\u54ea\u4e9b\u6b65\u9aa4\uff1f",
+      "task_type": "qa",
+      "expected_checks": [
+        "penalty",
+        "limit",
+        "approval",
+        "charge"
+      ],
+      "scorer": "deterministic"
+    }
+  ]
+}
