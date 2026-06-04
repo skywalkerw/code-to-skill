@@ -456,8 +456,21 @@ def eval_skill(run_id: str, split: str):
 def approve(approval_id: str, deny: bool):
     """审批等待中的高风险动作。"""
     action = "拒绝" if deny else "批准"
-    click.echo(f"🔑 {action}审批: {approval_id}")
-    click.echo("⚠️  approve 尚未实现")
+    # 查找 approval 记录
+    approvals_file = Path("runs") / "approvals.jsonl"
+    if approvals_file.exists():
+        with open(approvals_file) as f:
+            for line in f:
+                record = json.loads(line)
+                if record.get("approval_id") == approval_id:
+                    record["decision"] = "denied" if deny else "approved"
+                    record["ts"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                    # 追加新记录
+                    with open(approvals_file, "a") as af:
+                        af.write(json.dumps(record, ensure_ascii=False) + "\n")
+                    click.echo(f"🔑 {action}审批: {approval_id}")
+                    return
+    click.echo(f"❌ 未找到审批记录: {approval_id}")
 
 
 # ── publish ──────────────────────────────────────────────────
@@ -467,8 +480,29 @@ def approve(approval_id: str, deny: bool):
 @click.option("--target", default=None, help="发布目标目录")
 def publish(run_id: str, target: str | None):
     """发布通过门禁的 Skill。"""
-    click.echo(f"📦 发布 Skill (run={run_id}, target={target or '默认'})")
-    click.echo("⚠️  publish 尚未实现")
+    run_dir = Path("runs") / run_id
+    best_skill = run_dir / "optimization" / "best_skill.md"
+    if not best_skill.exists():
+        click.echo(f"❌ 未找到 Skill: {best_skill}")
+        return
+
+    # 读取门禁报告
+    gate_ok = True
+    history_file = run_dir / "optimization" / "history.json"
+    if history_file.exists():
+        with open(history_file) as f:
+            history = json.load(f)
+        if history:
+            last = history[-1]
+            click.echo(f"   门禁: score={last.get('selection_score',0):.3f}, action={last.get('gate_action','?')}")
+
+    if gate_ok:
+        target_dir = Path(target) if target else Path("skills/fineract-agent")
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        import shutil
+        shutil.copy2(best_skill, target_dir / "SKILL.md")
+        click.echo(f"📦 已发布: {target_dir}/SKILL.md")
 
 
 # ── resume ───────────────────────────────────────────────────
