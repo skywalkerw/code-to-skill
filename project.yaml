@@ -25,14 +25,14 @@ sources:
 
   docs:
     - id: fineract-readme
-      path: kb/fineract/README.md
+      path: .test-data/kb/fineract/README.md
       provider: local_file
       type: markdown
       version: develop
       authority: official_doc
       domain_tags: [fineract, architecture, setup]
     - id: fineract-contrib
-      path: kb/fineract/CONTRIBUTING.md
+      path: .test-data/kb/fineract/CONTRIBUTING.md
       provider: local_file
       type: markdown
       version: develop
