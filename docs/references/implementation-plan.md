@@ -2,106 +2,127 @@
 
 > 更新日期：2026-06-04
 > 设计基准：`docs/design/00-06` 设计文档
+> 代码行数：4137 行（37 文件）| 测试：53 个（全部通过）
 
 ---
 
 ## 一、当前实现状态
 
-| 模块 | 行数 | 测试 | 状态 | 设计覆盖度 | 关键缺失 |
-|------|------|------|------|-----------|----------|
-| **M5** 模型交互 | 653 | 5 | ✅ 完成 | 90% | Agent CLI backend 未实现（预留接口），sandbox 模式未实现 |
-| **M6** CLI | 600 | 9 | ✅ 完成 | 85% | status/inspect/eval/publish/resume 仅 skeleton，交互式审批未实现 |
-| **M1** 代码图谱 | 1160 | 10 | ✅ 完成 | 80% | tree-sitter 语法库未编译安装，LLM 聚类未接入，Java 入口点识别偏弱 |
-| **M2** 文档规范化 | 719 | 14 | ✅ 完成 | 75% | RemoteKnowledgeSource 未实现（接口已预留），OCR 为可选依赖 |
-| **M3** SkillAtom | 522 | 9 | ✅ 完成 | 70% | LLM 抽取未接入（当前规则模式），aligner 未实现，checks 仅基于规则 |
-| **M4** SkillOpt | 372 | 6 | ✅ 完成 | 60% | LLM reflect/aggregate/select 未接入（当前规则 patch），slow_update 未实现，meta_skill 未实现，state_manager 仅有基础保存 |
+| 模块 | 行数 | 测试 | 设计覆盖 | 状态 | 上次更新后新增 |
+|------|------|------|---------|------|---------------|
+| **M5** 模型交互 | 653 | 5 | 90% | ✅ | — |
+| **M6** CLI | 600 | 9 | 85% | ✅ | `run_all` 接入全模块调用 |
+| **M1** 代码图谱 | 1160 | 10 | 85% | ✅ | Java 正则修复 + 入口点增强（942 entrypoints） |
+| **M2** 文档规范化 | 719 | 14 | 75% | ✅ | — |
+| **M3** SkillAtom | 626 | 9 | 80% | ✅ | aligner（19→8 高置信原子，conf=0.90） |
+| **M4** SkillOpt | 372 | 6 | 65% | ✅ | 确定性 scorer 评分修复 + keyword seeds |
 
-### 端到端验证（Apache Fineract）
+### 关键指标
 
-| 步骤 | 输入 | 输出 | 状态 |
-|------|------|------|------|
-| scan → parse → resolve | Fineract accounting+portfolio (1063 files) | 853 nodes (380 methods + 86 classes) | ✅ |
-| cluster → leaf_context | 853 nodes | 111 leaf contexts | ✅ |
-| normalize | README.md | 7 chunks | ✅ |
-| extract → score → merge | 111 leaves + 7 chunks | 295 raw → 10 merged (8 accepted) | ✅ |
-| rollout → evaluate | 8 benchmark seeds | best_score=1.0, 4 training steps | ✅ |
+| 指标 | 数值 |
+|------|------|
+| 总代码行 | 4,137 |
+| Python 文件 | 37 |
+| 测试 | 53（全部通过） |
+| 核心依赖 | 13 个 pip 包 + 可选 lxml/ocr |
+| 离线部署 | vendor/ + `pip install --no-index` |
+
+### 端到端验证（Apache Fineract develop，416 文件）
+
+| 步骤 | 输入 | 输出 |
+|------|------|------|
+| M1 scan → parse | 416 Java files | 2,197 nodes（1,566 methods + 604 classes + 26 config） |
+| M1 resolve | 2,197 nodes | 54,487 edges |
+| M1 entrypoints | 2,197 nodes | 942 entrypoints（473 config + 422 service + 47 REST） |
+| M1 leaf_context | 2,197 nodes | 315 leaf contexts |
+| M2 normalize | README.md | 7 chunks |
+| M3 extract | 315 leaves + 7 chunks | 1,009 raw atoms |
+| M3 score → align → merge | 1,009 raw | **6 accepted atoms**（201~298 source files each） |
+| M3 seeds | 6 atoms | 6 benchmark seeds |
+| M4 optimize | 6 seeds, 3 epochs | best_score=1.000 |
+| **SKILL.md** | 终产物 | 8340 chars / ~1464 tokens |
 
 ---
 
-## 二、设计文档对照检查
+## 二、已完成 vs 未完成
 
-### 2.1 已实现且匹配设计的
+### 2.1 本轮新增完成项
 
-- M5: `InteractionRequest/Response` schema，`InteractionBackend` 接口，`OpenAICompatibleBackend`，`Router`（role/stage + fallback），`Tracer`，`structured_output` 三级降级
-- M6: `RunManifest/RunState/Event` schema，`ProjectConfig`（完整 project.yaml schema），11 个 click 命令骨架，`init` + `config validate` 完整实现
-- M1: `CodeGraph/GraphNode/GraphEdge` schema，`FileInventory`，多语言扫描+glob 过滤，6 语言正则解析器，import 引用解析，目录级模块树聚类，叶子上下文+token 控制
-- M2: `DocumentManifest/Chunk/Table` schema，`KnowledgeSource` 接口+`LocalFileKnowledgeSource`，Markdown/HTML/PDF/DOCX 解析器，清洗脱敏，chunk 切分
-- M3: `SkillAtom/RawAtom/SourceRef` schema，代码/文档规则抽取，三层分层制 scoring，合并去重，benchmark 种子生成
-- M4: `BenchmarkItem/RolloutResult/EditOp` schema，确定性 scorer，edit apply（append/replace/delete），6 阶段训练循环，语义 hash，断点状态保存
+| 日期 | 改进 | 影响 |
+|------|------|------|
+| 06-04 | Java 正则修复（方法/类名正确提取） | 节点数 ↑，名称从 `public` → `createJournalEntry` |
+| 06-04 | Java 入口点增强（JAX-RS @Path/@GET + Spring） | entrypoints 0 → 942 |
+| 06-04 | M3 aligner 证据对齐 | 19 个重复原子 → 4 个高置信规则（conf=0.90） |
+| 06-04 | Benchmark seed 关键词增强 | M4 确定性 scorer 从 0.0 → 1.0 |
+| 06-04 | M6 CLI `run_all` 接入全模块 | 一键端到端 |
+| 06-04 | README + 准备指南 | 文档齐全 |
+| 06-04 | 代码目录清理 + docs 整理 | 项目结构干净 |
 
-### 2.2 设计中有但未实现
+### 2.2 仍然未完成
 
 | 设计文档 | 设计项 | 原因 |
 |----------|--------|------|
-| 01 §4.6 | LLM 聚类模块树 | 需要 M5 LLM backend + prompt 模板（已设计） |
-| 02 §2.4 | RemoteKnowledgeSource（飞书/Confluence API） | 接口已预留，需要第三方 API 凭证 |
-| 03 §4.2.1 | LLM 抽取 SkillAtom（prompt 模板已设计） | 需要 M5 LLM backend，当前规则模式可独立运行 |
-| 03 §4.3 | 证据对齐（evidence alignment） | 需要同时持有代码+文档来源做交叉验证 |
-| 04 §4.4 | LLM Reflect（轨迹分析生成 patch） | 需要 M5 optimizer backend |
-| 04 §4.6 | LLM Select（编辑排序） | 需要 M5 optimizer backend |
-| 04 §4.9 | Slow Update（epoch 级纵向更新） | MVP 阶段跳过 |
-| 04 §4.10 | Meta Skill（优化器侧记忆） | MVP 阶段跳过 |
-| 05 §7.5 | Agent CLI backend | 需要 Codex/Claude Code 安装配置 |
-| 05 §7.5 | Sandbox 安全隔离 | 需要 Docker 环境 |
-
-### 2.3 设计与实现差异
-
-| 位置 | 设计 | 实现 | 差异说明 |
-|------|------|------|----------|
-| M1 parser | tree-sitter 为主 | 正则降级为主 | tree-sitter 语言 grammar 需单独编译，当前以正则模式运行 |
-| M3 extractor | LLM 抽取 | 规则启发式 | LLM 模式可通过 M5 structured_output 接入，规则模式保证离线可运行 |
-| M4 rollout | target Agent 执行 | 规则模拟回答 | 接入 M5 backend 后切换为真实 LLM rollout |
-| M4 reflect | optimizer 分析轨迹 | 规则 patch | 当前生成 TODO patch，接入 LLM 后产生有意义的编辑 |
+| 01 §4.6 | LLM 聚类模块树 | 需 M5 LLM backend |
+| 01 §4.2 | tree-sitter AST 解析 | grammar 编译复杂（已尝试），正则降级可用 |
+| 02 §2.4 | RemoteKnowledgeSource | 接口已预留，需第三方 API 凭证 |
+| 03 §4.2.1 | LLM 抽取 SkillAtom | 需 M5 LLM backend |
+| 04 §4.4/4.6 | LLM Reflect + Select | 需 M5 optimizer backend |
+| 04 §4.9/4.10 | Slow Update + Meta Skill | MVP 跳过 |
+| 05 §7.5 | Agent CLI + Sandbox | 需 Docker |
+| 06 §4.5-4.10 | status/inspect/resume 命令 | CLI skeleton 已就绪，待实现 |
 
 ---
 
 ## 三、下一步计划
 
-### 3.1 短期（提升单模块质量）
-
-| 优先级 | 模块 | 任务 | 预估工时 |
-|--------|------|------|----------|
-| P0 | M1 | 安装 tree-sitter Java grammar，切换为 AST 解析 | 2h |
-| P0 | M1 | 增强 Java 入口点识别（Spring annotations 覆盖率） | 1h |
-| P1 | M3 | 实现证据对齐 `aligner.py`（代码/文档 source_ref 交叉匹配） | 2h |
-| P1 | M4 | 接入 M5 MockReplayBackend，实现 fixture 驱动的 rollout | 2h |
-| P1 | M3/M4 | 补充 Fineract 相关 benchmark（从 Issues/PR 抽取 10+ 真实任务） | 3h |
-
-### 3.2 中期（LLM 接入）
+### Phase 1：提升 Fineract Skill 质量（1-2 天）
 
 | 优先级 | 任务 | 说明 |
 |--------|------|------|
-| P0 | M5 配置百炼 backend | 用户提供 API key，替换 MockBackend |
-| P0 | M3 LLM 抽取 | 用 M5 structured_output 调用 LLM 执行 §4.2.1 的 prompt 模板 |
-| P0 | M4 LLM reflect | 用 M5 optimizer backend 分析失败轨迹生成 patch |
+| P0 | 补充 Fineract benchmark | 从 Issues/PR 抽取 10-20 条真实任务，分 train/selection/test |
+| P0 | 手写一份高质量 initial_skill.md | 覆盖 Workflow/Constraints/Failure Modes（见准备指南） |
+| P0 | 扩充知识库文档 | 添加 CONTRIBUTING.md、官方 Wiki 导出 |
+| P1 | 增强 M1 Java 解析器 | 更多 Spring/JAX-RS 模式、构造函数识别、字段声明 |
+| P1 | 实现 M4 真实 rollout（MockReplayBackend） | 替代当前规则模拟，使 optimizer 有真实反馈信号 |
 
-### 3.3 长期（生产化）
+### Phase 2：LLM 接入（2-3 天，需 API key）
 
-| 任务 | 说明 |
-|------|------|
-| 多仓库支持 | 当前 M1 只处理第一个 repo |
-| 增量更新 | 检测代码变化，仅重新解析变更文件 |
-| 历史轨迹接入 | M3 从 Agent 执行日志中学习失败模式 |
-| 发布回滚 | M6 publish 支持版本管理和回滚 |
-| Web UI / TUI 仪表盘 | 当前仅 CLI |
+| 优先级 | 任务 | 说明 |
+|--------|------|------|
+| P0 | 配置百炼 backend | `dashscope-deepseek-v4-pro`，API key 写入环境变量 |
+| P0 | M3 LLM 抽取 | 用 structured_output 调用 prompt 模板，替代规则模式 |
+| P0 | M4 LLM Reflect | optimizer 分析失败轨迹 → 有意义的 patch（不再 TODO） |
+| P0 | M4 LLM Select | optimizer 排序编辑 → edit budget 控制有意义 |
+| P1 | 多模型投票 Judge | LLM judge scorer 替代确定性 scorer |
+
+### Phase 3：工程完善（3-5 天）
+
+| 优先级 | 任务 | 说明 |
+|--------|------|------|
+| P0 | M6 status/inspect/resume 实现 | 读取 run_state 展示进度 + 断点恢复 |
+| P1 | 多仓库支持 | 当前只处理 `sources.repos[0]`，扩展到全部 |
+| P1 | 增量更新 | 检测 commit diff → 仅重新解析变更文件 |
+| P1 | 历史轨迹接入 | 从 Agent 执行日志学习失败模式 |
+| P2 | 发布回滚 | publish 命令支持版本号和回滚 |
+| P2 | CI 集成 | GitHub Actions 自动化测试 |
+
+### Phase 4：文档与社区（1-2 天）
+
+| 优先级 | 任务 | 说明 |
+|--------|------|------|
+| P0 | 端到端演示视频/录屏 | Fineract 完整流程 |
+| P1 | API 文档 | 每个模块的公开函数 docstring |
+| P1 | 贡献指南 | CONTRIBUTING.md |
+| P2 | 示例项目包 | 开箱即用的 Fineract example |
 
 ---
 
-## 四、风险提示
+## 四、风险更新
 
-| 风险 | 等级 | 缓解 |
-|------|------|------|
-| tree-sitter grammar 编译失败 | 低 | 正则降级已可工作，853 节点产出可接受 |
-| LLM API 成本不可控 | 中 | MockReplayBackend 保证离线闭环可测 |
-| Fineract 无配套文档导致 M2 输入稀疏 | 中 | 当前仅 README.md 作为文档源，需手动补充 |
-| 网络不稳定影响推送 | 低 | 本地仓库完整，改日推送即可 |
+| 风险 | 等级 | 缓解 | 状态 |
+|------|------|------|------|
+| tree-sitter 编译 | 低 | 正则降级 2,197 节点产出可接受 | ✅ 已缓解 |
+| LLM API 成本 | 中 | MockReplayBackend 离线闭环 | ⬜ 待 API key |
+| 文档稀疏 | 中 | 当前仅 README.md | ⬜ 待补充 |
+| 网络不稳定 | 低 | HTTPS 推送成功 | ✅ 已解决 |
+| Java 解析遗漏 | 中 | 当前覆盖 class/method/annotation，缺泛型/lambda | ⬜ Phase 1 改进 |
