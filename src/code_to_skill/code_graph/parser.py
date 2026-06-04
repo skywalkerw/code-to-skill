@@ -163,10 +163,10 @@ _PATTERNS: dict[str, list[tuple[str, NodeKind]]] = {
     "java": [
         (r"(?:public\s+)?(?:class|interface|enum)\s+(\w+)", NodeKind.class_),
         (r"(?:public|private|protected)\s+(?:static\s+)?(?:abstract\s+)?(?:final\s+)?[\w<>\[\],\s]+?\s+(\w+)\s*\([^)]*\)\s*(?:\{|throws)", NodeKind.method),
-        (r"@(?:RestController|Controller|Service|Repository|Component)\b", NodeKind.class_),
-        (r"@(?:RequestMapping|GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping)\b", NodeKind.route),
-        (r"@(?:Scheduled|Quartz)\b", NodeKind.job),
-        (r"@(?:Configuration|ConfigurationProperties)\b", NodeKind.config),
+        (r"@(RestController|Controller|Service|Repository|Component)\b", NodeKind.class_),
+        (r"@(RequestMapping|GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping)\b", NodeKind.route),
+        (r"@(Scheduled|Quartz)\b", NodeKind.job),
+        (r"@(Configuration|ConfigurationProperties)\b", NodeKind.config),
     ],
     "python": [
         (r"def\s+(\w+)\s*\(", NodeKind.function),

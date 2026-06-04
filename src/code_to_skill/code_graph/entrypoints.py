@@ -13,10 +13,16 @@ from .types import CodeGraph, GraphNode, NodeKind, Entrypoint
 # 入口识别模式（按语言）
 _ENTRY_PATTERNS = {
     "java": {
-        "rest": [r"@(RequestMapping|GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping)\b"],
+        # Spring MVC + JAX-RS REST annotations
+        "rest": [
+            r"@(RequestMapping|GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping)\b",
+            r"@Path\s*\(\s*[\"'].*[\"']\s*\)",
+            r"@(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\b",
+        ],
         "job": [r"@Scheduled\b", r"@Quartz\b"],
-        "config": [r"@Configuration\b", r"@ConfigurationProperties\b"],
+        "config": [r"@Configuration\b", r"@ConfigurationProperties\b", r"@Component\b", r"@Service\b"],
         "test": [r"@Test\b", r"@SpringBootTest\b"],
+        "service": [r"@Service\b", r"@Repository\b", r"@Component\b"],
     },
     "python": {
         "rest": [r"@app\.(route|get|post|put|delete)\b", r"@router\.(get|post)\b", r"@api\.(get|post)\b"],
@@ -59,10 +65,10 @@ def find_entrypoints(graph: CodeGraph, repo_root: str) -> list[Entrypoint]:
 
         patterns = _ENTRY_PATTERNS.get(node.language, {})
 
-        # 按行检查（入口点相关的行）
+        # 按行检查（扩大范围以覆盖注解）
         lines = content.split("\n")
-        start = max(0, node.start_line - 1)
-        end = min(len(lines), node.end_line)
+        start = max(0, node.start_line - 6)  # 扩展前5行覆盖注解
+        end = min(len(lines), node.end_line + 1)
         node_text = "\n".join(lines[start:end])
 
         for entry_kind, pats in patterns.items():
