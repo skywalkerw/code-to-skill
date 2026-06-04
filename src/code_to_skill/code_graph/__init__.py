@@ -15,6 +15,7 @@ from .resolver import resolve_references
 from .entrypoints import find_entrypoints
 from .cluster import build_module_tree, refine_leaf_contexts
 from .leaf_context import generate_leaf_contexts
+from .traversal import GraphTraverser
 from .types import FileInventory, CodeGraph, ModuleTree, LeafContext, Entrypoint, ParseError, UnresolvedEdge
 
 
