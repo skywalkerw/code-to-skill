@@ -16,7 +16,7 @@ python -m pytest tests/ -v  # 应全部通过
 
 ## 项目结构
 
-详见 [`docs/coding-standards.md`](docs/coding-standards.md)。关键规则：
+详见 [`docs/references/coding-standards.md`](docs/references/coding-standards.md)。关键规则：
 
 - 代码只在 `src/code_to_skill/` 下，按 M1-M6 模块组织
 - 新文件必须归入对应模块目录，不要放在根目录
@@ -73,7 +73,7 @@ python -m pytest tests/test_m3_m4.py -v
 
 - 设计讨论：先看 `docs/design/00-overall-design.md`
 - 新功能：先在 `docs/references/implementation-plan.md` 记录计划
-- API 变更：更新 `docs/api-reference.md`
+- API 变更：更新 `docs/references/api-reference.md`
 
 ## License
 
