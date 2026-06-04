@@ -21,7 +21,7 @@ class Router:
     def __init__(self, route_config: dict[str, Any], backends: dict[str, InteractionBackend]):
         """
         Args:
-            route_config: 路由配置，格式 {"optimizer": {"primary": "dashscope-deepseek", "fallback": ["azure-gpt4"]}}
+            route_config: 路由配置，格式 {"optimizer": {"primary": "deepseek-v4-pro", "fallback": ["azure-gpt4"]}}
             backends: backend_id → InteractionBackend 实例
         """
         self._routes = route_config

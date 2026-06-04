@@ -21,11 +21,11 @@ _ENV_MAP = {
         "model": "deepseek-chat",
         "default_base_url": "https://api.deepseek.com",
     },
-    "dashscope-deepseek-v4-pro": {
-        "base_url_env": "DASHSCOPE_BASE_URL",
-        "api_key_env": "DASHSCOPE_API_KEY",
-        "model": "deepseek-v4-pro",
-        "default_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "deepseek-v4-pro": {
+        "base_url_env": "DEEPSEEK_BASE_URL",
+        "api_key_env": "DEEPSEEK_API_KEY",
+        "model": "deepseek-chat",
+        "default_base_url": "https://api.deepseek.com",
     },
     "openai-gpt-4o": {
         "base_url_env": "OPENAI_BASE_URL",

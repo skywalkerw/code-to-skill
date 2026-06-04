@@ -89,7 +89,7 @@
 
 | 优先级 | 任务 | 说明 |
 |--------|------|------|
-| P0 | 配置百炼 backend | `dashscope-deepseek-v4-pro`，API key 写入环境变量 |
+| P0 | 配置百炼 backend | `deepseek-v4-pro`，API key 写入环境变量 |
 | P0 | M3 LLM 抽取 | 用 structured_output 调用 prompt 模板，替代规则模式 |
 | P0 | M4 LLM Reflect | optimizer 分析失败轨迹 → 有意义的 patch（不再 TODO） |
 | P0 | M4 LLM Select | optimizer 排序编辑 → edit budget 控制有意义 |
