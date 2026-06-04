@@ -22,7 +22,7 @@ _ENV_MAP = {
         "default_model": "deepseek-chat",
         "default_base_url": "https://api.deepseek.com",
     },
-    "openai-gpt-4o": {
+    "openai": {
         "base_url_env": "OPENAI_BASE_URL",
         "api_key_env": "OPENAI_API_KEY",
         "model_env": "OPENAI_MODEL",
