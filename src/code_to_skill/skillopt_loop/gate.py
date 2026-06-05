@@ -1,13 +1,34 @@
 """评估门禁模块。
 
 对齐 external/SkillOpt skillopt/evaluation/gate.py
+支持三种度量: hard / soft / mixed
 """
 from __future__ import annotations
 
-from enum import Enum
 from typing import Literal
 
 GateAction = Literal["accept_new_best", "accept", "reject"]
+GateMetric = Literal["hard", "soft", "mixed"]
+
+
+def select_gate_score(
+    hard: float,
+    soft: float,
+    metric: GateMetric = "soft",
+    mixed_weight: float = 0.5,
+) -> float:
+    """将 (hard, soft) 投影到单一比较分数。
+
+    对齐 external/SkillOpt select_gate_score。
+    """
+    if metric == "hard":
+        return float(hard)
+    if metric == "soft":
+        return float(soft)
+    if metric == "mixed":
+        w = max(0.0, min(1.0, float(mixed_weight)))
+        return (1.0 - w) * float(hard) + w * float(soft)
+    return float(soft)
 
 
 class GateDecision:
