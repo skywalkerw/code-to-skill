@@ -19,9 +19,11 @@ class OpenAICompatibleBackend(InteractionBackend):
     """OpenAI API 兼容后端。
 
     通过 base_url 指向任意兼容服务（百炼、vLLM、Ollama 等）。
+    Client 采用懒初始化，即使 API key 缺失也不会在构造时崩溃。
     """
 
     backend_type = "llm_api"
+    provider = "openai_compatible"
 
     def __init__(self, backend_id: str, base_url: str, api_key: str, model: str,
                  context_window: int = 128000, timeout_seconds: int = 180):
@@ -30,11 +32,19 @@ class OpenAICompatibleBackend(InteractionBackend):
         self.context_window = context_window
         self.timeout_seconds = timeout_seconds
 
-        self._client = OpenAI(
-            base_url=base_url,
-            api_key=api_key,
-            timeout=timeout_seconds,
-        )
+        self._base_url = base_url
+        self._api_key = api_key
+        self._client: OpenAI | None = None
+
+    def _get_client(self) -> OpenAI:
+        """懒初始化 OpenAI client。"""
+        if self._client is None:
+            self._client = OpenAI(
+                base_url=self._base_url,
+                api_key=self._api_key,
+                timeout=self.timeout_seconds,
+            )
+        return self._client
 
     # ── InteractionBackend 接口 ──────────────────────────────
 
@@ -45,6 +55,10 @@ class OpenAICompatibleBackend(InteractionBackend):
             "json_schema": self._supports_native_json_schema(),
             "tool_calling": True,
             "vision": False,
+            "workspace_execution": False,
+            "file_write": False,
+            "shell_command": False,
+            "returns_trajectory": False,
             "structured_output_level": 1,  # L1: prompt-based (safer for all backends)
             "context_window": self.context_window,
             "max_output_tokens": 16000,
@@ -68,7 +82,8 @@ class OpenAICompatibleBackend(InteractionBackend):
             if request.response_format and self._supports_native_json_schema():
                 kwargs["response_format"] = request.response_format
 
-            completion = self._client.chat.completions.create(**kwargs)
+            client = self._get_client()
+            completion = client.chat.completions.create(**kwargs)
             choice = completion.choices[0]
 
             latency_ms = int((time.monotonic() - start) * 1000)
@@ -101,7 +116,9 @@ class OpenAICompatibleBackend(InteractionBackend):
             return response
         except Exception as exc:
             latency_ms = int((time.monotonic() - start) * 1000)
-            log_llm_output("openai", self.model, f"[ERROR] {exc}", {"prompt_tokens": 0, "completion_tokens": 0}, latency_ms, "error")
+            log_llm_output("openai", self.model, f"[ERROR] {exc}",
+                           {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                           latency_ms, "error")
             return ModelResponse(
                 request_id=request.request_id,
                 backend_id=self.backend_id,
@@ -116,8 +133,16 @@ class OpenAICompatibleBackend(InteractionBackend):
     def healthcheck(self) -> HealthStatus:
         start = time.monotonic()
         try:
+            if not self._api_key:
+                return HealthStatus(
+                    backend_id=self.backend_id,
+                    healthy=False,
+                    latency_ms=0,
+                    error="No API key configured",
+                )
+            client = self._get_client()
             # 发一个极短请求验证连通性
-            self._client.chat.completions.create(
+            client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": "ping"}],
                 max_tokens=1,

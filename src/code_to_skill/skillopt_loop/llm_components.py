@@ -7,9 +7,9 @@ from __future__ import annotations
 import json
 import logging
 
-from code_to_skill.model_gateway.llm_backend import create_llm_backend, is_llm_available
-from code_to_skill.model_gateway.types import InteractionRequest
-from code_to_skill.model_gateway.structured_output import invoke_with_structured_output
+from code_to_skill.model_provider.llm_backend import create_llm_backend, is_llm_available
+from code_to_skill.model_provider.types import InteractionRequest
+from code_to_skill.model_provider.structured_output import invoke_with_structured_output
 
 from .types import EditOp
 
@@ -44,6 +44,7 @@ def reflect_llm(
     step_buffer: list[dict] | None = None,
     rejected_edits: list | None = None,
     meta_skill_context: str = "",
+    backend: Any = None,
 ) -> list[dict]:
     """LLM Reflect：分析 rollout 轨迹，生成有意义的 patch。
 
@@ -53,6 +54,7 @@ def reflect_llm(
         step_buffer: 之前步骤的失败模式和 rejected edits
         rejected_edits: 已拒绝的 EditOp 列表（供 StepBufferManager 使用）
         meta_skill_context: Optimizer 侧跨 epoch 记忆（MetaSkill.render()）
+        backend: 外部传入的 optimizer backend（不传则自动创建）
 
     Returns:
         patch dict 列表，每个含 edits 和 reasoning
@@ -61,7 +63,8 @@ def reflect_llm(
         logger.info("LLM not available for reflect, using rule-based")
         return _rule_based_patches(rollout_results)
 
-    backend = create_llm_backend()
+    if backend is None:
+        backend = create_llm_backend()
 
     # 构建 step buffer 摘要
     buffer_summary = _build_buffer_summary(step_buffer, rejected_edits)
@@ -115,12 +118,15 @@ def reflect_llm(
     # 成功保留
     if succeeded and len(patches) < 2:
         success_text = "\n".join([f"- {r.get('id', '?')}: PASS" for r in succeeded[:5]])
+        success_content = _REFLECT_SUCCESS_PROMPT.format(success_text=success_text[:1500])
+        if meta_skill_context.strip():
+            success_content = meta_skill_context + "\n---\n" + success_content
         request = InteractionRequest(
             role="optimizer",
             stage="reflect_success",
             messages=[{
                 "role": "system",
-                "content": _REFLECT_SUCCESS_PROMPT.format(success_text=success_text[:1500])
+                "content": success_content,
             }],
             max_output_tokens=512,
             temperature=0.2,
@@ -144,6 +150,7 @@ def select_edits_llm(
     edits: list[EditOp],
     current_skill: str,
     budget: int = 3,
+    backend: Any = None,
 ) -> list[dict]:
     """LLM Select：对候选编辑排序，按 budget 截断。
 
@@ -151,16 +158,17 @@ def select_edits_llm(
         edits: 待排序的编辑列表
         current_skill: 当前 Skill 内容
         budget: 最多保留的编辑数
+        backend: 外部传入的 optimizer backend（不传则自动创建）
 
     Returns:
         排序后的编辑列表（含 rank 和 score）
     """
     if not is_llm_available() or len(edits) <= budget:
-        # LLM 不可用或编辑数不超过 budget，直接返回
         return [{"edit": e, "rank": i + 1, "support_count": 1, "score": 1.0}
                 for i, e in enumerate(edits[:budget])]
 
-    backend = create_llm_backend()
+    if backend is None:
+        backend = create_llm_backend()
 
     edit_text = "\n".join([
         f"{i+1}. [{e.op}] target='{e.target}' content='{e.content[:80]}'"

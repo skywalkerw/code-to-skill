@@ -145,7 +145,7 @@ def _llm_slow_update(
     backend: Any,
 ) -> dict:
     """用 optimizer LLM 分析 comparison pairs，输出 longitudinal guidance。"""
-    from code_to_skill.model_gateway.types import InteractionRequest
+    from code_to_skill.model_provider.types import InteractionRequest
 
     summary = _format_pairs_for_prompt(pairs)
 

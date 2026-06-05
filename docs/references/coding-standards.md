@@ -10,7 +10,7 @@
 src/code_to_skill/                    # 唯一 Python 包
 ├── __init__.py                       # 包描述
 │
-├── model_gateway/                    # M5：基础设施层（最先加载，被所有模块依赖）
+├── model_provider/                    # M5：基础设施层（最先加载，被所有模块依赖）
 │   ├── __init__.py
 │   ├── types.py                      # InteractionRequest/Response schema
 │   ├── llm_backend.py                # 环境变量→backend 工厂
@@ -105,9 +105,9 @@ M4（SkillOpt） ← 消费 M3
 ### 2.3 跨模块依赖方式
 
 **允许的依赖**：
-- `from code_to_skill.model_gateway.types import InteractionRequest` ✅
+- `from code_to_skill.model_provider.types import InteractionRequest` ✅
 - `from code_to_skill.atom_extractor.types import SkillAtom` ✅
-- `from code_to_skill.llm_backend import create_llm_backend` → 已废弃，应用 `model_gateway.llm_backend`
+- `from code_to_skill.llm_backend import create_llm_backend` → 已废弃，应用 `model_provider.llm_backend`
 
 **禁止的依赖**：
 - `from .xxx import ...` 在子目录中使用 `..` 相对导入 ❌（统一使用绝对导入 `from code_to_skill.xxx`）
@@ -192,7 +192,7 @@ logger.warning("...")
 
 ### 6.1 Backend 配置
 
-**文件**：`model_gateway/llm_backend.py`
+**文件**：`model_provider/llm_backend.py`
 
 ```python
 _ENV_MAP = {

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -62,15 +63,19 @@ class BackendManager:
         return self._optimizer is not None or self.has_target()
 
     @staticmethod
-    def _try_create_backend() -> Any | None:
-        """尝试从环境变量创建 LLM backend。"""
+    def _try_create_backend(backend_id: str | None = None) -> Any | None:
+        """尝试从环境变量创建 LLM backend。
+
+        backend_id=None 时从 SKILL_LAB_LLM_BACKEND 默认 "deepseek"。
+        """
         try:
-            from code_to_skill.model_gateway.llm_backend import (
+            from code_to_skill.model_provider.llm_backend import (
                 is_llm_available,
                 create_llm_backend,
             )
-            if is_llm_available():
-                return create_llm_backend()
+            bid = backend_id or os.environ.get("SKILL_LAB_LLM_BACKEND", "deepseek")
+            if is_llm_available(bid):
+                return create_llm_backend(bid)
         except Exception:
             pass
         return None
@@ -86,16 +91,32 @@ class BackendManager:
     @classmethod
     def from_separate(
         cls,
-        target_model: str | None = None,
-        optimizer_model: str | None = None,
+        target_backend_id: str | None = None,
+        optimizer_backend_id: str | None = None,
+        use_llm: bool = True,
     ) -> "BackendManager":
-        """分别创建 target 和 optimizer 后端（预留接口）。
+        """分别创建 target 和 optimizer 后端。
 
-        当前简化：target 和 optimizer 共用相同的创建逻辑，
-        后续可扩展到不同模型/不同 API key。
+        对齐 SkillOpt 论文的关键设计：
+        optimizer 用更强模型（如 deepseek-v4-pro），target 用执行模型（如 deepseek-v4-flash）。
+
+        backend_id 优先级：
+        1. 显式传入 target_backend_id / optimizer_backend_id
+        2. 环境变量 SKILL_LAB_TARGET_BACKEND / SKILL_LAB_OPTIMIZER_BACKEND
+        3. 环境变量 SKILL_LAB_LLM_BACKEND（默认 "deepseek"）
         """
-        target = cls._try_create_backend()
-        optimizer = cls._try_create_backend()  # same for now
+        target_bid = target_backend_id or os.environ.get("SKILL_LAB_TARGET_BACKEND")
+        optimizer_bid = optimizer_backend_id or os.environ.get("SKILL_LAB_OPTIMIZER_BACKEND")
+
+        target = cls._try_create_backend(target_bid) if use_llm else None
+        optimizer = cls._try_create_backend(optimizer_bid) if use_llm else None
+
+        if target and optimizer and target_bid == optimizer_bid:
+            logger.info("[BackendManager] Optimizer and target share the same backend: %s", target_bid)
+        elif target and optimizer:
+            logger.info("[BackendManager] Separate backends — optimizer=%s, target=%s",
+                        optimizer_bid or "default", target_bid or "default")
+
         return cls(target_backend=target, optimizer_backend=optimizer)
 
 

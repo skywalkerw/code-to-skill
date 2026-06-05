@@ -1,0 +1,113 @@
+# Fineract 金融核心系统 Skill 优化项目
+# 使用方法: skill-lab run all --config-path config.test.yaml
+
+settings:
+  # 初始 Skill（如果指定，跳过 M3 自动生成）
+  initial_skill: test-data/initial_skill.md
+
+  # Benchmark 目录（如果指定，跳过 M3 自动生成 benchmark_seeds）
+  benchmark: test-data/benchmarks/fineract
+
+  code_graph:
+    max_leaf_tokens: 8000
+    max_module_depth: 3
+    tokenizer: cl100k_base
+    split_strategy: file_then_function
+    max_components_per_group: 200
+    max_components_per_llm_call: 50
+    llm_clustering_enabled: false
+
+  document_normalizer:
+    ocr_engine: tesseract
+    ocr_languages: chi_sim+eng
+    ocr_confidence_threshold: 0.6
+    chunk_max_tokens: 2000
+
+  atom_extractor:
+    atom_policy: atom_policy.yaml
+    confidence_tier_1_max: 0.95
+    llm_adjustment: 0.05
+
+  skillopt:
+    num_epochs: 3
+    batch_size: 20
+    edit_budget: 3
+    gate_metric: soft
+    use_slow_update: false
+    use_meta_skill: false
+
+  model_provider:
+    backends:
+      mock-backend:
+        type: mock
+        provider: mock
+        model: mock-model-v1
+
+    routes:
+      extractor:
+        primary: mock-backend
+      clusterer:
+        primary: mock-backend
+      optimizer:
+        primary: mock-backend
+      target:
+        primary: mock-backend
+      judge:
+        primary: mock-backend
+      agent_worker:
+        primary: mock-backend
+      default:
+        primary: mock-backend
+
+    policies:
+      default_retries: 1
+      trace_enabled: false
+      max_cost_per_run_usd: 0
+
+  output:
+    root: test-data/runs/
+    publish_target: ~/.codex/skills/fineract-agent
+
+  approvals:
+    require_for:
+      - invoke_agent_cli_with_workspace_write
+      - publish_skill
+    auto_approve_in_batch: false
+
+project:
+  name: fineract-finance-skill
+  domain: fintech
+  description: "Apache Fineract 金融核心系统 Agent Skill——贷款/储蓄/会计/费用/互操作"
+
+  sources:
+    repos:
+      - id: fineract
+        path: test-data/sources/repos/fineract
+        ref: develop
+        include:
+          - "fineract-provider/src/main/java/org/apache/fineract/accounting/**"
+          - "fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/**"
+          - "fineract-provider/src/main/java/org/apache/fineract/portfolio/savings/**"
+          - "fineract-provider/src/main/java/org/apache/fineract/portfolio/paymenttype/**"
+          - "fineract-provider/src/main/java/org/apache/fineract/portfolio/charge/**"
+          - "fineract-provider/src/main/java/org/apache/fineract/interoperation/**"
+        exclude:
+          - "**/test/**"
+          - "**/integration-tests/**"
+          - "**/target/**"
+
+    docs:
+      - id: fineract-readme
+        path: test-data/sources/docs/fineract/README.md
+        provider: local_file
+        type: markdown
+        version: develop
+        authority: official_doc
+        domain_tags: [fineract, architecture, setup]
+      - id: fineract-contrib
+        path: test-data/sources/docs/fineract/CONTRIBUTING.md
+        provider: local_file
+        type: markdown
+        version: develop
+        authority: official_doc
+        domain_tags: [fineract, guidelines, contribution]

@@ -147,7 +147,7 @@ class DEFAULTAdapter(EnvAdapter):
 
     适配当前仓库的 benchmark 格式：
     - items: [{id, question/task_template, expected_checks, task_type}]
-    - rollout: 用 M5 model_gateway 或关键词规则模拟
+    - rollout: 用 M5 model_provider 或关键词规则模拟
     - evaluate: 用确定性 keyword scorer
 
     这是可工作的默认实现；后续可按需要覆盖子类化。
@@ -161,7 +161,7 @@ class DEFAULTAdapter(EnvAdapter):
     def setup(self, cfg: dict | None = None) -> None:
         if self.use_llm:
             try:
-                from code_to_skill.model_gateway.llm_backend import (
+                from code_to_skill.model_provider.llm_backend import (
                     is_llm_available,
                     create_llm_backend,
                 )
@@ -188,7 +188,7 @@ class DEFAULTAdapter(EnvAdapter):
             question = self._build_context_from_item(item)
 
             if backend:
-                from code_to_skill.model_gateway.types import InteractionRequest
+                from code_to_skill.model_provider.types import InteractionRequest
                 try:
                     resp = backend.invoke(InteractionRequest(
                         role="target",

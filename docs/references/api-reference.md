@@ -4,12 +4,12 @@
 
 ---
 
-## M5：模型与智能体交互（`model_gateway/`）
+## M5：模型与智能体交互（`model_provider/`）
 
 ### Backend 工厂
 
 ```python
-from code_to_skill.model_gateway.llm_backend import create_llm_backend, is_llm_available
+from code_to_skill.model_provider.llm_backend import create_llm_backend, is_llm_available
 
 # 检查 LLM 是否可用（DEEPSEEK_API_KEY 已设置）
 is_llm_available(backend_id="deepseek") -> bool
@@ -21,7 +21,7 @@ create_llm_backend(backend_id="deepseek") -> InteractionBackend
 ### 类型
 
 ```python
-from code_to_skill.model_gateway.types import InteractionRequest, InteractionResponse, ModelResponse
+from code_to_skill.model_provider.types import InteractionRequest, InteractionResponse, ModelResponse
 # InteractionRequest(role, stage, messages, response_format, max_output_tokens, temperature)
 # → InteractionResponse(content, parsed, status, usage, latency_ms)
 ```
@@ -29,7 +29,7 @@ from code_to_skill.model_gateway.types import InteractionRequest, InteractionRes
 ### Backend 接口
 
 ```python
-from code_to_skill.model_gateway.backends import InteractionBackend
+from code_to_skill.model_provider.backends import InteractionBackend
 # backend.capabilities() -> dict   # chat, json_schema, tool_calling, structured_output_level
 # backend.invoke(request) -> InteractionResponse
 # backend.healthcheck() -> HealthStatus
@@ -38,14 +38,14 @@ from code_to_skill.model_gateway.backends import InteractionBackend
 ### 路由
 
 ```python
-from code_to_skill.model_gateway.router import Router
+from code_to_skill.model_provider.router import Router
 # Router(route_config, backends).invoke(request) -> InteractionResponse
 ```
 
 ### 结构化输出
 
 ```python
-from code_to_skill.model_gateway.structured_output import invoke_with_structured_output
+from code_to_skill.model_provider.structured_output import invoke_with_structured_output
 # L3(原生)→L2(tool_calling)→L1(prompt+parse) 自动降级
 invoke_with_structured_output(backend, request, target_schema=None) -> InteractionResponse
 ```

@@ -34,7 +34,7 @@ class InteractionResponse(BaseModel):
     schema_version: str = "1.0"
     request_id: str
     backend_id: str
-    backend_type: Literal["llm_api", "local_llm", "agent_cli", "agent_service", "mock"] = "llm_api"
+    backend_type: Literal["llm_api", "local_llm", "agent_cli", "agent_service", "mcp_agent", "mock"] = "llm_api"
     content: str
     parsed: Any = None
     status: Literal["ok", "error", "parse_error", "timeout", "rate_limited"] = "ok"

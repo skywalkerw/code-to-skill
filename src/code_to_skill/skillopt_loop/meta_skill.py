@@ -148,7 +148,7 @@ def _llm_generate_meta_skill(
     current_meta: str,
 ) -> str:
     """用 LLM 生成 meta skill。"""
-    from code_to_skill.model_gateway.types import InteractionRequest
+    from code_to_skill.model_provider.types import InteractionRequest
 
     accepted_summary = _format_edits(accepted_edits or [])
     rejected_summary = _format_edits(rejected_edits or [])

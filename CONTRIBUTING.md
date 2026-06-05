@@ -54,7 +54,7 @@ python -m pytest tests/test_m3_m4.py -v
 
 ## 添加 LLM 后端
 
-在 `model_gateway/llm_backend.py` 的 `_ENV_MAP` 中添加新条目：
+在 `model_provider/llm_backend.py` 的 `_ENV_MAP` 中添加新条目：
 
 ```python
 "my-backend": {

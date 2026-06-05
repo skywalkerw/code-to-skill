@@ -3,9 +3,9 @@ import pytest
 from pathlib import Path
 from click.testing import CliRunner
 
-from code_to_skill.model_gateway.types import InteractionRequest, InteractionResponse, ModelResponse
-from code_to_skill.model_gateway.backends.mock import MockReplayBackend
-from code_to_skill.model_gateway.router import Router
+from code_to_skill.model_provider.types import InteractionRequest, InteractionResponse, ModelResponse
+from code_to_skill.model_provider.backends.mock import MockReplayBackend
+from code_to_skill.model_provider.router import Router
 from code_to_skill.cli.types import RunManifest, RunState, RunStatus, StepInternal, ModuleEvent
 from code_to_skill.cli.config_loader import ProjectConfig, RepoSource, DocSource
 

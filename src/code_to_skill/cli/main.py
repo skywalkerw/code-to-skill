@@ -10,6 +10,10 @@
   skill-lab eval            评测 Skill
   skill-lab publish         发布 Skill
   skill-lab resume          恢复运行
+
+config.yaml 结构：
+  settings    框架自身配置（控制 code-to-skill 如何工作）
+  project     目标项目配置（要处理哪个项目的代码/文档）
 """
 from __future__ import annotations
 
@@ -22,7 +26,7 @@ from pathlib import Path
 import click
 
 from .types import RunManifest, RunState, RunStatus, ModuleEvent
-from .config_loader import load_project_config, ProjectConfig
+from .config_loader import load_project_config, AppConfig, SettingsConfig, TargetProjectConfig
 
 # 目录骨架模板
 _SKELETON_DIRS = [
@@ -35,56 +39,134 @@ _SKELETON_DIRS = [
 ]
 
 _INIT_YAML_TEMPLATE = """\
-# === 项目基础 ===
+# =============================================================================
+# code-to-skill 配置文件（config.yaml）
+# =============================================================================
+# 两个顶层段：
+#   settings    框架自身配置（控制 code-to-skill 如何工作）
+#   project     目标项目配置（要处理哪个项目的代码/文档）
+#
+# 环境变量通过 ${{VAR_NAME}} 内联引用。
+#
+# 命令：
+#   skill-lab config validate         校验配置合法性
+#   skill-lab run all                 运行完整流水线
+# =============================================================================
+
+settings:
+  # ── 初始 Skill（可选：为空则由 M3 从代码/文档自动生成）────
+  initial_skill: ""
+
+  # ── Benchmark（可选：为空则用 M3 自动生成的 benchmark_seeds）──
+  benchmark: ""
+
+  # ── 模块 1：代码图谱与模块树 ──────────────────────────────
+  code_graph:
+    max_leaf_tokens: 8000
+    max_module_depth: 3
+    tokenizer: cl100k_base
+
+  # ── 模块 2：文档规范化 ────────────────────────────────────
+  document_normalizer:
+    ocr_engine: tesseract
+    ocr_languages: chi_sim+eng
+    ocr_confidence_threshold: 0.6
+
+  # ── 模块 3：SkillAtom 抽取 ───────────────────────────────
+  atom_extractor:
+    confidence_tier_1_max: 0.95
+    llm_adjustment: 0.05
+
+  # ── 模块 4：SkillOpt 优化 ──────────────────────────────────
+  skillopt:
+    num_epochs: 3
+    batch_size: 20
+    edit_budget: 3
+    gate_metric: soft
+
+  # ── 模块 5：模型与智能体交互 ──────────────────────────────
+  model_provider:
+    backends:
+      deepseek:
+        type: llm_api
+        provider: openai_compatible
+        base_url: ${{DASHSCOPE_BASE_URL}}
+        api_key_env: DASHSCOPE_API_KEY
+        model: deepseek-v4-pro
+        context_window: 1000000
+        timeout_seconds: 180
+
+      qwen-local:
+        type: local_llm
+        provider: openai_compatible
+        base_url: http://127.0.0.1:8000/v1
+        api_key_env: LOCAL_LLM_API_KEY
+        model: Qwen/Qwen3.5-4B
+        context_window: 32768
+        timeout_seconds: 120
+
+      mock-backend:
+        type: mock
+        provider: mock
+        model: mock-model-v1
+
+    routes:
+      extractor:
+        primary: deepseek
+        fallback: [qwen-local, mock-backend]
+      clusterer:
+        primary: deepseek
+        fallback: [qwen-local, mock-backend]
+      optimizer:
+        primary: deepseek
+        fallback: [qwen-local, mock-backend]
+      target:
+        primary: deepseek
+        fallback: [qwen-local, mock-backend]
+      judge:
+        primary: deepseek
+        fallback: [qwen-local, mock-backend]
+      agent_worker:
+        primary: deepseek
+        fallback: [qwen-local, mock-backend]
+      default:
+        primary: deepseek
+        fallback: [qwen-local, mock-backend]
+
+    policies:
+      default_retries: 3
+      retry_backoff: exponential
+      trace_enabled: true
+      cache_enabled: false
+      redact_secrets: true
+      max_cost_per_run_usd: 20
+      max_timeout_seconds: 900
+      structured_output_fallback: true
+
+  # ── 输出与发布 ────────────────────────────────────────────
+  output:
+    root: runs/
+    publish_target: ""
+
+  # ── 审批策略 ──────────────────────────────────────────────
+  approvals:
+    require_for:
+      - invoke_agent_cli_with_workspace_write
+      - publish_skill
+    auto_approve_in_batch: false
+
+# =============================================================================
+# project：目标项目配置（要处理哪个项目）
+# =============================================================================
+
 project:
   name: {name}
   domain: {domain}
   description: ""
 
-# === 数据源 ===
-sources:
-  repos: []
-  docs: []
-
-# === 模块 1：代码图谱与模块树 ===
-code_graph:
-  max_leaf_tokens: 8000
-  max_module_depth: 3
-  tokenizer: cl100k_base
-
-# === 模块 2：文档规范化 ===
-document_normalizer:
-  ocr_engine: tesseract
-  ocr_languages: chi_sim+eng
-  ocr_confidence_threshold: 0.6
-
-# === 模块 3：SkillAtom 抽取 ===
-atom_extractor:
-  confidence_tier_1_max: 0.95
-  llm_adjustment: 0.05
-
-# === 模块 4：SkillOpt 优化 ===
-skillopt:
-  num_epochs: 3
-  batch_size: 20
-  edit_budget: 3
-  gate_metric: soft
-
-# === 模块 5：模型交互 ===
-model_layer:
-  interaction_config: interaction_config.yaml
-
-# === 输出与发布 ===
-output:
-  root: runs/
-  publish_target: ""
-
-# === 审批策略 ===
-approvals:
-  require_for:
-    - invoke_agent_cli_with_workspace_write
-    - publish_skill
-  auto_approve_in_batch: false
+  sources:
+    repos: []
+    docs: []
 """
 
 
@@ -110,8 +192,8 @@ def init(workspace: str, domain: str, name: str):
         (ws / d).mkdir(parents=True, exist_ok=True)
         (ws / d / ".gitkeep").touch(exist_ok=True)
 
-    # project.yaml
-    config_path = ws / "project.yaml"
+    # config.yaml
+    config_path = ws / "config.yaml"
     if config_path.exists():
         click.confirm(f"{config_path} 已存在，覆盖？", abort=True)
 
@@ -119,18 +201,18 @@ def init(workspace: str, domain: str, name: str):
 
     click.echo(f"✅ 项目初始化完成: {ws.absolute()}")
     click.echo(f"   配置: {config_path}")
-    click.echo(f"   下一步: 编辑 project.yaml 填写数据源，然后 skill-lab config validate")
+    click.echo(f"   下一步: 编辑 config.yaml 填写数据源，然后 skill-lab config validate")
 
 
 # ── config validate ─────────────────────────────────────────
 
 @main.command(name="config")
-@click.option("--config-path", default="project.yaml", help="配置文件路径")
+@click.option("--config-path", default="config.yaml", help="配置文件路径")
 @click.option("--dry-run-level", default="config-only",
               type=click.Choice(["config-only", "static-analysis", "full-simulate"]),
               help="校验深度")
 def config_validate(config_path: str, dry_run_level: str):
-    """校验 project.yaml 配置。"""
+    """校验 config.yaml 配置。"""
     click.echo(f"🔍 校验配置: {config_path} (dry-run level: {dry_run_level})")
 
     try:
@@ -142,15 +224,16 @@ def config_validate(config_path: str, dry_run_level: str):
         click.echo(f"❌ 解析失败: {e}", err=True)
         sys.exit(1)
 
-    click.echo(f"   项目: {cfg.name} (domain: {cfg.domain or '未设置'})")
-    click.echo(f"   仓库: {len(cfg.repos)} 个")
-    for repo in cfg.repos:
+    p = cfg.project
+    click.echo(f"   项目: {p.name} (domain: {p.domain or '未设置'})")
+    click.echo(f"   仓库: {len(p.repos)} 个")
+    for repo in p.repos:
         click.echo(f"     - {repo.id}: {repo.path} @ {repo.ref}")
-    click.echo(f"   文档: {len(cfg.docs)} 个")
-    for doc in cfg.docs:
+    click.echo(f"   文档: {len(p.docs)} 个")
+    for doc in p.docs:
         click.echo(f"     - {doc.id}: {doc.path} [{doc.type}] via {doc.provider}")
 
-    warnings = cfg.validate_sources_exist()
+    warnings = _validate_project_sources(cfg.project)
     if warnings:
         click.echo("")
         for w in warnings:
@@ -162,11 +245,58 @@ def config_validate(config_path: str, dry_run_level: str):
         click.echo("\n✅ 配置校验通过 (L1: config-only)")
         return
 
-    # L2+: 预留
     if dry_run_level == "static-analysis":
         click.echo("\n⚠️  L2 static-analysis 尚未实现，仅执行 L1 校验")
     elif dry_run_level == "full-simulate":
         click.echo("\n⚠️  L3 full-simulate 尚未实现，仅执行 L1 校验")
+
+
+def _validate_project_sources(project: TargetProjectConfig) -> list[str]:
+    """校验目标项目数据源路径是否存在。"""
+    warnings: list[str] = []
+    for repo in project.repos:
+        if not os.path.exists(repo.path):
+            warnings.append(f"Repo path not found: {repo.path}")
+    for doc in project.docs:
+        if doc.provider == "local_file" and not os.path.exists(doc.path):
+            warnings.append(f"Doc path not found: {doc.path}")
+        if doc.provider not in ("local_file", "feishu_api", "confluence_api", "notion_api"):
+            warnings.append(f"Unknown provider '{doc.provider}' for doc {doc.id} (not yet implemented)")
+    return warnings
+
+
+def _load_initial_skill(settings: SettingsConfig) -> str:
+    """从配置文件指定的 initial_skill 路径读取 Skill 内容。"""
+    path = settings.initial_skill_path
+    if not path:
+        return ""
+    if not os.path.exists(path):
+        click.echo(f"   ⚠️  initial_skill 文件未找到: {path}", err=True)
+        return ""
+    with open(path, "r", encoding="utf-8") as f:
+        content = f.read()
+    click.echo(f"   📄 初始 Skill 已加载: {path} ({len(content)} chars)")
+    return content
+
+
+def _load_benchmarks(settings: SettingsConfig) -> list[dict]:
+    """从配置文件指定的 benchmark 目录加载 train split。
+    
+    目录结构：<benchmark_path>/train/items.json
+    返回 items 列表（可为空）。
+    """
+    path = settings.benchmark_path
+    if not path:
+        return []
+    train_file = Path(path) / "train" / "items.json"
+    if not train_file.exists():
+        click.echo(f"   ⚠️  benchmark 文件未找到: {train_file}", err=True)
+        return []
+    with open(train_file, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    items = data.get("items", [])
+    click.echo(f"   📊 Benchmark 已加载: {train_file} ({len(items)} items)")
+    return items
 
 
 # ── run ──────────────────────────────────────────────────────
@@ -178,7 +308,7 @@ def run():
 
 
 @run.command(name="all")
-@click.option("--config-path", default="project.yaml", help="配置文件路径")
+@click.option("--config-path", default="config.yaml", help="配置文件路径")
 @click.option("--from-step", "from_step", default=None, help="从指定模块恢复运行")
 @click.option("--to-step", "to_step", default=None, help="运行到指定模块停止")
 @click.option("--dry-run", is_flag=True, help="仅校验不执行")
@@ -192,9 +322,10 @@ def run_all(ctx, config_path: str, from_step: str | None, to_step: str | None, d
         ctx.invoke(config_validate, config_path=config_path)
         return
 
-    # 加载配置
     cfg = load_project_config(config_path)
-    output_root = os.path.join(cfg.output_root, run_id)
+    s = cfg.settings
+    p = cfg.project
+    output_root = os.path.join(s.output_root, run_id)
     os.makedirs(output_root, exist_ok=True)
 
     # M1: 代码图谱（支持多仓库）
@@ -202,26 +333,26 @@ def run_all(ctx, config_path: str, from_step: str | None, to_step: str | None, d
     all_leaf_ctxs = []
     total_nodes = 0
     total_edges = 0
-    if cfg.repos:
+    if p.repos:
         from code_to_skill.code_graph import run_code_graph_pipeline
-        for repo in cfg.repos:
+        for repo in p.repos:
             m1 = run_code_graph_pipeline(
                 repo_root=repo.path,
                 include=repo.include,
                 exclude=repo.exclude,
-                max_leaf_tokens=cfg.code_graph.get("max_leaf_tokens", 8000),
-                max_module_depth=cfg.code_graph.get("max_module_depth", 3),
+                max_leaf_tokens=s.code_graph.get("max_leaf_tokens", 8000),
+                max_module_depth=s.code_graph.get("max_module_depth", 3),
                 output_root=os.path.join(output_root, "sources", "code", repo.id, repo.ref),
             )
             total_nodes += len(m1['graph'].nodes)
             total_edges += len(m1['graph'].edges)
             all_leaf_ctxs.extend([ctx.model_dump() for ctx in m1.get("leaf_contexts", [])])
-        click.echo(f"   图谱: {total_nodes} nodes, {total_edges} edges ({len(cfg.repos)} repos)")
+        click.echo(f"   图谱: {total_nodes} nodes, {total_edges} edges ({len(p.repos)} repos)")
 
     # M2: 文档规范化
     click.echo("📄 [2/4] 规范化文档...")
     doc_chunks = []
-    for doc in cfg.docs:
+    for doc in p.docs:
         from code_to_skill.document_normalizer import normalize_document
         result = normalize_document(
             source_uri=doc.path,
@@ -246,19 +377,29 @@ def run_all(ctx, config_path: str, from_step: str | None, to_step: str | None, d
     # M4: Skill 优化
     click.echo("🔄 [4/4] 优化 Skill...")
     from code_to_skill.skillopt_loop import run_skillopt_loop
-    initial_skill = "# Generated Skill\n" + "\n".join(
-        [f"- {a.claim}" for a in m3["merged_atoms"] if a.status in ("accepted", "candidate")]
-    )
+
+    # 优先使用配置文件指定的 initial_skill
+    initial_skill = _load_initial_skill(s)
+    if not initial_skill:
+        initial_skill = "# Generated Skill\n" + "\n".join(
+            [f"- {a.claim}" for a in m3["merged_atoms"] if a.status in ("accepted", "candidate")]
+        )
+
+    # 优先使用配置文件指定的 benchmark
+    benchmark_items = _load_benchmarks(s)
+    if not benchmark_items:
+        benchmark_items = m3["benchmark_seeds"]
+
     m4 = run_skillopt_loop(
         initial_skill=initial_skill,
-        benchmark_items=m3["benchmark_seeds"],
+        benchmark_items=benchmark_items,
         output_dir=os.path.join(output_root, "optimization"),
-        num_epochs=cfg.skillopt.get("num_epochs", 3),
-        batch_size=cfg.skillopt.get("batch_size", 20),
-        accumulation=cfg.skillopt.get("accumulation", 1),
-        enable_slow_update=cfg.skillopt.get("enable_slow_update", False),
-        enable_meta_skill=cfg.skillopt.get("enable_meta_skill", False),
-        test_split_ratio=cfg.skillopt.get("test_split_ratio", 0.0),
+        num_epochs=s.skillopt.get("num_epochs", 3),
+        batch_size=s.skillopt.get("batch_size", 20),
+        accumulation=s.skillopt.get("accumulation", 1),
+        enable_slow_update=s.skillopt.get("enable_slow_update", False),
+        enable_meta_skill=s.skillopt.get("enable_meta_skill", False),
+        test_split_ratio=s.skillopt.get("test_split_ratio", 0.0),
     )
     click.echo(f"   最优分数: {m4['best_score']:.3f}")
 
@@ -267,13 +408,15 @@ def run_all(ctx, config_path: str, from_step: str | None, to_step: str | None, d
 
 @run.command(name="code-graph")
 @click.option("--repo", default=None, help="代码仓库路径")
-@click.option("--config-path", default="project.yaml")
+@click.option("--config-path", default="config.yaml")
 def run_code_graph(repo: str | None, config_path: str):
     """运行模块 1：代码图谱与模块树。"""
     cfg = load_project_config(config_path)
-    targets = cfg.repos
+    s = cfg.settings
+    p = cfg.project
+    targets = p.repos
     if repo:
-        targets = [r for r in cfg.repos if r.id == repo or r.path == repo] or cfg.repos
+        targets = [r for r in p.repos if r.id == repo or r.path == repo] or p.repos
     if not targets:
         click.echo("❌ 未指定仓库")
         return
@@ -283,34 +426,36 @@ def run_code_graph(repo: str | None, config_path: str):
             repo_root=r.path,
             include=r.include if r.include else None,
             exclude=r.exclude if r.exclude else None,
-            output_root=os.path.join(cfg.output_root, "sources", "code", r.id, r.ref),
+            output_root=os.path.join(s.output_root, "sources", "code", r.id, r.ref),
         )
         click.echo(f"✅ {r.id}: {len(m1['graph'].nodes)} nodes, {len(m1['graph'].edges)} edges")
 
 
 @run.command(name="normalize-docs")
 @click.option("--docs", default=None, help="文档路径")
-@click.option("--config-path", default="project.yaml")
+@click.option("--config-path", default="config.yaml")
 def run_normalize_docs(docs: str | None, config_path: str):
     """运行模块 2：文档规范化。"""
     cfg = load_project_config(config_path)
+    s = cfg.settings
+    p = cfg.project
     from code_to_skill.document_normalizer import normalize_document
-    targets = cfg.docs
+    targets = p.docs
     if docs:
-        targets = [d for d in cfg.docs if d.path == docs] or cfg.docs
+        targets = [d for d in p.docs if d.path == docs] or p.docs
     for doc in targets:
         result = normalize_document(
             source_uri=doc.path,
             source_id=doc.id,
             source_provider=doc.provider,
-            output_root=os.path.join(cfg.output_root, "sources", "docs", doc.id, "latest"),
+            output_root=os.path.join(s.output_root, "sources", "docs", doc.id, "latest"),
         )
         click.echo(f"✅ {doc.id}: {len(result['chunks'])} chunks")
 
 
 @run.command(name="extract-atoms")
 @click.option("--from", "from_dir", default=None, help="输入产物目录")
-@click.option("--config-path", default="project.yaml")
+@click.option("--config-path", default="config.yaml")
 def run_extract_atoms(from_dir: str | None, config_path: str):
     """运行模块 3：SkillAtom 抽取。"""
     from code_to_skill.atom_extractor import run_atom_extraction
@@ -325,7 +470,7 @@ def run_extract_atoms(from_dir: str | None, config_path: str):
 
 @run.command(name="optimize-skill")
 @click.option("--benchmark", default=None, help="Benchmark 路径")
-@click.option("--config-path", default="project.yaml")
+@click.option("--config-path", default="config.yaml")
 @click.option("--epochs", default=3, type=int, help="训练 epoch 数")
 @click.option("--batch-size", default=20, type=int, help="每 epoch batch 大小")
 @click.option("--accumulation", default=1, type=int, help="梯度累积步数")
@@ -334,9 +479,12 @@ def run_extract_atoms(from_dir: str | None, config_path: str):
 def run_optimize_skill(benchmark: str | None, config_path: str, epochs: int, batch_size: int, accumulation: int, slow_update: bool, meta_skill: bool):
     """运行模块 4：SkillOpt 优化。"""
     from code_to_skill.skillopt_loop import run_skillopt_loop
+    cfg = load_project_config(config_path)
+    s = cfg.settings
+    initial_skill = _load_initial_skill(s) or "# Initial Skill\n- Default rule"
     result = run_skillopt_loop(
-        initial_skill="# Initial Skill\n- Default rule",
-        benchmark_items=[],
+        initial_skill=initial_skill,
+        benchmark_items=_load_benchmarks(s),
         output_dir=benchmark or "runs/latest/optimization",
         num_epochs=epochs,
         batch_size=batch_size,
@@ -354,7 +502,6 @@ def run_optimize_skill(benchmark: str | None, config_path: str, epochs: int, bat
 def status(run_id: str | None):
     """查看运行状态。"""
     if not run_id:
-        # 列出最近的 runs
         runs_dir = Path("runs")
         if runs_dir.exists():
             runs = sorted(runs_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
@@ -372,7 +519,6 @@ def status(run_id: str | None):
                 click.echo("📋 暂无运行记录。使用 `skill-lab run all` 开始。")
         return
 
-    # 具体 run 的状态
     state_file = Path("runs") / run_id / "optimization" / "runtime_state.json"
     if state_file.exists():
         with open(state_file) as f:
@@ -434,7 +580,8 @@ def inspect(artifact: str):
 @main.command()
 @click.argument("run_id")
 @click.option("--split", default="test", help="Benchmark split")
-def eval_skill(run_id: str, split: str):
+@click.option("--config-path", default="config.yaml")
+def eval_skill(run_id: str, split: str, config_path: str):
     """对指定 run 的 best_skill 运行评测。"""
     best_skill_path = Path("runs") / run_id / "optimization" / "best_skill.md"
     if not best_skill_path.exists():
@@ -444,11 +591,19 @@ def eval_skill(run_id: str, split: str):
     with open(best_skill_path) as f:
         skill = f.read()
 
-    bench_path = Path("benchmarks/fineract") / split / "items.json"
-    items = []
-    if bench_path.exists():
-        with open(bench_path) as f:
-            items = json.load(f).get("items", [])
+    cfg = load_project_config(config_path)
+    s = cfg.settings
+
+    # 从配置加载指定 split 的 benchmark
+    items: list[dict] = []
+    bench_path = s.benchmark_path
+    if bench_path:
+        bench_file = Path(bench_path) / split / "items.json"
+        if bench_file.exists():
+            with open(bench_file) as f:
+                items = json.load(f).get("items", [])
+        else:
+            click.echo(f"   ⚠️  benchmark 文件未找到: {bench_file}", err=True)
 
     from code_to_skill.skillopt_loop import run_skillopt_loop
     result = run_skillopt_loop(
@@ -469,7 +624,6 @@ def eval_skill(run_id: str, split: str):
 def approve(approval_id: str, deny: bool):
     """审批等待中的高风险动作。"""
     action = "拒绝" if deny else "批准"
-    # 查找 approval 记录
     approvals_file = Path("runs") / "approvals.jsonl"
     if approvals_file.exists():
         with open(approvals_file) as f:
@@ -478,7 +632,6 @@ def approve(approval_id: str, deny: bool):
                 if record.get("approval_id") == approval_id:
                     record["decision"] = "denied" if deny else "approved"
                     record["ts"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                    # 追加新记录
                     with open(approvals_file, "a") as af:
                         af.write(json.dumps(record, ensure_ascii=False) + "\n")
                     click.echo(f"🔑 {action}审批: {approval_id}")
@@ -499,7 +652,6 @@ def publish(run_id: str, target: str | None):
         click.echo(f"❌ 未找到 Skill: {best_skill}")
         return
 
-    # 读取门禁报告
     gate_ok = True
     history_file = run_dir / "optimization" / "history.json"
     if history_file.exists():
@@ -539,16 +691,15 @@ def resume(run_id: str, from_step: str | None):
     best_score = state.get("best_score", 0)
     click.echo(f"🔄 恢复运行: {run_id} (已完成 {last_step} 步, best_score={best_score:.3f})")
 
-    # 加载配置并继续
-    config_path = run_dir / ".." / ".." / "project.yaml"
+    config_path = run_dir / ".." / ".." / "config.yaml"
     if not config_path.exists():
-        config_path = Path("project.yaml")
+        config_path = Path("config.yaml")
 
     if config_path.exists():
         click.echo(f"   配置: {config_path}")
         click.echo(f"   运行: skill-lab run all --config-path {config_path} --from-step {from_step or last_step}")
     else:
-        click.echo("   ⚠️ 未找到 project.yaml，请手动指定")
+        click.echo("   ⚠️ 未找到 config.yaml，请手动指定")
 
 
 @main.command()

@@ -78,7 +78,7 @@ code-to-skill/
 │   ├── design/           # 6 模块详细设计文档
 │   └── implementation-plan.md
 ├── src/code_to_skill/    # 主代码
-│   ├── model_gateway/    # M5 模型交互层
+│   ├── model_provider/    # M5 模型交互层
 │   ├── cli/              # M6 CLI 编排
 │   ├── code_graph/       # M1 代码图谱
 │   ├── document_normalizer/ # M2 文档规范化
@@ -140,21 +140,22 @@ skillopt:
 
 ### 知识库
 
-从代码仓库和知识文档两个来源提取 SkillAtom。代码仓库通过 `project.yaml` 配置，知识文档置于 `test-data/kb/<project>/` 目录：
+从代码仓库和知识文档两个来源提取 SkillAtom。代码仓库通过 `config.yaml` 配置，知识文档置于 `test-data/sources/docs/<project>/` 目录：
 
 ```bash
-mkdir -p test-data/kb/fineract
-cp test-data/fineract-develop/README.md test-data/kb/fineract/
-cp test-data/fineract-develop/CONTRIBUTING.md test-data/kb/fineract/
+mkdir -p test-data/sources/docs/fineract
+cp docs/fineract/README.md test-data/sources/docs/fineract/
+cp docs/fineract/CONTRIBUTING.md test-data/sources/docs/fineract/
 ```
 
-然后在 `project.yaml` 中注册：
+然后在 `config.yaml` 中注册：
 
 ```yaml
-sources:
-  docs:
-    - id: fineract-readme
-      path: test-data/kb/fineract/README.md
+project:
+  sources:
+    docs:
+      - id: fineract-readme
+        path: test-data/sources/docs/fineract/README.md
       provider: local_file
 ```
 

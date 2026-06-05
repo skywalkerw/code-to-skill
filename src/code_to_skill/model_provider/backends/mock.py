@@ -22,6 +22,7 @@ class MockReplayBackend(InteractionBackend):
     """
 
     backend_type = "mock"
+    provider = "mock"
 
     def __init__(self, backend_id: str, fixture_dir: str, model: str = "mock-model"):
         self.backend_id = backend_id
@@ -37,6 +38,10 @@ class MockReplayBackend(InteractionBackend):
             "json_schema": True,
             "tool_calling": True,
             "vision": False,
+            "workspace_execution": False,
+            "file_write": False,
+            "shell_command": False,
+            "returns_trajectory": False,
             "structured_output_level": 3,
             "context_window": 1000000,
             "max_output_tokens": 16000,

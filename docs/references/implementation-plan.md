@@ -60,7 +60,7 @@
 
 ## 三、Phase 2 完成项
 
-### LLM Backend（`model_gateway/llm_backend.py`）
+### LLM Backend（`model_provider/llm_backend.py`）
 - `is_llm_available()` — 检测 `DEEPSEEK_API_KEY` 环境变量
 - `create_llm_backend()` — 自动创建 DeepSeek API 或降级 MockBackend
 - 配置：`deepseek`（base_url=https://api.deepseek.com）

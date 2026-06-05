@@ -1,0 +1,145 @@
+# =============================================================================
+# code-to-skill 配置文件（config.yaml）
+# =============================================================================
+# 两个顶层段：
+#   settings    框架自身配置（控制 code-to-skill 如何工作）
+#   project     目标项目配置（要处理哪个项目的代码/文档）
+#
+# 环境变量通过 ${VAR_NAME} 内联引用。
+# =============================================================================
+
+# =============================================================================
+# settings：框架自身设置（控制 code-to-skill 如何运行）
+# =============================================================================
+
+settings:
+  # ── 初始 Skill（可选：为空则由 M3 从代码/文档自动生成）────
+  initial_skill: ""
+
+  # ── Benchmark（可选：为空则用 M3 自动生成的 benchmark_seeds）──
+  benchmark: ""
+
+  # ── 模块 1：代码图谱与模块树 ──────────────────────────────
+  code_graph:
+    max_leaf_tokens: 8000
+    max_module_depth: 3
+    tokenizer: cl100k_base
+
+  # ── 模块 2：文档规范化 ────────────────────────────────────
+  document_normalizer:
+    ocr_engine: tesseract
+    ocr_languages: chi_sim+eng
+    ocr_confidence_threshold: 0.6
+
+  # ── 模块 3：SkillAtom 抽取 ───────────────────────────────
+  atom_extractor:
+    confidence_tier_1_max: 0.95
+    llm_adjustment: 0.05
+
+  # ── 模块 4：SkillOpt 优化 ──────────────────────────────────
+  skillopt:
+    num_epochs: 3
+    batch_size: 20
+    edit_budget: 3
+    gate_metric: soft
+
+  # ── 模块 5：模型与智能体交互 ──────────────────────────────
+  # backend 由 type（高层类别）和 provider（具体实现）两个维度定义：
+  #   type:     llm_api | local_llm | agent_cli | agent_service | mcp_agent | mock
+  #   provider: openai_compatible | mock
+  model_provider:
+    backends:
+      # 生产级 LLM（DashScope 百炼平台）
+      deepseek:
+        type: llm_api
+        provider: openai_compatible
+        base_url: ${DASHSCOPE_BASE_URL}
+        api_key_env: DASHSCOPE_API_KEY
+        model: deepseek-v4-pro
+        context_window: 1000000
+        timeout_seconds: 180
+
+      # 本地开发 LLM（vLLM / Ollama）
+      qwen-local:
+        type: local_llm
+        provider: openai_compatible
+        base_url: http://127.0.0.1:8000/v1
+        api_key_env: LOCAL_LLM_API_KEY
+        model: Qwen/Qwen3.5-4B
+        context_window: 32768
+        timeout_seconds: 120
+
+      # 测试桩（离线 / CI / 无 API key 环境）
+      mock-backend:
+        type: mock
+        provider: mock
+        model: mock-model-v1
+
+    routes:
+      extractor:
+        primary: deepseek
+        fallback: [qwen-local, mock-backend]
+      clusterer:
+        primary: deepseek
+        fallback: [qwen-local, mock-backend]
+      optimizer:
+        primary: deepseek
+        fallback: [qwen-local, mock-backend]
+      target:
+        primary: deepseek
+        fallback: [qwen-local, mock-backend]
+      judge:
+        primary: deepseek
+        fallback: [qwen-local, mock-backend]
+      agent_worker:
+        primary: deepseek
+        fallback: [qwen-local, mock-backend]
+      default:
+        primary: deepseek
+        fallback: [qwen-local, mock-backend]
+
+    policies:
+      default_retries: 3
+      retry_backoff: exponential
+      trace_enabled: true
+      cache_enabled: false
+      redact_secrets: true
+      max_cost_per_run_usd: 20
+      max_timeout_seconds: 900
+      structured_output_fallback: true
+
+  # ── 输出与发布 ────────────────────────────────────────────
+  output:
+    root: runs/
+    publish_target: ""
+
+  # ── 审批策略 ──────────────────────────────────────────────
+  approvals:
+    require_for:
+      - invoke_agent_cli_with_workspace_write
+      - publish_skill
+    auto_approve_in_batch: false
+
+# =============================================================================
+# project：目标项目配置（要处理哪个项目）
+# =============================================================================
+
+project:
+  name: code-to-skill
+  domain: agent-skill
+  description: "从知识库和代码提取并优化 Agent Skill"
+
+  sources:
+    repos:
+      # - id: fineract
+      #   path: /path/to/fineract
+      #   ref: main
+      #   include: ["src/", "fineract-provider/"]
+      #   exclude: ["**/test/**", "**/*.spec.*"]
+    docs:
+      # - id: fin-technical
+      #   path: docs/fineract/technical.md
+      #   provider: local_file
+      #   type: markdown
+      #   authority: team_runbook
+      #   domain_tags: ["fineract", "financial"]

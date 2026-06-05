@@ -133,7 +133,7 @@ def score_with_llm_judge(
         for d in dimensions
     ])
 
-    from code_to_skill.model_gateway.types import InteractionRequest
+    from code_to_skill.model_provider.types import InteractionRequest
 
     try:
         resp = backend.invoke(InteractionRequest(

@@ -1,17 +1,19 @@
-"""YAML 配置加载与校验。
+"""统一 YAML 配置加载与校验。
 
-符合 §2.4 project.yaml 完整 schema。
+config.yaml 分为两个顶层段：
+  settings    框架自身配置（控制 code-to-skill 如何工作）
+  project     目标项目配置（要处理哪个项目的代码/文档）
 """
 from __future__ import annotations
 
 import os
-from typing import Any, Optional
+from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 
 
-# ── Schema ────────────────────────────────────────────────────
+# ── 目标项目 Schema ───────────────────────────────────────────
 
 class RepoSource(BaseModel):
     id: str
@@ -32,78 +34,181 @@ class DocSource(BaseModel):
     ocr_enabled: bool = False
 
 
-class ProjectConfig(BaseModel):
-    """project.yaml 的 pydantic schema。"""
-
-    # 项目基础
-    name: str = "code-to-skill"
+class TargetProjectConfig(BaseModel):
+    """目标项目定义 — 要处理哪个项目的代码/文档。"""
+    name: str = ""
     domain: str = ""
     description: str = ""
-
-    # 数据源
     repos: list[RepoSource] = Field(default_factory=list)
     docs: list[DocSource] = Field(default_factory=list)
 
-    # 模块配置（松散模式，允许各模块有自己的子配置）
+
+# ── 框架设置 Schema ───────────────────────────────────────────
+
+class BackendConfig(BaseModel):
+    """单个模型后端定义。"""
+    type: str = ""
+    provider: str = "openai_compatible"
+    model: str = ""
+    base_url: str = ""
+    base_url_env: str = ""
+    api_key_env: str = ""
+    api_key: str = ""
+    context_window: int = 128000
+    timeout_seconds: int = 180
+    command: str = ""
+    profile: str = ""
+    sandbox: str = ""
+    workspace_required: bool = False
+    returns_trajectory: bool = False
+    fixture_dir: str = ""
+
+
+class RouteConfig(BaseModel):
+    """单条路由规则。"""
+    primary: str = ""
+    fallback: list[str] = Field(default_factory=list)
+    strategy: str = "fallback"
+    quorum: int = 2
+    backends: list[str] = Field(default_factory=list)
+
+
+class ModelProviderSettings(BaseModel):
+    """模型与智能体交互配置（settings.model_provider 段）。"""
+    backends: dict[str, BackendConfig] = Field(default_factory=dict)
+    routes: dict[str, RouteConfig] = Field(default_factory=dict)
+    default_retries: int = 3
+    retry_backoff: str = "exponential"
+    trace_enabled: bool = True
+    cache_enabled: bool = False
+    redact_secrets: bool = True
+    max_cost_per_run_usd: float = 20.0
+    max_timeout_seconds: int = 900
+    structured_output_fallback: bool = True
+
+
+class SettingsConfig(BaseModel):
+    """框架自身设置 — 控制 code-to-skill 如何运行。"""
+    # 资源路径（相对于项目根目录）
+    initial_skill_path: str = ""          # 初始 Skill 文件路径（为空则由 M3 自动生成）
+    benchmark_path: str = ""              # Benchmark 目录（含 train/selection/test splits，为空则用 M3 自动生成）
+    # 模块配置
     code_graph: dict[str, Any] = Field(default_factory=dict)
     document_normalizer: dict[str, Any] = Field(default_factory=dict)
     atom_extractor: dict[str, Any] = Field(default_factory=dict)
     skillopt: dict[str, Any] = Field(default_factory=dict)
-    model_layer: dict[str, Any] = Field(default_factory=dict)
-
-    # 输出
+    model_provider: ModelProviderSettings = Field(default_factory=ModelProviderSettings)
     output_root: str = "runs"
     publish_target: str = ""
-
-    # 审批
     approvals_require_for: list[str] = Field(default_factory=list)
     approvals_auto_approve_in_batch: bool = False
 
+
+# ── 顶层 AppConfig ────────────────────────────────────────────
+
+class AppConfig(BaseModel):
+    """config.yaml 的总 schema。"""
+    settings: SettingsConfig = Field(default_factory=SettingsConfig)
+    project: TargetProjectConfig = Field(default_factory=TargetProjectConfig)
+
     @classmethod
-    def from_yaml(cls, path: str) -> "ProjectConfig":
+    def from_yaml(cls, path: str) -> "AppConfig":
         """从 YAML 文件加载配置。"""
         with open(path, "r", encoding="utf-8") as f:
             raw = yaml.safe_load(f)
         if not isinstance(raw, dict):
             raise ValueError(f"Invalid YAML: expected dict, got {type(raw)}")
 
-        # 扁平化嵌套结构
-        project = raw.get("project", {})
-        sources = raw.get("sources", {})
-        config = {
-            "name": project.get("name", "code-to-skill"),
-            "domain": project.get("domain", ""),
-            "description": project.get("description", ""),
-            "repos": sources.get("repos", []),
-            "docs": sources.get("docs", []),
-            "code_graph": raw.get("code_graph", {}),
-            "document_normalizer": raw.get("document_normalizer", {}),
-            "atom_extractor": raw.get("atom_extractor", {}),
-            "skillopt": raw.get("skillopt", {}),
-            "model_layer": raw.get("model_layer", {}),
-            "output_root": raw.get("output", {}).get("root", "runs"),
-            "publish_target": raw.get("output", {}).get("publish_target", ""),
-            "approvals_require_for": raw.get("approvals", {}).get("require_for", []),
-            "approvals_auto_approve_in_batch": raw.get("approvals", {}).get("auto_approve_in_batch", False),
-        }
-        return cls(**config)
+        settings_raw = raw.get("settings", {})
+        project_raw = raw.get("project", {})
 
-    def validate_sources_exist(self) -> list[str]:
-        """校验数据源路径是否存在。返回警告列表。"""
-        warnings: list[str] = []
-        for repo in self.repos:
-            if not os.path.exists(repo.path):
-                warnings.append(f"Repo path not found: {repo.path}")
-        for doc in self.docs:
-            if doc.provider == "local_file" and not os.path.exists(doc.path):
-                warnings.append(f"Doc path not found: {doc.path}")
-            if doc.provider not in ("local_file", "feishu_api", "confluence_api", "notion_api"):
-                warnings.append(f"Unknown provider '{doc.provider}' for doc {doc.id} (not yet implemented)")
-        return warnings
+        return cls(
+            settings=_parse_settings(settings_raw),
+            project=_parse_project(project_raw),
+        )
 
 
-def load_project_config(path: str) -> ProjectConfig:
-    """加载并校验 project.yaml。"""
+# ── 向后兼容别名（减少调用方修改量）────────────────────────────
+
+# load_project_config 返回 AppConfig，外部代码通过 cfg.settings / cfg.project 访问
+# 同时保留旧的顶层字段作为属性投射，方便迁移
+
+def load_project_config(path: str) -> AppConfig:
+    """加载并校验 config.yaml。返回 AppConfig。"""
     if not os.path.exists(path):
         raise FileNotFoundError(f"Config file not found: {path}")
-    return ProjectConfig.from_yaml(path)
+    return AppConfig.from_yaml(path)
+
+
+# ── 解析辅助 ──────────────────────────────────────────────────
+
+def _parse_project(raw: dict) -> TargetProjectConfig:
+    if not raw:
+        return TargetProjectConfig()
+
+    sources = raw.get("sources", {})
+    return TargetProjectConfig(
+        name=raw.get("name", ""),
+        domain=raw.get("domain", ""),
+        description=raw.get("description", ""),
+        repos=[RepoSource(**r) for r in (sources.get("repos") or [])],
+        docs=[DocSource(**d) for d in (sources.get("docs") or [])],
+    )
+
+
+def _parse_settings(raw: dict) -> SettingsConfig:
+    if not raw:
+        return SettingsConfig()
+
+    # model_provider
+    mp_raw = raw.get("model_provider", {})
+    # 兼容旧 model_layer
+    if not mp_raw and raw.get("model_layer"):
+        mp_raw = raw.get("model_layer", {})
+
+    # output
+    output = raw.get("output", {})
+
+    # approvals
+    approvals = raw.get("approvals", {})
+
+    return SettingsConfig(
+        initial_skill_path=raw.get("initial_skill", ""),
+        benchmark_path=raw.get("benchmark", ""),
+        code_graph=raw.get("code_graph", {}),
+        document_normalizer=raw.get("document_normalizer", {}),
+        atom_extractor=raw.get("atom_extractor", {}),
+        skillopt=raw.get("skillopt", {}),
+        model_provider=_parse_model_provider(mp_raw),
+        output_root=output.get("root", "runs"),
+        publish_target=output.get("publish_target", ""),
+        approvals_require_for=approvals.get("require_for", []),
+        approvals_auto_approve_in_batch=approvals.get("auto_approve_in_batch", False),
+    )
+
+
+def _parse_model_provider(raw: dict) -> ModelProviderSettings:
+    if not raw:
+        return ModelProviderSettings()
+
+    backends: dict[str, BackendConfig] = {}
+    for bid, bcfg in raw.get("backends", {}).items():
+        backends[bid] = BackendConfig(**bcfg)
+
+    routes: dict[str, RouteConfig] = {}
+    for role, rcfg in raw.get("routes", {}).items():
+        routes[role] = RouteConfig(**rcfg)
+
+    policies = raw.get("policies", {})
+    return ModelProviderSettings(
+        backends=backends,
+        routes=routes,
+        default_retries=policies.get("default_retries", 3),
+        retry_backoff=policies.get("retry_backoff", "exponential"),
+        trace_enabled=policies.get("trace_enabled", True),
+        cache_enabled=policies.get("cache_enabled", False),
+        redact_secrets=policies.get("redact_secrets", True),
+        max_cost_per_run_usd=policies.get("max_cost_per_run_usd", 20),
+        max_timeout_seconds=policies.get("max_timeout_seconds", 900),
+        structured_output_fallback=policies.get("structured_output_fallback", True),
+    )

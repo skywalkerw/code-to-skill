@@ -327,7 +327,7 @@ code-to-skill/
     ├── document_normalizer/
     ├── atom_extractor/
     ├── skillopt_loop/
-    ├── model_gateway/
+    ├── model_provider/
     └── cli/
 ```
 

@@ -95,8 +95,8 @@ def _llm_hierarchical_merge(
     1. 先分别 merge failure + success（两组独立调用）
     2. 再 final merge（failure 优先）
     """
-    from code_to_skill.model_gateway.types import InteractionRequest
-    from code_to_skill.model_gateway.structured_output import invoke_with_structured_output
+    from code_to_skill.model_provider.types import InteractionRequest
+    from code_to_skill.model_provider.structured_output import invoke_with_structured_output
     from ..json_utils import safe_json_parse
 
     # Merge failure edits

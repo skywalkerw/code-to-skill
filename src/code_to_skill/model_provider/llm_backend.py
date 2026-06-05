@@ -1,6 +1,10 @@
 """LLM Backend 工厂。
 
-从环境变量自动创建 OpenAI-compatible backend 或降级到 MockBackend。
+支持三种创建方式（按优先级降序）：
+1. config.yaml 内嵌 model_provider 配置 → create_llm_backend_from_project()
+2. 独立 interaction_config.yaml → create_llm_backend_from_yaml()
+3. 环境变量 → create_llm_backend() / is_llm_available()
+
 自动加载项目根目录的 .env 文件（系统环境变量优先）。
 """
 from __future__ import annotations
@@ -9,16 +13,15 @@ import os
 import logging
 from pathlib import Path
 
-from code_to_skill.model_gateway.backends import InteractionBackend
-from code_to_skill.model_gateway.backends.openai_compatible import OpenAICompatibleBackend
-from code_to_skill.model_gateway.backends.mock import MockReplayBackend
+from code_to_skill.model_provider.backends import InteractionBackend
+from code_to_skill.model_provider.backends.openai_compatible import OpenAICompatibleBackend
+from code_to_skill.model_provider.backends.mock import MockReplayBackend
 
 logger = logging.getLogger(__name__)
 
 
 def _load_dotenv():
     """加载项目根目录 .env 文件。系统环境变量优先。"""
-    # 从当前模块向上查找项目根目录
     env_path = Path(__file__).resolve().parent.parent.parent.parent / ".env"
     if not env_path.exists():
         return
@@ -43,7 +46,8 @@ def _load_dotenv():
 # 模块加载时自动读取 .env
 _load_dotenv()
 
-# 环境变量映射
+# ── 环境变量映射（legacy）─────────────────────────────
+
 _ENV_MAP = {
     "deepseek": {
         "base_url_env": "DEEPSEEK_BASE_URL",
@@ -63,7 +67,9 @@ _ENV_MAP = {
 
 
 def create_llm_backend(backend_id: str | None = None) -> InteractionBackend:
-    """从环境变量创建 LLM backend，不可用时降级为 MockBackend。
+    """自动发现并创建 LLM backend。
+
+    查找顺序：config.yaml → interaction_config.yaml → 环境变量 → mock fallback
 
     Args:
         backend_id: 预配置的 backend ID。为 None 时从 SKILL_LAB_LLM_BACKEND 环境变量读取，
@@ -74,6 +80,37 @@ def create_llm_backend(backend_id: str | None = None) -> InteractionBackend:
     """
     if backend_id is None:
         backend_id = os.environ.get("SKILL_LAB_LLM_BACKEND", "deepseek")
+
+    # 1. 尝试 config.yaml 内嵌配置（推荐）
+    for project_yaml in [Path("config.yaml"), Path("skill-lab.yaml")]:
+        if project_yaml.exists():
+            try:
+                from code_to_skill.cli.config_loader import load_project_config
+                from code_to_skill.model_provider.config import create_backend_from_config
+                cfg = load_project_config(str(project_yaml))
+                mp = cfg.settings.model_provider
+                backend_cfg = mp.backends.get(backend_id)
+                if backend_cfg:
+                    logger.info("Using config.yaml backend: %s", backend_id)
+                    return create_backend_from_config(backend_id, backend_cfg)
+            except Exception as e:
+                logger.debug("config.yaml load failed: %s", e)
+
+    # 2. 尝试独立 interaction_config.yaml
+    yaml_paths = [
+        Path("interaction_config.yaml"),
+        Path("config") / "interaction_config.yaml",
+    ]
+    for yaml_path in yaml_paths:
+        if yaml_path.exists():
+            try:
+                from code_to_skill.model_provider.config import create_llm_backend_from_yaml
+                logger.info("Using standalone YAML config: %s", yaml_path)
+                return create_llm_backend_from_yaml(yaml_path, backend_id)
+            except Exception as e:
+                logger.warning("YAML config failed (%s): %s", yaml_path, e)
+
+    # 3. 降级：环境变量模式
     cfg = _ENV_MAP.get(backend_id)
     if cfg is None:
         logger.warning("Unknown backend_id '%s', falling back to mock", backend_id)
@@ -106,9 +143,33 @@ def _create_mock(backend_id: str) -> MockReplayBackend:
 
 
 def is_llm_available(backend_id: str | None = None) -> bool:
-    """检查 LLM backend 是否可用（API key 已设置）。"""
+    """检查 LLM backend 是否可用。"""
     if backend_id is None:
         backend_id = os.environ.get("SKILL_LAB_LLM_BACKEND", "deepseek")
+
+    # 1. 检查 config.yaml
+    for project_yaml in [Path("config.yaml"), Path("skill-lab.yaml")]:
+        if project_yaml.exists():
+            try:
+                from code_to_skill.cli.config_loader import load_project_config
+                cfg = load_project_config(str(project_yaml))
+                if cfg.settings.model_provider.backends.get(backend_id):
+                    return True
+            except Exception:
+                pass
+
+    # 2. 检查独立 YAML
+    for yaml_path in [Path("interaction_config.yaml"), Path("config") / "interaction_config.yaml"]:
+        if yaml_path.exists():
+            try:
+                from code_to_skill.model_provider.config import load_interaction_config
+                raw = load_interaction_config(yaml_path)
+                if raw.get("backends", {}).get(backend_id):
+                    return True
+            except Exception:
+                pass
+
+    # 3. 环境变量
     cfg = _ENV_MAP.get(backend_id)
     if cfg is None:
         return False
