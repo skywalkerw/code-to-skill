@@ -15,6 +15,10 @@ from .types import (
     MergedPatch, RankedEdit, CandidateSkill, FailureSummaryEntry,
     StepRecord, HistoryEntry, StepBuffer,
 )
+from .skill_ops import apply_edits as apply_edits_with_report
+from .gate import GateManager
+from .scheduler import EditBudgetScheduler
+from .step_buffer import StepBufferManager
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +67,10 @@ def _check_keyword(text: str, check: str) -> bool:
 
 
 # ── Updater ──────────────────────────────────────────────────
+
+def _gate_icon(action: str) -> str:
+    """门禁动作图标。"""
+    return {"accept_new_best": "⭐", "accept": "✓", "reject": "✗"}.get(action, "?")
 
 def apply_edits(skill_content: str, edits: list[EditOp]) -> str:
     """将编辑应用到 Skill 文档。"""
@@ -128,12 +136,16 @@ def run_skillopt_loop(
     edit_budget: int = 3,
     selection_split_ratio: float = 0.3,
     use_llm_rollout: bool = False,
+    budget_strategy: str = "constant",
+    patience: int = 10,
 ) -> dict:
-    """运行 SkillOpt 优化循环（简化版）。
+    """运行 SkillOpt 优化循环。
 
-    当前实现：用确定性 scorer 做 rollout/evaluate，
-    用基于规则的 patch 生成替代 LLM reflect。
-    完整版需接入 M5 backend。
+    对齐 external/SkillOpt engine/trainer.py 的完整训练流程：
+    - GateManager: 阈值门控 + patience 早停
+    - EditBudgetScheduler: 编辑预算退火
+    - StepBufferManager: 历史编辑追踪
+    - per-edit 报告: 精确的应用状态追踪
 
     Returns:
         {"best_skill": str, "history": list, "best_score": float}
@@ -151,6 +163,15 @@ def run_skillopt_loop(
     best_score = 0.0
     best_step = 0
     history: list[dict] = []
+
+    # 新组件初始化
+    total_steps = num_epochs * max(1, len(train_items) // max(1, batch_size))
+    gate = GateManager(patience=patience)
+    scheduler = EditBudgetScheduler(
+        initial_budget=edit_budget, min_budget=1,
+        total_steps=total_steps, strategy=budget_strategy,
+    )
+    buffer = StepBufferManager()
 
     # Initial evaluation
     logger.info("[M4] 开始训练: skill=%d chars, train=%d items, selection=%d items, epochs=%d, batch=%d",
@@ -192,16 +213,24 @@ def run_skillopt_loop(
 
             # 4. Select（优先 LLM，降级规则）
             from .llm_components import select_edits_llm
-            ranked_dicts = select_edits_llm(merged.edits, current_skill, edit_budget)
+            step_budget = scheduler.step()
+            ranked_dicts = select_edits_llm(merged.edits, current_skill, step_budget)
             ranked = [RankedEdit(**r) if isinstance(r, dict) else r for r in ranked_dicts]
             for i, r in enumerate(ranked):
+                # 过滤已拒绝的冗余编辑
+                if buffer.is_edit_redundant(r.edit):
+                    logger.info("[M4] select #%d: SKIP (redundant) [%s] %s", i + 1, r.edit.op, r.edit.content[:40])
+                    continue
                 logger.info("[M4] select #%d: [%s] %s", i + 1, r.edit.op, r.edit.content[:60])
 
-            # 5. Update
-            candidate_content = apply_edits(current_skill, [e.edit for e in ranked])
+            # 5. Update（使用 advanced skill_ops）
+            candidate_content, edit_reports = apply_edits_with_report(current_skill, [e.edit for e in ranked])
             candidate_hash = compute_semantic_hash(candidate_content)
             size_delta = len(candidate_content) - len(current_skill)
             logger.info("[M4] update: hash=%s delta=%+d chars", candidate_hash[:8], size_delta)
+            for report in edit_reports:
+                if "error" in report.get("status", "") or "skipped" in report.get("status", ""):
+                    logger.debug("  edit #%d: %s", report["index"], report["status"])
 
             # 6. Evaluate
             eval_result = _evaluate_skill(candidate_content, selection_items, use_llm=use_llm_rollout)
@@ -210,23 +239,40 @@ def run_skillopt_loop(
                          eval_result["soft"], eval_result["accuracy"], eval_result["f1"],
                          current_score, best_score)
 
-            # Gate
-            action = "reject"
-            if candidate_score > best_score:
-                action = "accept_new_best"
+            # Gate（使用 GateManager）
+            decision = gate.evaluate(candidate_score, best_score, current_score)
+            action = decision.action
+            logger.info("[M4] gate: %s reason=%s", _gate_icon(action), decision.reason)
+
+            if action == "accept_new_best":
                 best_score = candidate_score
                 best_skill = candidate_content
                 best_step = step_counter
-                logger.info("[M4] gate: ⭐ NEW BEST score=%.3f step=%d", best_score, step_counter)
-            elif candidate_score > current_score:
-                action = "accept"
-                logger.info("[M4] gate: ✓ accepted score=%.3f", candidate_score)
+                # 记录接受的编辑
+                for r in ranked:
+                    buffer.record_accepted_edit(step_counter, r.edit)
+            elif action == "accept":
+                for r in ranked:
+                    buffer.record_accepted_edit(step_counter, r.edit)
             else:
-                logger.info("[M4] gate: ✗ rejected score=%.3f (≤ current=%.3f)", candidate_score, current_score)
+                for r in ranked:
+                    buffer.record_rejected_edit(step_counter, r.edit)
 
             current_score = candidate_score if action != "reject" else current_score
             if action != "reject":
                 current_skill = candidate_content
+
+            # 记录 rollout 中的失败任务
+            for r in results:
+                if r["hard"] == 0:
+                    buffer.record_failure(step_counter, r["id"])
+                else:
+                    buffer.record_success(step_counter, r["id"])
+
+            # 早停检查
+            if gate.should_early_stop:
+                logger.info("[M4] 早停: %d 次连续 reject", gate._consecutive_rejects)
+                break
 
             record = {
                 "step": step_counter,
@@ -238,6 +284,15 @@ def run_skillopt_loop(
                 "edit_count": len(ranked),
             }
             history.append(record)
+
+            # Step-level early stop
+            if gate.should_early_stop:
+                break
+
+        # Epoch-level early stop
+        if gate.should_early_stop:
+            logger.info("[M4] 早停在 epoch %d/%d", epoch + 1, num_epochs)
+            break
 
         # Epoch end: save state
         save_runtime_state(output_dir, step_counter, current_score, best_score, best_step)
