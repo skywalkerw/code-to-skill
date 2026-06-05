@@ -55,6 +55,15 @@ class StepBufferManager:
             all_rejected.extend(buf.rejected_edits)
         return all_rejected
 
+    def get_accepted_edits(self, step: int | None = None) -> list[EditOp]:
+        """获取已接受的编辑（可选指定 step）。"""
+        if step is not None:
+            return self._buffers.get(step, StepBuffer()).accepted_edits
+        all_accepted = []
+        for buf in self._buffers.values():
+            all_accepted.extend(buf.accepted_edits)
+        return all_accepted
+
     def _get_or_create(self, step: int) -> StepBuffer:
         if step not in self._buffers:
             self._buffers[step] = StepBuffer(step=step)

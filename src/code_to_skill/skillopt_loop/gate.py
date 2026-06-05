@@ -55,60 +55,78 @@ class GateDecision:
 class GateManager:
     """门禁管理器：阈值 + patience 双重控制。
 
+    对齐 external/SkillOpt select_gate_score + gate 逻辑。
+
     行为：
     - candidate_score > best_score → accept_new_best
     - candidate_score > current_score → accept
     - 连续 reject 超过 patience → 触发早停信号
+
+    metric="hard" 按论文默认：hard pass rate 严格门控。
+    小 selection 集（< 30 条）建议用 "soft"。
     """
 
-    def __init__(self, patience: int = 10, delta: float = 0.01):
+    def __init__(
+        self,
+        patience: int = 10,
+        delta: float = 0.01,
+        metric: GateMetric = "hard",
+        mixed_weight: float = 0.5,
+    ):
         self.patience = patience
         self.delta = delta
+        self.metric: GateMetric = metric
+        self.mixed_weight = mixed_weight
         self._consecutive_rejects = 0
         self._total_accepts = 0
         self._total_rejects = 0
 
     def evaluate(
         self,
-        candidate_score: float,
+        candidate_hard: float,
+        candidate_soft: float,
         best_score: float,
         current_score: float,
     ) -> GateDecision:
         """评估候选分数是否通过门禁。
 
-        Returns:
-            GateDecision 含 action 和 reason。
+        Uses select_gate_score to project (hard, soft) to a scalar
+        according to self.metric before comparison.
         """
-        if candidate_score > best_score + self.delta:
+        candidate = select_gate_score(
+            candidate_hard, candidate_soft,
+            metric=self.metric, mixed_weight=self.mixed_weight,
+        )
+        if candidate > best_score + self.delta:
             self._consecutive_rejects = 0
             self._total_accepts += 1
             return GateDecision(
                 action="accept_new_best",
-                candidate_score=candidate_score,
-                best_score=candidate_score,
+                candidate_score=candidate,
+                best_score=candidate,
                 current_score=current_score,
-                reason=f"new_best ({best_score:.3f} → {candidate_score:.3f})",
+                reason=f"new_best ({best_score:.3f} → {candidate:.3f}) [{self.metric}]",
             )
 
-        if candidate_score > current_score:
+        if candidate > current_score:
             self._consecutive_rejects = 0
             self._total_accepts += 1
             return GateDecision(
                 action="accept",
-                candidate_score=candidate_score,
+                candidate_score=candidate,
                 best_score=best_score,
-                current_score=candidate_score,
-                reason=f"improved ({current_score:.3f} → {candidate_score:.3f})",
+                current_score=candidate,
+                reason=f"improved ({current_score:.3f} → {candidate:.3f}) [{self.metric}]",
             )
 
         self._consecutive_rejects += 1
         self._total_rejects += 1
         return GateDecision(
             action="reject",
-            candidate_score=candidate_score,
+            candidate_score=candidate,
             best_score=best_score,
             current_score=current_score,
-            reason=f"no_improvement ({candidate_score:.3f} ≤ {current_score:.3f})",
+            reason=f"no_improvement ({candidate:.3f} ≤ {current_score:.3f}) [{self.metric}]",
         )
 
     @property

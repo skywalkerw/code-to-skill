@@ -42,6 +42,8 @@ def reflect_llm(
     rollout_results: list[dict],
     current_skill: str,
     step_buffer: list[dict] | None = None,
+    rejected_edits: list | None = None,
+    meta_skill_context: str = "",
 ) -> list[dict]:
     """LLM Reflect：分析 rollout 轨迹，生成有意义的 patch。
 
@@ -49,6 +51,8 @@ def reflect_llm(
         rollout_results: 阶段 1 的 rollout 结果（含失败原因和预测答案）
         current_skill: 当前 Skill 内容
         step_buffer: 之前步骤的失败模式和 rejected edits
+        rejected_edits: 已拒绝的 EditOp 列表（供 StepBufferManager 使用）
+        meta_skill_context: Optimizer 侧跨 epoch 记忆（MetaSkill.render()）
 
     Returns:
         patch dict 列表，每个含 edits 和 reasoning
@@ -58,6 +62,9 @@ def reflect_llm(
         return _rule_based_patches(rollout_results)
 
     backend = create_llm_backend()
+
+    # 构建 step buffer 摘要
+    buffer_summary = _build_buffer_summary(step_buffer, rejected_edits)
 
     # 分失败和成功
     failed = [r for r in rollout_results if r.get("hard", 0) == 0]
@@ -73,15 +80,20 @@ def reflect_llm(
             failure_text += f"Failed checks: {r.get('fail_reason', 'unknown')}\n"
             failure_text += f"Answer snippet: {r.get('predicted_answer', '')[:200]}\n"
 
+        system_content = _REFLECT_FAILURE_PROMPT.format(
+            current_skill=current_skill[:2000],
+            failure_text=failure_text[:2000],
+            step_buffer_summary=buffer_summary,
+        )
+        if meta_skill_context.strip():
+            system_content = meta_skill_context + "\n---\n" + system_content
+
         request = InteractionRequest(
             role="optimizer",
             stage="reflect_failure",
             messages=[{
                 "role": "system",
-                "content": _REFLECT_FAILURE_PROMPT.format(
-                    current_skill=current_skill[:2000],
-                    failure_text=failure_text[:2000],
-                )
+                "content": system_content,
             }],
             max_output_tokens=1024,
             temperature=0.3,
@@ -202,6 +214,39 @@ def _rule_based_patches(results: list[dict]) -> list[dict]:
     return patches
 
 
+def _build_buffer_summary(
+    step_buffer: list[dict] | None,
+    rejected_edits: list | None,
+) -> str:
+    """构建 step buffer 摘要字符串，供 Reflect prompt 使用。"""
+    parts: list[str] = []
+
+    if rejected_edits:
+        parts.append("Previously REJECTED edits (do NOT propose these again):")
+        for i, e in enumerate(rejected_edits[-5:]):  # 最近 5 条
+            op = getattr(e, "op", "?")
+            content = (getattr(e, "content", "") or "")[:80]
+            parts.append(f"  - [{op}] {content}")
+        parts.append("")
+
+    if step_buffer:
+        failure_types: dict[str, int] = {}
+        for buf in step_buffer:
+            if isinstance(buf, dict) and buf.get("type") == "failure":
+                ft = buf.get("failure_type", buf.get("type", "unknown"))
+                failure_types[ft] = failure_types.get(ft, 0) + 1
+        if failure_types:
+            parts.append("Previously observed failure patterns:")
+            for ft, count in sorted(failure_types.items(), key=lambda x: -x[1]):
+                parts.append(f"  - {ft}: {count} occurrences")
+            parts.append("")
+
+    if not parts:
+        return "(no prior buffer information — this is the first step)"
+
+    return "\n".join(parts)
+
+
 # ── Prompt 模板 ─────────────────────────────────────────────
 
 _REFLECT_FAILURE_PROMPT = """## Task
@@ -213,10 +258,15 @@ Analyze the failure cases and propose specific edits to improve the Skill docume
 ## Failure Cases
 {failure_text}
 
+## Step Buffer (historical context — DO NOT repeat rejected edits)
+{step_buffer_summary}
+
 ## Instructions
-1. Identify the root cause pattern in the failures.
+1. Identify the ROOT CAUSE pattern in the failures (not individual edge cases).
 2. Propose 1-3 specific edits to the Skill (append new rules, clarify constraints, add verification steps).
 3. Each edit must have: op (append/replace), content (the new text to add), and a brief justification.
+4. Check the Step Buffer above — do NOT propose edits that have already been rejected.
+5. Target COMMON patterns across multiple failures, not single-task fixes.
 
 CRITICAL: Do NOT remove existing rules unless they are contradictory. Prefer appending new rules.
 

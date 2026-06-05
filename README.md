@@ -134,6 +134,49 @@ skillopt:
   edit_budget: 3
 ```
 
+## 准备指南
+
+开始新项目前，准备 code-to-skill 流水线需要的最小输入。
+
+### 知识库
+
+从代码仓库和知识文档两个来源提取 SkillAtom。代码仓库通过 `project.yaml` 配置，知识文档置于 `test-data/kb/<project>/` 目录：
+
+```bash
+mkdir -p test-data/kb/fineract
+cp test-data/fineract-develop/README.md test-data/kb/fineract/
+cp test-data/fineract-develop/CONTRIBUTING.md test-data/kb/fineract/
+```
+
+然后在 `project.yaml` 中注册：
+
+```yaml
+sources:
+  docs:
+    - id: fineract-readme
+      path: test-data/kb/fineract/README.md
+      provider: local_file
+```
+
+文档类型优先级：编码规范 > 故障手册 > README/架构文档 > FAQ/讨论帖。
+
+### 草稿 SKILL
+
+手写一份 `initial_skill.md` 作为优化起点，覆盖 4 类规则：
+- **Workflow**：按步骤描述关键业务流程
+- **Constraint**：必须遵守的约束（带 `MUST/MUST NOT`）
+- **Failure Mode**：常见失败模式 + 症状 + 根因 + 修复方向
+- **Checklist**：验证清单
+
+### 测评案例
+
+`benchmarks/<project>/train/items.json`，每条包含：
+- `question`：给 Agent 的任务描述
+- `expected_checks`：验证关键词列表
+- `task_type`：`code_review` 或 `qa`
+
+推荐从目标仓库的 Issues/PR 中抽取 10-20 条真实场景。
+
 ## 开发
 
 ```bash

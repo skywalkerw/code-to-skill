@@ -255,6 +255,10 @@ def run_all(ctx, config_path: str, from_step: str | None, to_step: str | None, d
         output_dir=os.path.join(output_root, "optimization"),
         num_epochs=cfg.skillopt.get("num_epochs", 3),
         batch_size=cfg.skillopt.get("batch_size", 20),
+        accumulation=cfg.skillopt.get("accumulation", 1),
+        enable_slow_update=cfg.skillopt.get("enable_slow_update", False),
+        enable_meta_skill=cfg.skillopt.get("enable_meta_skill", False),
+        test_split_ratio=cfg.skillopt.get("test_split_ratio", 0.0),
     )
     click.echo(f"   最优分数: {m4['best_score']:.3f}")
 
@@ -322,14 +326,23 @@ def run_extract_atoms(from_dir: str | None, config_path: str):
 @run.command(name="optimize-skill")
 @click.option("--benchmark", default=None, help="Benchmark 路径")
 @click.option("--config-path", default="project.yaml")
-def run_optimize_skill(benchmark: str | None, config_path: str):
+@click.option("--epochs", default=3, type=int, help="训练 epoch 数")
+@click.option("--batch-size", default=20, type=int, help="每 epoch batch 大小")
+@click.option("--accumulation", default=1, type=int, help="梯度累积步数")
+@click.option("--slow-update", is_flag=True, help="启用 slow update")
+@click.option("--meta-skill", is_flag=True, help="启用 meta skill")
+def run_optimize_skill(benchmark: str | None, config_path: str, epochs: int, batch_size: int, accumulation: int, slow_update: bool, meta_skill: bool):
     """运行模块 4：SkillOpt 优化。"""
     from code_to_skill.skillopt_loop import run_skillopt_loop
     result = run_skillopt_loop(
         initial_skill="# Initial Skill\n- Default rule",
         benchmark_items=[],
         output_dir=benchmark or "runs/latest/optimization",
-        num_epochs=1,
+        num_epochs=epochs,
+        batch_size=batch_size,
+        accumulation=accumulation,
+        enable_slow_update=slow_update,
+        enable_meta_skill=meta_skill,
     )
     click.echo(f"✅ best_score={result['best_score']:.3f}")
 
