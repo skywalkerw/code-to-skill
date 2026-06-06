@@ -35,26 +35,26 @@ class BackendManager:
         self,
         target_backend: Any = None,
         optimizer_backend: Any = None,
+        *,
+        auto_create: bool = True,
     ):
         self._target = target_backend
         self._optimizer = optimizer_backend
+        self._auto_create = auto_create
 
     @property
     def target(self) -> Any:
-        """返回 target 后端（用于 Rollout）。"""
-        if self._target is None:
+        """Rollout 用 target 后端；未注入且 auto_create 时才从环境创建。"""
+        if self._target is None and self._auto_create:
             self._target = self._try_create_backend()
         return self._target
 
     @property
     def optimizer(self) -> Any:
-        """返回 optimizer 后端（用于 Reflect/Select/Aggregate）。
-
-        如果未单独设置，降级为 target backend。
-        """
+        """Reflect/Select 用 optimizer；未注入时回退 target。"""
         if self._optimizer is not None:
             return self._optimizer
-        return self.target  # fallback: same as target
+        return self.target
 
     def has_target(self) -> bool:
         return self._target is not None or self._try_create_backend() is not None
@@ -86,7 +86,7 @@ class BackendManager:
         backend = None
         if use_llm:
             backend = cls._try_create_backend()
-        return cls(target_backend=backend, optimizer_backend=backend)
+        return cls(target_backend=backend, optimizer_backend=backend, auto_create=use_llm)
 
     @classmethod
     def from_separate(
@@ -117,7 +117,11 @@ class BackendManager:
             logger.info("[BackendManager] Separate backends — optimizer=%s, target=%s",
                         optimizer_bid or "default", target_bid or "default")
 
-        return cls(target_backend=target, optimizer_backend=optimizer)
+        return cls(
+            target_backend=target,
+            optimizer_backend=optimizer,
+            auto_create=use_llm,
+        )
 
 
 # ── Accumulator ──────────────────────────────────────────────

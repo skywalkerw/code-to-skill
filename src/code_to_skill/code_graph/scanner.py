@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 from fnmatch import fnmatch
 
+from .generated_detection import classify_file
 from .types import FileEntry, FileInventory
 
 
@@ -93,6 +94,20 @@ def scan_repo(
 
             language = _infer_language(fname)
             file_kind = _infer_kind(rel_path, fname, language)
+            content: bytes | None = None
+
+            if stat.st_size <= max_file_size_mb * 1024 * 1024 and file_kind not in ("binary", "generated"):
+                try:
+                    with open(full_path, "rb") as f:
+                        content = f.read()
+                except OSError:
+                    content = None
+
+            if content is not None:
+                detected = classify_file(rel_path, content)
+                if detected:
+                    file_kind = detected
+                    language = language if file_kind != "generated" else language
 
             entry = FileEntry(
                 path=rel_path,
@@ -101,14 +116,8 @@ def scan_repo(
                 size_bytes=stat.st_size,
             )
 
-            # 大文件 + 二进制只记录元数据
-            if stat.st_size <= max_file_size_mb * 1024 * 1024 and file_kind not in ("binary", "generated"):
-                try:
-                    with open(full_path, "rb") as f:
-                        content = f.read()
-                    entry.source_hash = hashlib.sha256(content).hexdigest()[:16]
-                except OSError:
-                    pass
+            if content is not None and file_kind not in ("binary", "generated"):
+                entry.source_hash = hashlib.sha256(content).hexdigest()[:16]
 
             files.append(entry)
 

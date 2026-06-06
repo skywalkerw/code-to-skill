@@ -4,12 +4,33 @@
 """
 from __future__ import annotations
 
+import fnmatch
 import os
 import sqlite3
 import hashlib
 from pathlib import Path
 
-from .types import CodeGraph, GraphNode, GraphEdge, NodeKind, EdgeKind, FileEntry
+from .types import CodeGraph, GraphNode, GraphEdge, NodeKind, EdgeKind, UnresolvedEdge
+
+
+def _match_any_pattern(path: str, patterns: list[str]) -> bool:
+    norm = path.replace(os.sep, "/")
+    for pat in patterns:
+        if fnmatch.fnmatch(norm, pat) or fnmatch.fnmatch(norm, pat.lstrip("**/")):
+            return True
+    return False
+
+
+def _row_to_hit(row, score: float) -> dict:
+    return {
+        "id": row[0],
+        "kind": row[1],
+        "name": row[2],
+        "file_path": row[3],
+        "start_line": row[4],
+        "end_line": row[5],
+        "score": score,
+    }
 
 
 class GraphDB:
@@ -48,6 +69,9 @@ class GraphDB:
                 end_line INTEGER,
                 language TEXT,
                 source_hash TEXT,
+                qualified_name TEXT,
+                signature TEXT,
+                docstring TEXT,
                 FOREIGN KEY (file_path) REFERENCES files(path)
             );
 
@@ -67,14 +91,53 @@ class GraphDB:
             CREATE INDEX IF NOT EXISTS idx_nodes_file ON nodes(file_path);
             CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source);
             CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target);
+
+            CREATE TABLE IF NOT EXISTS unresolved_refs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                from_node_id TEXT,
+                reference_name TEXT,
+                reference_kind TEXT,
+                file_path TEXT,
+                reason TEXT
+            );
+
+            CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
+                node_id UNINDEXED,
+                name,
+                file_path,
+                qualified_name,
+                tokenize='porter'
+            );
         """)
+        self._migrate_schema()
+
+    def _migrate_schema(self):
+        """为旧版 graph.db 补充新列。"""
+        conn = self._connect()
+        for ddl in (
+            "ALTER TABLE nodes ADD COLUMN qualified_name TEXT",
+            "ALTER TABLE nodes ADD COLUMN signature TEXT",
+            "ALTER TABLE nodes ADD COLUMN docstring TEXT",
+        ):
+            try:
+                conn.execute(ddl)
+            except sqlite3.OperationalError:
+                pass
 
     # ── 写入 ────────────────────────────────────────────────
 
-    def save_graph(self, graph: CodeGraph):
-        """保存完整的 CodeGraph 到数据库。"""
+    def save_graph(self, graph: CodeGraph, *, merge: bool = False):
+        """保存 CodeGraph 到数据库。merge=True 时仅 upsert，不清空全表。"""
         conn = self._connect()
         with conn:
+            if not merge:
+                conn.execute("DELETE FROM edges")
+                conn.execute("DELETE FROM nodes")
+                conn.execute("DELETE FROM files")
+                try:
+                    conn.execute("DELETE FROM nodes_fts")
+                except sqlite3.OperationalError:
+                    pass
             # 文件
             file_nodes = {n.id for n in graph.nodes if n.kind == NodeKind.file}
             seen_files: set[str] = set()
@@ -91,21 +154,47 @@ class GraphDB:
             # 节点
             for node in graph.nodes:
                 conn.execute(
-                    "INSERT OR REPLACE INTO nodes(id, kind, name, file_path, start_line, end_line, language, source_hash) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (node.id, node.kind.value, node.name, node.file_path,
-                     node.start_line, node.end_line, node.language, node.source_hash)
+                    "INSERT OR REPLACE INTO nodes("
+                    "id, kind, name, file_path, start_line, end_line, language, source_hash, "
+                    "qualified_name, signature, docstring"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        node.id, node.kind.value, node.name, node.file_path,
+                        node.start_line, node.end_line, node.language, node.source_hash,
+                        node.qualified_name, node.signature, node.docstring,
+                    ),
                 )
 
-            # 边
+            # 边（按 source+target+kind 去重）
+            seen_edges: set[tuple[str, str, str]] = set()
             for edge in graph.edges:
+                key = (edge.source, edge.target, edge.kind.value)
+                if key in seen_edges:
+                    continue
+                seen_edges.add(key)
                 conn.execute(
-                    "INSERT OR REPLACE INTO edges(source, target, kind, confidence, provenance) "
+                    "INSERT INTO edges(source, target, kind, confidence, provenance) "
                     "VALUES (?, ?, ?, ?, ?)",
                     (edge.source, edge.target, edge.kind.value, edge.confidence, edge.provenance)
                 )
 
+        self._rebuild_fts()
         self._conn and self._conn.commit()
+
+    def _rebuild_fts(self):
+        conn = self._connect()
+        try:
+            conn.execute("DELETE FROM nodes_fts")
+        except sqlite3.OperationalError:
+            return
+        for row in conn.execute(
+            "SELECT id, name, file_path, qualified_name, signature, docstring FROM nodes"
+        ):
+            qn = row[3] or row[1]
+            conn.execute(
+                "INSERT INTO nodes_fts(node_id, name, file_path, qualified_name) VALUES (?, ?, ?, ?)",
+                (row[0], row[1], row[2] or "", qn),
+            )
 
     # ── 读取 ────────────────────────────────────────────────
 
@@ -114,10 +203,14 @@ class GraphDB:
         conn = self._connect()
         graph = CodeGraph()
 
-        for row in conn.execute("SELECT id, kind, name, file_path, start_line, end_line, language, source_hash FROM nodes"):
+        for row in conn.execute(
+            "SELECT id, kind, name, file_path, start_line, end_line, language, source_hash, "
+            "qualified_name, signature, docstring FROM nodes"
+        ):
             graph.nodes.append(GraphNode(
                 id=row[0], kind=NodeKind(row[1]), name=row[2], file_path=row[3] or "",
                 start_line=row[4] or 0, end_line=row[5] or 0, language=row[6] or "", source_hash=row[7] or "",
+                qualified_name=row[8] or "", signature=row[9] or "", docstring=row[10] or "",
             ))
 
         for row in conn.execute("SELECT source, target, kind, confidence, provenance FROM edges"):
@@ -174,6 +267,146 @@ class GraphDB:
         conn = self._connect()
         row = conn.execute("SELECT COUNT(*) FROM nodes").fetchone()
         return (row[0] if row else 0) > 0
+
+    # ── 符号搜索（FTS + LIKE 降级）──────────────────────────
+
+    def search_nodes(
+        self,
+        query: str,
+        limit: int = 20,
+        *,
+        kinds: list[str] | None = None,
+        file_patterns: list[str] | None = None,
+    ) -> list[dict]:
+        conn = self._connect()
+        results: list[dict] = []
+        seen: set[str] = set()
+        q = query.strip()
+
+        def _append(row, score: float):
+            if row[0] in seen:
+                return
+            if kinds and row[1].lower() not in kinds:
+                return
+            if file_patterns and not _match_any_pattern(row[3] or "", file_patterns):
+                return
+            seen.add(row[0])
+            hit = _row_to_hit(row, score=score)
+            qrow = conn.execute(
+                "SELECT qualified_name FROM nodes WHERE id = ?", (row[0],),
+            ).fetchone()
+            if qrow and qrow[0]:
+                hit["qualified_name"] = qrow[0]
+            results.append(hit)
+
+        if q:
+            try:
+                fts_q = " OR ".join(f'"{t}"' for t in q.split() if t)
+                rows = conn.execute(
+                    """
+                    SELECT n.id, n.kind, n.name, n.file_path, n.start_line, n.end_line
+                    FROM nodes_fts f
+                    JOIN nodes n ON n.id = f.node_id
+                    WHERE nodes_fts MATCH ?
+                    LIMIT ?
+                    """,
+                    (fts_q or q, limit * 3),
+                ).fetchall()
+                for row in rows:
+                    _append(row, 1.0)
+                    if len(results) >= limit:
+                        return results[:limit]
+            except sqlite3.OperationalError:
+                pass
+
+        if len(results) < limit and q:
+            like = f"%{q}%"
+            rows = conn.execute(
+                """
+                SELECT id, kind, name, file_path, start_line, end_line FROM nodes
+                WHERE name LIKE ? OR file_path LIKE ? OR qualified_name LIKE ?
+                LIMIT ?
+                """,
+                (like, like, like, (limit - len(results)) * 3),
+            ).fetchall()
+            for row in rows:
+                _append(row, 0.6)
+                if len(results) >= limit:
+                    break
+
+        if not q and (kinds or file_patterns):
+            sql = "SELECT id, kind, name, file_path, start_line, end_line FROM nodes WHERE 1=1"
+            params: list = []
+            if kinds:
+                sql += f" AND kind IN ({','.join('?' * len(kinds))})"
+                params.extend(kinds)
+            sql += " LIMIT ?"
+            params.append(limit * 3)
+            for row in conn.execute(sql, params).fetchall():
+                _append(row, 0.4)
+                if len(results) >= limit:
+                    break
+
+        return results[:limit]
+
+    def get_node(self, node_id: str) -> GraphNode | None:
+        conn = self._connect()
+        row = conn.execute(
+            "SELECT id, kind, name, file_path, start_line, end_line, language, source_hash, "
+            "qualified_name, signature, docstring FROM nodes WHERE id = ?",
+            (node_id,),
+        ).fetchone()
+        if not row:
+            return None
+        return GraphNode(
+            id=row[0], kind=NodeKind(row[1]), name=row[2], file_path=row[3] or "",
+            start_line=row[4] or 0, end_line=row[5] or 0, language=row[6] or "", source_hash=row[7] or "",
+            qualified_name=row[8] or "", signature=row[9] or "", docstring=row[10] or "",
+        )
+
+    def save_unresolved_refs(self, unresolved: list[UnresolvedEdge]):
+        """将未解析引用写入 unresolved_refs 表。"""
+        conn = self._connect()
+        with conn:
+            conn.execute("DELETE FROM unresolved_refs")
+            for item in unresolved:
+                conn.execute(
+                    "INSERT INTO unresolved_refs(from_node_id, reference_name, reference_kind, file_path, reason) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (item.source, item.attempted_target, item.kind, "", item.reason),
+                )
+
+    def list_files(self, pattern: str = "**/*", limit: int = 50) -> list[dict]:
+        """列出索引中的文件（比扫磁盘快）。"""
+        conn = self._connect()
+        rows = conn.execute(
+            "SELECT path, language, kind, size_bytes FROM files ORDER BY path LIMIT ?",
+            (max(limit * 5, limit),),
+        ).fetchall()
+        out: list[dict] = []
+        for row in rows:
+            path = row[0] or ""
+            if pattern and pattern not in ("*", "**/*") and not _match_any_pattern(path, [pattern]):
+                continue
+            out.append({
+                "path": path,
+                "language": row[1] or "",
+                "kind": row[2] or "",
+                "size_bytes": row[3] or 0,
+            })
+            if len(out) >= limit:
+                break
+        return out
+
+    def get_stats(self) -> dict:
+        conn = self._connect()
+        nodes = conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
+        edges = conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
+        files = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+        kinds: dict[str, int] = {}
+        for row in conn.execute("SELECT kind, COUNT(*) FROM nodes GROUP BY kind"):
+            kinds[row[0]] = row[1]
+        return {"nodes": nodes, "edges": edges, "files": files, "kinds": kinds}
 
     def close(self):
         if self._conn:

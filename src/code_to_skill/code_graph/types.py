@@ -52,7 +52,10 @@ class GraphNode(BaseModel):
     end_line: int = 0
     language: str = ""
     source_hash: str = ""
-    metadata: dict = Field(default_factory=dict)  # signature, docstring, annotations, etc.
+    qualified_name: str = ""  # e.g. com.example.OrderService.placeOrder
+    signature: str = ""
+    docstring: str = ""
+    metadata: dict = Field(default_factory=dict)
 
 
 class GraphEdge(BaseModel):
@@ -86,6 +89,19 @@ class FileInventory(BaseModel):
     """文件清单。"""
     schema_version: str = "1.0"
     files: list[FileEntry] = Field(default_factory=list)
+
+
+class CodeGraphManifest(BaseModel):
+    """代码图谱快照元数据（对齐设计文档 01 manifest.json）。"""
+    schema_version: str = "1.0"
+    repo_id: str = ""
+    repo_root: str = ""
+    snapshot_ref: str = "HEAD"
+    analyzed_at: str = ""
+    include_patterns: list[str] = Field(default_factory=list)
+    exclude_patterns: list[str] = Field(default_factory=list)
+    tools: dict = Field(default_factory=lambda: {"codegraph": "code_to_skill.code_graph"})
+    stats: dict = Field(default_factory=dict)
 
 
 # ── Entrypoint ──────────────────────────────────────────────

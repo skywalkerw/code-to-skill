@@ -4,11 +4,12 @@
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+
+from code_to_skill.time_utils import local_timestamp
 
 
 class ModuleName(str, Enum):
@@ -34,7 +35,7 @@ class RunManifest(BaseModel):
     schema_version: str = "1.0"
     run_id: str
     domain: str = ""
-    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    created_at: str = Field(default_factory=local_timestamp)
     workspace: str = ""
     commands: list[str] = Field(default_factory=list)
     modules: list[str] = Field(default_factory=list)
@@ -63,7 +64,7 @@ class RunState(BaseModel):
     failed_modules: list[str] = Field(default_factory=list)
     artifacts: dict[str, str] = Field(default_factory=dict)
     step_internal: StepInternal | None = None
-    updated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    updated_at: str = Field(default_factory=local_timestamp)
 
 
 # ── Events ──────────────────────────────────────────────────
@@ -71,7 +72,7 @@ class RunState(BaseModel):
 class ModuleEvent(BaseModel):
     """单条事件。"""
     schema_version: str = "1.0"
-    ts: str = Field(default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    ts: str = Field(default_factory=local_timestamp)
     level: Literal["info", "warn", "error"] = "info"
     module: str = ""
     event: str = ""
@@ -89,4 +90,4 @@ class ApprovalRecord(BaseModel):
     module: str = ""
     decision: Literal["approved", "denied", "pending"] = "pending"
     scope: str = ""
-    ts: str = Field(default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    ts: str = Field(default_factory=local_timestamp)

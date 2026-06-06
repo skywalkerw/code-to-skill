@@ -14,15 +14,23 @@ import hashlib
 import logging
 from typing import Any
 
+from .token_budgets import get_token_budgets
+
 logger = logging.getLogger(__name__)
 
 
 # ── 单条评分 ───────────────────────────────────────────────
 
+def _normalize_text_for_check(text: str) -> str:
+    """归一化文本便于 keyword/金额匹配（去千分位逗号）。"""
+    return text.replace(",", "").lower()
+
+
 def _check_keyword(text: str, check: str) -> bool:
-    """检查文本中是否包含预期关键词。"""
-    lower = text.lower()
-    return check.lower() in lower
+    """检查文本中是否包含预期关键词（金额类 check 忽略千分位）。"""
+    norm_text = _normalize_text_for_check(text)
+    norm_check = _normalize_text_for_check(check)
+    return norm_check in norm_text
 
 
 def score_rollout_result(predicted: str, expected_checks: list[str]) -> dict:
@@ -34,11 +42,15 @@ def score_rollout_result(predicted: str, expected_checks: list[str]) -> dict:
     - accuracy: hard pass rate
     - F1: 2 * precision * recall / (precision + recall)
     """
-    passed = 0
+    passed_checks: list[str] = []
+    missed_checks: list[str] = []
     for check in expected_checks:
         if _check_keyword(predicted, check):
-            passed += 1
+            passed_checks.append(check)
+        else:
+            missed_checks.append(check)
 
+    passed = len(passed_checks)
     total = len(expected_checks) if expected_checks else 1
     soft = passed / total
     hard = 1 if soft == 1.0 else 0
@@ -53,6 +65,8 @@ def score_rollout_result(predicted: str, expected_checks: list[str]) -> dict:
         "soft": round(soft, 3),
         "passed": passed,
         "total": total,
+        "passed_checks": passed_checks,
+        "missed_checks": missed_checks,
         "accuracy": float(hard),
         "precision": round(precision, 3),
         "recall": round(recall, 3),
@@ -147,7 +161,7 @@ def score_with_llm_judge(
                     rubric=rubric_text,
                 ),
             }],
-            max_output_tokens=512,
+            max_output_tokens=get_token_budgets().judge,
             temperature=0.0,  # 可复现
         ))
 

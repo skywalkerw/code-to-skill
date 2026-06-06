@@ -20,6 +20,8 @@ class GraphTraverser:
         self._kind_index: dict[str, list[str]] = defaultdict(list)
         self._callee_index: dict[str, list[str]] = defaultdict(list)  # caller → [callee]
         self._caller_index: dict[str, list[str]] = defaultdict(list)  # callee → [caller]
+        self._path_callee_index: dict[str, list[str]] = defaultdict(list)  # 路径搜索专用
+        self._path_caller_index: dict[str, list[str]] = defaultdict(list)
         self._file_index: dict[str, list[str]] = defaultdict(list)    # file_path → [node_id]
 
         self._build_indices()
@@ -30,13 +32,32 @@ class GraphTraverser:
             self._kind_index[node.kind.value].append(node.id)
             self._file_index[node.file_path].append(node.id)
 
+        # 邻域遍历：calls / references / entry_to（不含 imports，避免 Spring 图爆炸）
+        _neighbor_kinds = (
+            EdgeKind.calls,
+            EdgeKind.references,
+            EdgeKind.entry_to,
+        )
+        # 路径搜索：calls + references + entry_to + contains（类→方法）+ 接口→实现；不含 imports
+        _path_kinds = (
+            EdgeKind.calls,
+            EdgeKind.references,
+            EdgeKind.entry_to,
+            EdgeKind.contains,
+        )
         for edge in self.graph.edges:
-            if edge.kind == EdgeKind.calls:
+            if edge.kind in _neighbor_kinds:
                 self._callee_index[edge.source].append(edge.target)
                 self._caller_index[edge.target].append(edge.source)
-            elif edge.kind == EdgeKind.imports:
-                self._callee_index[edge.source].append(edge.target)
-                self._caller_index[edge.target].append(edge.source)
+            elif edge.kind == EdgeKind.implements:
+                self._callee_index[edge.target].append(edge.source)
+                self._caller_index[edge.source].append(edge.target)
+            if edge.kind in _path_kinds:
+                self._path_callee_index[edge.source].append(edge.target)
+                self._path_caller_index[edge.target].append(edge.source)
+            elif edge.kind == EdgeKind.implements:
+                self._path_callee_index[edge.target].append(edge.source)
+                self._path_caller_index[edge.source].append(edge.target)
 
     # ── 遍历 API ───────────────────────────────────────────
 
@@ -89,28 +110,67 @@ class GraphTraverser:
             "all_callers": self.callers(node_id, depth=depth),
         }
 
-    def entry_to_target(self, entrypoint_id: str, target_id: str) -> list[list[str]] | None:
-        """查找从入口点到目标节点的路径。"""
+    def entry_to_target(
+        self,
+        entrypoint_id: str,
+        target_id: str,
+        *,
+        max_depth: int = 12,
+        max_paths: int = 3,
+    ) -> list[dict] | None:
+        """查找从起点到目标节点的路径（可读格式）。"""
         if entrypoint_id not in self._node_map or target_id not in self._node_map:
             return None
 
-        # BFS 找最短路径
-        visited: set[str] = {entrypoint_id}
+        raw_paths: list[list[str]] = []
+        # BFS 最短路径；限制展开次数，避免大图超时
+        max_expansions = 20_000
+        expansions = 0
         queue: deque[tuple[str, list[str]]] = deque([(entrypoint_id, [entrypoint_id])])
-        paths: list[list[str]] = []
+        shortest_len: int | None = None
 
-        while queue:
+        while queue and len(raw_paths) < max_paths and expansions < max_expansions:
             current, path = queue.popleft()
+            if shortest_len is not None and len(path) > shortest_len:
+                break
             if current == target_id:
-                paths.append(path)
-                if len(paths) >= 3:  # 最多返回3条路径
-                    break
-            for callee in self._callee_index.get(current, []):
-                if callee not in visited:
-                    visited.add(callee)
-                    queue.append((callee, path + [callee]))
+                shortest_len = len(path)
+                raw_paths.append(path)
+                continue
+            if len(path) >= max_depth:
+                continue
+            for callee in self._path_callee_index.get(current, []):
+                if callee in path:
+                    continue
+                expansions += 1
+                queue.append((callee, path + [callee]))
 
-        return paths if paths else None
+        if not raw_paths:
+            return None
+        return [self._format_path(p) for p in raw_paths]
+
+    def _format_path(self, node_ids: list[str]) -> dict:
+        """将 node id 路径转为 LLM 可读结构。"""
+        nodes = []
+        for nid in node_ids:
+            n = self._node_map.get(nid)
+            if n:
+                nodes.append({
+                    "id": nid,
+                    "name": n.name,
+                    "kind": n.kind.value,
+                    "file_path": n.file_path,
+                    "start_line": n.start_line,
+                })
+            else:
+                nodes.append({"id": nid, "name": nid.split("::")[-1]})
+        labels = [n.get("name", "?") for n in nodes]
+        return {
+            "node_ids": node_ids,
+            "nodes": nodes,
+            "summary": " → ".join(labels),
+            "length": len(node_ids),
+        }
 
     # ── 搜索 API ───────────────────────────────────────────
 

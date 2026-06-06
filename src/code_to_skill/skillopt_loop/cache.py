@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
 from pathlib import Path
+
+from code_to_skill.time_utils import local_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +65,7 @@ class SelectionCache:
             "hard_score": hard_score,
             "soft_score": soft_score,
             "gate_score": gate_score,
-            "evaluated_at": datetime.now(timezone.utc).isoformat(),
+            "evaluated_at": local_timestamp(),
             "epoch": epoch,
             "step": step,
         }

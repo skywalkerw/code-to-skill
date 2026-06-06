@@ -1,0 +1,35 @@
+{
+  "mcpServers": {
+    "code-to-skill-codegraph": {
+      "command": "codegraph-mcp",
+      "args": [
+        "--db",
+        "/absolute/path/to/runs/<run_id>/sources/code/<repo_id>/<ref>/graph.db",
+        "--repo-root",
+        "/absolute/path/to/your/repo"
+      ],
+      "env": {}
+    },
+    "code-to-skill-codegraph-multi": {
+      "command": "codegraph-mcp",
+      "args": [],
+      "env": {
+        "CODEGRAPH_DBS": "[{\"repo_id\":\"repo-a\",\"db_path\":\"/path/a/graph.db\",\"repo_root\":\"/path/a\"},{\"repo_id\":\"repo-b\",\"db_path\":\"/path/b/graph.db\",\"repo_root\":\"/path/b\"}]"
+      }
+    },
+    "code-to-skill-codegraph-daemon": {
+      "command": "codegraph-daemon",
+      "args": [
+        "--db",
+        "/absolute/path/to/graph.db",
+        "--repo-root",
+        "/absolute/path/to/your/repo",
+        "--output",
+        "/absolute/path/to/graph/output/dir",
+        "--debounce",
+        "2.0"
+      ],
+      "env": {}
+    }
+  }
+}

@@ -4,10 +4,12 @@
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+
+from code_to_skill.time_utils import local_now, local_timestamp_compact
 
 
 # ── 标准请求 / 响应 ────────────────────────────────────────────
@@ -15,7 +17,7 @@ from pydantic import BaseModel, Field
 class InteractionRequest(BaseModel):
     """统一的模型/Agent 请求。"""
     schema_version: str = "1.0"
-    request_id: str = Field(default_factory=lambda: f"req-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{id(object())}")
+    request_id: str = Field(default_factory=lambda: f"req-{local_timestamp_compact()}-{id(object())}")
     role: Literal["extractor", "clusterer", "optimizer", "target", "judge", "agent_worker"]
     stage: str = ""  # e.g. "skillatom_extract", "rollout", "reflect_failure_minibatch"
     messages: list[dict] = Field(default_factory=list)  # [{"role": "system/user/assistant", "content": "..."}]
@@ -47,6 +49,7 @@ class ModelResponse(InteractionResponse):
     """裸模型调用响应。"""
     model: str = ""
     tool_calls: list[dict] = Field(default_factory=list)
+    tool_snippets: str = ""  # tool_loop 收集的 tool 消息摘要，供 rollout 降级
 
 
 class AgentResponse(InteractionResponse):
@@ -66,4 +69,4 @@ class HealthStatus(BaseModel):
     healthy: bool
     latency_ms: int = 0
     error: str | None = None
-    checked_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    checked_at: datetime = Field(default_factory=local_now)

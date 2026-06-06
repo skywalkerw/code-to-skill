@@ -17,6 +17,7 @@ import logging
 from typing import Any
 
 from .skill_ops import SLOW_UPDATE_START, SLOW_UPDATE_END
+from .token_budgets import get_token_budgets
 
 logger = logging.getLogger(__name__)
 
@@ -160,7 +161,7 @@ def _llm_slow_update(
                 pairs_summary=summary[:1500],
             ),
         }],
-        max_output_tokens=512,
+        max_output_tokens=get_token_budgets().slow_update,
         temperature=0.2,
     ))
 

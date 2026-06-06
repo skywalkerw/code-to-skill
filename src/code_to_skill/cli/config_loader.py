@@ -13,8 +13,6 @@ import yaml
 from pydantic import BaseModel, Field
 
 
-# ── 目标项目 Schema ───────────────────────────────────────────
-
 class RepoSource(BaseModel):
     id: str
     path: str
@@ -34,19 +32,18 @@ class DocSource(BaseModel):
     ocr_enabled: bool = False
 
 
-class TargetProjectConfig(BaseModel):
+class ProjectConfig(BaseModel):
     """目标项目定义 — 要处理哪个项目的代码/文档。"""
     name: str = ""
     domain: str = ""
     description: str = ""
+    initial_skill_path: str = ""
+    benchmark_path: str = ""
     repos: list[RepoSource] = Field(default_factory=list)
     docs: list[DocSource] = Field(default_factory=list)
 
 
-# ── 框架设置 Schema ───────────────────────────────────────────
-
 class BackendConfig(BaseModel):
-    """单个模型后端定义。"""
     type: str = ""
     provider: str = "openai_compatible"
     model: str = ""
@@ -55,6 +52,7 @@ class BackendConfig(BaseModel):
     api_key_env: str = ""
     api_key: str = ""
     context_window: int = 128000
+    max_output_tokens: int = 16384
     timeout_seconds: int = 180
     command: str = ""
     profile: str = ""
@@ -65,7 +63,6 @@ class BackendConfig(BaseModel):
 
 
 class RouteConfig(BaseModel):
-    """单条路由规则。"""
     primary: str = ""
     fallback: list[str] = Field(default_factory=list)
     strategy: str = "fallback"
@@ -74,7 +71,6 @@ class RouteConfig(BaseModel):
 
 
 class ModelProviderSettings(BaseModel):
-    """模型与智能体交互配置（settings.model_provider 段）。"""
     backends: dict[str, BackendConfig] = Field(default_factory=dict)
     routes: dict[str, RouteConfig] = Field(default_factory=dict)
     default_retries: int = 3
@@ -88,11 +84,6 @@ class ModelProviderSettings(BaseModel):
 
 
 class SettingsConfig(BaseModel):
-    """框架自身设置 — 控制 code-to-skill 如何运行。"""
-    # 资源路径（相对于项目根目录）
-    initial_skill_path: str = ""          # 初始 Skill 文件路径（为空则由 M3 自动生成）
-    benchmark_path: str = ""              # Benchmark 目录（含 train/selection/test splits，为空则用 M3 自动生成）
-    # 模块配置
     code_graph: dict[str, Any] = Field(default_factory=dict)
     document_normalizer: dict[str, Any] = Field(default_factory=dict)
     atom_extractor: dict[str, Any] = Field(default_factory=dict)
@@ -104,53 +95,39 @@ class SettingsConfig(BaseModel):
     approvals_auto_approve_in_batch: bool = False
 
 
-# ── 顶层 AppConfig ────────────────────────────────────────────
-
 class AppConfig(BaseModel):
-    """config.yaml 的总 schema。"""
     settings: SettingsConfig = Field(default_factory=SettingsConfig)
-    project: TargetProjectConfig = Field(default_factory=TargetProjectConfig)
+    project: ProjectConfig = Field(default_factory=ProjectConfig)
 
     @classmethod
     def from_yaml(cls, path: str) -> "AppConfig":
-        """从 YAML 文件加载配置。"""
         with open(path, "r", encoding="utf-8") as f:
             raw = yaml.safe_load(f)
         if not isinstance(raw, dict):
             raise ValueError(f"Invalid YAML: expected dict, got {type(raw)}")
-
-        settings_raw = raw.get("settings", {})
-        project_raw = raw.get("project", {})
-
         return cls(
-            settings=_parse_settings(settings_raw),
-            project=_parse_project(project_raw),
+            settings=_parse_settings(raw.get("settings", {})),
+            project=_parse_project(raw.get("project", {})),
         )
 
 
-# ── 向后兼容别名（减少调用方修改量）────────────────────────────
-
-# load_project_config 返回 AppConfig，外部代码通过 cfg.settings / cfg.project 访问
-# 同时保留旧的顶层字段作为属性投射，方便迁移
-
-def load_project_config(path: str) -> AppConfig:
-    """加载并校验 config.yaml。返回 AppConfig。"""
+def load_config(path: str) -> AppConfig:
     if not os.path.exists(path):
         raise FileNotFoundError(f"Config file not found: {path}")
     return AppConfig.from_yaml(path)
 
 
-# ── 解析辅助 ──────────────────────────────────────────────────
-
-def _parse_project(raw: dict) -> TargetProjectConfig:
+def _parse_project(raw: dict) -> ProjectConfig:
     if not raw:
-        return TargetProjectConfig()
+        return ProjectConfig()
 
     sources = raw.get("sources", {})
-    return TargetProjectConfig(
+    return ProjectConfig(
         name=raw.get("name", ""),
         domain=raw.get("domain", ""),
         description=raw.get("description", ""),
+        initial_skill_path=raw.get("initial_skill", ""),
+        benchmark_path=raw.get("benchmark", ""),
         repos=[RepoSource(**r) for r in (sources.get("repos") or [])],
         docs=[DocSource(**d) for d in (sources.get("docs") or [])],
     )
@@ -160,21 +137,11 @@ def _parse_settings(raw: dict) -> SettingsConfig:
     if not raw:
         return SettingsConfig()
 
-    # model_provider
     mp_raw = raw.get("model_provider", {})
-    # 兼容旧 model_layer
-    if not mp_raw and raw.get("model_layer"):
-        mp_raw = raw.get("model_layer", {})
-
-    # output
     output = raw.get("output", {})
-
-    # approvals
     approvals = raw.get("approvals", {})
 
     return SettingsConfig(
-        initial_skill_path=raw.get("initial_skill", ""),
-        benchmark_path=raw.get("benchmark", ""),
         code_graph=raw.get("code_graph", {}),
         document_normalizer=raw.get("document_normalizer", {}),
         atom_extractor=raw.get("atom_extractor", {}),
@@ -191,14 +158,8 @@ def _parse_model_provider(raw: dict) -> ModelProviderSettings:
     if not raw:
         return ModelProviderSettings()
 
-    backends: dict[str, BackendConfig] = {}
-    for bid, bcfg in raw.get("backends", {}).items():
-        backends[bid] = BackendConfig(**bcfg)
-
-    routes: dict[str, RouteConfig] = {}
-    for role, rcfg in raw.get("routes", {}).items():
-        routes[role] = RouteConfig(**rcfg)
-
+    backends = {bid: BackendConfig(**bcfg) for bid, bcfg in raw.get("backends", {}).items()}
+    routes = {role: RouteConfig(**rcfg) for role, rcfg in raw.get("routes", {}).items()}
     policies = raw.get("policies", {})
     return ModelProviderSettings(
         backends=backends,

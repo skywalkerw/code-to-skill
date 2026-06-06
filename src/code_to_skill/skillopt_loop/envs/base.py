@@ -153,12 +153,37 @@ class DEFAULTAdapter(EnvAdapter):
     这是可工作的默认实现；后续可按需要覆盖子类化。
     """
 
-    def __init__(self, use_llm: bool = False):
+    def __init__(
+        self,
+        use_llm: bool = False,
+        code_repos: list[dict] | None = None,
+        enable_code_tools: bool = True,
+        max_tool_rounds: int = 5,
+        rollout_max_tool_rounds: int = 2,
+    ):
         super().__init__(env_name="DEFAULT")
         self.use_llm = use_llm
         self._backend = None
+        self.enable_code_tools = enable_code_tools
+        self.max_tool_rounds = max_tool_rounds
+        self.rollout_max_tool_rounds = rollout_max_tool_rounds
+        from code_to_skill.codegraph_mcp.handler import CodeToolsHandler
+        self.code_tools = CodeToolsHandler(code_repos if enable_code_tools else None)
 
     def setup(self, cfg: dict | None = None) -> None:
+        if cfg:
+            from code_to_skill.codegraph_mcp.handler import CodeToolsHandler
+            self.code_tools = CodeToolsHandler(
+                cfg.get("code_repos") if self.enable_code_tools else None,
+                graph_db_path=cfg.get("graph_db_path", ""),
+                repo_root=cfg.get("repo_root", ""),
+                graph_sources=cfg.get("graph_sources"),
+            )
+            self.max_tool_rounds = int(cfg.get("max_tool_rounds", self.max_tool_rounds))
+            self.rollout_max_tool_rounds = int(
+                cfg.get("rollout_max_tool_rounds", self.rollout_max_tool_rounds)
+            )
+            self.enable_code_tools = bool(cfg.get("enable_code_tools", self.enable_code_tools))
         if self.use_llm:
             try:
                 from code_to_skill.model_provider.llm_backend import (
@@ -179,6 +204,7 @@ class DEFAULTAdapter(EnvAdapter):
     ) -> list[dict]:
         """默认 rollout：LLM 优先，降级关键词规则。"""
         from ..scoring import score_rollout_result  # local import to avoid circular
+        from ..token_budgets import get_token_budgets
 
         backend = target_backend or self._backend
         results: list[dict] = []
@@ -189,41 +215,86 @@ class DEFAULTAdapter(EnvAdapter):
 
             if backend:
                 from code_to_skill.model_provider.types import InteractionRequest
+                from code_to_skill.model_provider.tool_loop import invoke_with_tool_loop
+                from ..rollout_helpers import (
+                    ROLLOUT_SYNTHESIS_HINT,
+                    build_rollout_system_prompt,
+                    build_rollout_user_message,
+                    fallback_predicted_from_tools,
+                    fallback_skill_voucher,
+                )
                 try:
-                    resp = backend.invoke(InteractionRequest(
+                    from ..code_evidence import build_rollout_item_context
+
+                    user_msg = build_rollout_user_message(question, checks)
+                    code_ctx = build_rollout_item_context(item, self.code_tools)
+                    if code_ctx:
+                        user_msg = user_msg + code_ctx
+                    request = InteractionRequest(
                         role="target",
                         stage="rollout",
                         messages=[
                             {
                                 "role": "system",
-                                "content": (
-                                    "You are an expert code reviewer. "
-                                    f"Use this skill:\n\n{skill[:2000]}"
+                                "content": build_rollout_system_prompt(
+                                    skill, code_tools_enabled=self.code_tools.enabled,
                                 ),
                             },
-                            {"role": "user", "content": question[:1000]},
+                            {"role": "user", "content": user_msg[:3000]},
                         ],
-                        max_output_tokens=512,
+                        max_output_tokens=get_token_budgets().rollout,
                         temperature=0.3,
-                    ))
-                    predicted = resp.content
+                        metadata={"synthesis_hint": ROLLOUT_SYNTHESIS_HINT},
+                    )
+                    tool_rounds = (
+                        self.rollout_max_tool_rounds
+                        if self.code_tools.enabled
+                        else 0
+                    )
+                    logger.debug(
+                        "[rollout] item=%s tool_rounds=%d (max_reflect=%d)",
+                        item.get("id", "?"),
+                        tool_rounds,
+                        self.max_tool_rounds,
+                    )
+                    if tool_rounds > 0:
+                        resp = invoke_with_tool_loop(
+                            backend, request, self.code_tools, max_rounds=tool_rounds,
+                        )
+                    else:
+                        resp = backend.invoke(request)
+                    predicted = (resp.content or "").strip()
+                    if not predicted:
+                        tool_snippets = getattr(resp, "tool_snippets", "") or ""
+                        if tool_snippets:
+                            predicted = fallback_predicted_from_tools(
+                                tool_snippets, question, checks, skill,
+                            )
+                        else:
+                            predicted = fallback_skill_voucher(question, checks, skill)
                     fail_reason = ""
                 except Exception as e:
                     predicted = f"[LLM error: {e}]"
                     fail_reason = str(e)[:100]
             else:
-                # 规则模拟
-                relevant_lines = [
-                    line for line in skill.split("\n")
-                    if any(c.lower() in line.lower() for c in checks)
-                ]
-                relevant_text = "\n".join(relevant_lines[:10]) if relevant_lines else skill[:300]
-                predicted = f"基于以下规则分析：\n{relevant_text}\n\n检查项: {', '.join(checks)}"
+                from ..rollout_helpers import fallback_skill_voucher
+
+                predicted = fallback_skill_voucher(question, checks, skill)
                 fail_reason = ""
 
             scores = score_rollout_result(predicted, checks)
+            missed = scores.get("missed_checks", [])
+            if not fail_reason and scores["hard"] == 0 and missed:
+                fail_reason = "missed: " + ", ".join(missed)
+            elif not fail_reason and scores["hard"] == 0:
+                fail_reason = "check_missed"
+
             results.append({
                 "id": item.get("id", ""),
+                "question": item.get("question", item.get("task_template", "")),
+                "expected_checks": checks,
+                "passed_checks": scores.get("passed_checks", []),
+                "missed_checks": missed,
                 "hard": scores["hard"],
                 "soft": scores["soft"],
                 "accuracy": scores.get("accuracy", 0.0),
@@ -231,7 +302,7 @@ class DEFAULTAdapter(EnvAdapter):
                 "recall": scores.get("recall", 0.0),
                 "f1": scores.get("f1", 0.0),
                 "predicted_answer": predicted,
-                "fail_reason": fail_reason or ("check_missed" if scores["hard"] == 0 else ""),
+                "fail_reason": fail_reason,
                 "task_type": item.get("task_type", ""),
             })
 

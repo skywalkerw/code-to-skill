@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
 from pathlib import Path
+
+from code_to_skill.time_utils import local_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +77,7 @@ def test_evaluate(
     hard_avg = sum(r.get("hard", 0) for r in results) / max(n, 1)
 
     report = {
-        "evaluated_at": datetime.now(timezone.utc).isoformat(),
+        "evaluated_at": local_timestamp(),
         "n_items": n,
         "test_score_soft": round(soft_avg, 3),
         "test_score_hard": round(hard_avg, 3),

@@ -9,30 +9,21 @@ import json
 import logging
 import os
 import re
+from typing import Any
 
 from .types import (
     EditOp,
     RankedEdit,
 )
-from .skill_ops import apply_edits as apply_edits_with_report
+from .skill_ops import apply_edits
 from .gate import GateManager
 from .scheduler import EditBudgetScheduler
 from .step_buffer import StepBufferManager
 
+from .scoring import score_rollout_result
+
 logger = logging.getLogger(__name__)
 
-
-from .scoring import score_rollout_result  # re-export for backward compat
-
-# ── Updater helper ──────────────────────────────────────────
-
-def apply_edits(skill_content: str, edits: list[EditOp]) -> str:
-    """将编辑应用到 Skill 文档（向后兼容，返回 str）。
-
-    内部使用 skill_ops.apply_edits 的完整报告版本。
-    """
-    result, _ = apply_edits_with_report(skill_content, edits)
-    return result
 
 def _gate_icon(action: str) -> str:
     """门禁动作图标。"""
@@ -47,23 +38,13 @@ def compute_semantic_hash(content: str) -> str:
 
 # ── State Manager ────────────────────────────────────────────
 
-def save_runtime_state(output_dir: str, step: int, current_score: float,
-                       best_score: float, best_step: int, current_skill: str = "",
-                       step_internal: dict | None = None):
-    """保存断点续训状态。"""
-    state = {
-        "schema_version": "1.0",
-        "last_completed_step": step,
-        "current_score": current_score,
-        "best_score": best_score,
-        "best_step": best_step,
-        "current_skill_path": current_skill,
-        "step_internal": step_internal or {},
-    }
-    os.makedirs(output_dir, exist_ok=True)
-    with open(os.path.join(output_dir, "runtime_state.json"), "w") as f:
-        json.dump(state, f, indent=2)
-
+from .resume_state import (
+    save_runtime_state,
+    load_skills_for_resume,
+    load_history,
+    resume_offsets,
+    load_runtime_state,
+)
 
 # ── Training Loop ────────────────────────────────────────────
 
@@ -83,7 +64,18 @@ def run_skillopt_loop(
     enable_slow_update: bool = False,
     enable_meta_skill: bool = False,
     test_split_ratio: float = 0.0,
+    selection_items: list[dict] | None = None,
+    test_items: list[dict] | None = None,
     adapter: Any = None,
+    token_budgets: dict | None = None,
+    code_repos: list[dict] | None = None,
+    graph_db_path: str = "",
+    repo_root: str = "",
+    graph_sources: list[dict] | None = None,
+    enable_code_tools: bool = True,
+    max_tool_rounds: int = 5,
+    rollout_max_tool_rounds: int = 2,
+    resume: bool = False,
 ) -> dict:
     """运行 SkillOpt 优化循环（完整版）。
 
@@ -102,17 +94,14 @@ def run_skillopt_loop(
     """
     os.makedirs(output_dir, exist_ok=True)
 
-    # ── Config ─────────────────────────────────────────────
-    _save_config(output_dir, {
-        "num_epochs": num_epochs, "batch_size": batch_size,
-        "edit_budget": edit_budget, "selection_split_ratio": selection_split_ratio,
-        "use_llm_rollout": use_llm_rollout, "budget_strategy": budget_strategy,
-        "patience": patience, "gate_metric": gate_metric,
-        "accumulation": accumulation, "enable_slow_update": enable_slow_update,
-        "enable_meta_skill": enable_meta_skill, "test_split_ratio": test_split_ratio,
-        "initial_skill_chars": len(initial_skill),
-        "benchmark_items": len(benchmark_items),
-    })
+    from .token_budgets import configure_token_budgets, get_token_budgets
+    configure_token_budgets(token_budgets)
+    logger.info("[M4] token budgets: rollout=%d reflect_failure=%d reflect_retry=%s",
+                get_token_budgets().rollout,
+                get_token_budgets().reflect_failure,
+                get_token_budgets().reflect_retry)
+
+    # ── Config（在 split 解析后写入，见下方 _save_config）────────
 
     # ── Backend 初始化 ─────────────────────────────────────
     from .separation import BackendManager, Accumulator
@@ -121,24 +110,83 @@ def run_skillopt_loop(
     # ── Adapter 初始化 ─────────────────────────────────────
     from .envs import DEFAULTAdapter
     if adapter is None:
-        adapter = DEFAULTAdapter(use_llm=use_llm_rollout)
-    adapter.setup()
+        adapter = DEFAULTAdapter(
+            use_llm=use_llm_rollout,
+            code_repos=code_repos,
+            enable_code_tools=enable_code_tools,
+            max_tool_rounds=max_tool_rounds,
+            rollout_max_tool_rounds=rollout_max_tool_rounds,
+        )
+    adapter.setup({
+        "code_repos": code_repos,
+        "graph_db_path": graph_db_path,
+        "repo_root": repo_root or (code_repos[0]["path"] if code_repos else ""),
+        "graph_sources": graph_sources,
+        "enable_code_tools": enable_code_tools,
+        "max_tool_rounds": max_tool_rounds,
+        "rollout_max_tool_rounds": rollout_max_tool_rounds,
+    })
+    code_tools = getattr(adapter, "code_tools", None)
+    if code_tools and getattr(code_tools, "enabled", False):
+        logger.info(
+            "[M4] code tools: repos=%d graph=%s reflect_tools=%d rollout_tools=%d",
+            len(code_repos or []),
+            "yes" if getattr(code_tools, "graph_enabled", False) else "no",
+            max_tool_rounds,
+            rollout_max_tool_rounds,
+        )
 
     # ── Split: train / selection / test ─────────────────────
-    total = len(benchmark_items)
-    sel_ratio = selection_split_ratio
-    test_ratio = test_split_ratio
-    train_ratio = 1.0 - sel_ratio - test_ratio
+    from .benchmark_splits import BenchmarkSplits
+    splits = BenchmarkSplits(
+        train=benchmark_items,
+        selection=selection_items or [],
+        test=test_items or [],
+    )
+    resolved = splits.resolve(
+        selection_split_ratio=selection_split_ratio,
+        test_split_ratio=test_split_ratio,
+    )
+    train_items = resolved.train
+    selection_items = resolved.selection
+    test_items = resolved.test
+    splits.log_validation()
 
-    sel_start = int(total * train_ratio)
-    test_start = int(total * (train_ratio + sel_ratio))
+    if resolved.use_explicit_splits:
+        logger.info("[M4] 使用显式 benchmark split: train=%d selection=%d test=%d",
+                     len(train_items), len(selection_items), len(test_items))
+    else:
+        logger.info("[M4] 使用 ratio split: train=%d selection=%d test=%d (ratio=%.2f/%.2f)",
+                     len(train_items), len(selection_items), len(test_items),
+                     selection_split_ratio, test_split_ratio)
 
-    train_items = benchmark_items[:sel_start]
-    selection_items = benchmark_items[sel_start:test_start]
-    test_items = benchmark_items[test_start:] if test_ratio > 0 else []
+    _save_config(output_dir, {
+        "num_epochs": num_epochs, "batch_size": batch_size,
+        "edit_budget": edit_budget, "selection_split_ratio": selection_split_ratio,
+        "use_llm_rollout": use_llm_rollout, "budget_strategy": budget_strategy,
+        "patience": patience, "gate_metric": gate_metric,
+        "accumulation": accumulation, "enable_slow_update": enable_slow_update,
+        "enable_meta_skill": enable_meta_skill, "test_split_ratio": test_split_ratio,
+        "use_explicit_splits": resolved.use_explicit_splits,
+        "split_source": resolved.source,
+        "initial_skill_chars": len(initial_skill),
+        "train_items": len(train_items),
+        "selection_items": len(selection_items),
+        "test_items": len(test_items),
+        "enable_code_tools": enable_code_tools,
+        "max_tool_rounds": max_tool_rounds,
+        "rollout_max_tool_rounds": rollout_max_tool_rounds,
+        "code_repos": len(code_repos or []),
+    })
+
+    # selection 较小时自动用 soft gate
+    effective_gate_metric = gate_metric
+    if len(selection_items) < 5 and gate_metric == "hard":
+        effective_gate_metric = "soft"
+        logger.info("[M4] selection=%d < 5，gate_metric 自动降级为 soft", len(selection_items))
 
     current_skill = initial_skill
-    prev_epoch_skill = initial_skill  # for slow update
+    prev_epoch_skill = initial_skill
     best_skill = initial_skill
     current_hard = 0.0
     current_soft = 0.0
@@ -146,11 +194,29 @@ def run_skillopt_loop(
     best_score = 0.0
     best_step = 0
     history: list[dict] = []
+    start_epoch, start_batch_start, step_counter = 0, 0, 0
+
+    if resume and os.path.isdir(output_dir):
+        loaded_current, loaded_best, last_step = load_skills_for_resume(output_dir, initial_skill)
+        current_skill = loaded_current
+        best_skill = loaded_best
+        prev_epoch_skill = loaded_current
+        history = load_history(output_dir)
+        start_epoch, start_batch_start, step_counter = resume_offsets(output_dir)
+        state = load_runtime_state(output_dir)
+        if state:
+            best_score = float(state.get("best_score", 0.0))
+            best_step = int(state.get("best_step", 0))
+            current_score = float(state.get("current_score", best_score))
+            logger.info(
+                "[M4] 断点续训: step=%d epoch=%d batch_start=%d best_score=%.3f",
+                last_step, start_epoch, start_batch_start, best_score,
+            )
 
     # ── 组件初始化 ─────────────────────────────────────────
     total_steps = num_epochs * max(1, len(train_items) // max(1, batch_size))
     from .gate import select_gate_score
-    gate = GateManager(patience=patience, metric=gate_metric)  # type: ignore[arg-type]
+    gate = GateManager(patience=patience, metric=effective_gate_metric)  # type: ignore[arg-type]
     scheduler = EditBudgetScheduler(
         initial_budget=edit_budget, min_budget=1,
         total_steps=total_steps, strategy=budget_strategy,
@@ -160,6 +226,8 @@ def run_skillopt_loop(
     cache = SelectionCache(
         cache_path=os.path.join(output_dir, "cache", "selection_scores.json")
     )
+    if resume:
+        cache.load()
     from .meta_skill import MetaSkill
     meta_skill = MetaSkill()
     acc = Accumulator(accumulate=accumulation)
@@ -168,7 +236,7 @@ def run_skillopt_loop(
     logger.info("[M4] 开始训练: skill=%d chars, train=%d items, selection=%d items, epochs=%d, batch=%d acc=%d",
                 len(initial_skill), len(train_items), len(selection_items),
                 num_epochs, batch_size, accumulation)
-    if selection_items:
+    if selection_items and not resume:
         eval_result = adapter.evaluate(current_skill, selection_items, target_backend=backend_mgr.target)
         current_hard = eval_result["accuracy"]
         current_soft = eval_result["soft"]
@@ -179,12 +247,13 @@ def run_skillopt_loop(
         logger.info("[M4] 初始评分: hard=%.3f soft=%.3f acc=%.3f f1=%.3f (gate=%.3f [%s])",
                      current_hard, current_soft, eval_result["accuracy"], eval_result["f1"],
                      best_score, gate.metric)
+    elif resume:
+        logger.info("[M4] 跳过初始 eval（断点续训）")
 
-    step_counter = 0
-
-    for epoch in range(num_epochs):
+    for epoch in range(start_epoch, num_epochs):
         logger.info("[M4] === Epoch %d/%d ===", epoch + 1, num_epochs)
-        for batch_start in range(0, len(train_items), batch_size):
+        batch_begin = start_batch_start if epoch == start_epoch else 0
+        for batch_start in range(batch_begin, len(train_items), batch_size):
             batch = train_items[batch_start:batch_start + batch_size]
             step_counter += 1
 
@@ -221,6 +290,8 @@ def run_skillopt_loop(
                 step_buffer=step_buffer,
                 meta_skill_context=meta_skill.render() if enable_meta_skill else "",
                 backend=backend_mgr.optimizer,
+                code_tools=code_tools,
+                max_tool_rounds=max_tool_rounds,
             )
             logger.info("[M4] reflect: %d patches", len(patches))
 
@@ -235,10 +306,48 @@ def run_skillopt_loop(
             )
             logger.info("[M4] aggregate: %d edits", len(merged.edits))
 
+            # 3.5 Validate — 过滤占位/低质量编辑
+            from .edit_validator import filter_valid_edits
+            valid_edits, rejected_validations = filter_valid_edits(merged.edits, current_skill)
+            for edit, reason in rejected_validations:
+                logger.info("[M4] validate: REJECT [%s] %s — %s", edit.op, edit.content[:40], reason)
+                buffer.record_rejected_edit(step_counter, edit)
+            if not valid_edits:
+                from .scenario_rules import build_scenario_edits
+
+                scenario_edits = build_scenario_edits(all_results, current_skill)
+                if scenario_edits:
+                    valid_edits, scenario_rejected = filter_valid_edits(
+                        scenario_edits, current_skill,
+                    )
+                    rejected_validations.extend(scenario_rejected)
+                    if valid_edits:
+                        logger.info(
+                            "[M4] validate: 场景规则兜底 %d 条",
+                            len(valid_edits),
+                        )
+                if not valid_edits:
+                    logger.info("[M4] validate: 无有效编辑，跳过本 step")
+                    from .edit_traceability import edit_to_dict
+
+                    _save_step_artifacts(
+                        output_dir, step_counter,
+                        ranked=[], edit_reports=[],
+                        prev_skill=current_skill, candidate_skill=current_skill,
+                        candidate_hard=0.0, candidate_soft=0.0, action="skip_validate",
+                        rollout_results=all_results, patches=patches,
+                        rejected_edits=[edit_to_dict(e) for e, _ in rejected_validations],
+                    )
+                    continue
+
             # 4. Select（LLM 排序 + budget 截断）
             from .llm_components import select_edits_llm
             step_budget = scheduler.step()
-            ranked_dicts = select_edits_llm(merged.edits, current_skill, step_budget, backend=backend_mgr.optimizer)
+            ranked_dicts = select_edits_llm(
+                valid_edits, current_skill, step_budget,
+                backend=backend_mgr.optimizer,
+                rollout_results=all_results,
+            )
             ranked = [RankedEdit(**r) if isinstance(r, dict) else r for r in ranked_dicts]
             for i, r in enumerate(ranked):
                 if buffer.is_edit_redundant(r.edit):
@@ -247,7 +356,7 @@ def run_skillopt_loop(
                 logger.info("[M4] select #%d: [%s] %s", i + 1, r.edit.op, r.edit.content[:60])
 
             # 5. Update
-            candidate_content, edit_reports = apply_edits_with_report(current_skill, [e.edit for e in ranked])
+            candidate_content, edit_reports = apply_edits(current_skill, [e.edit for e in ranked])
             candidate_hash = compute_semantic_hash(candidate_content)
             size_delta = len(candidate_content) - len(current_skill)
             logger.info("[M4] update: hash=%s delta=%+d chars", candidate_hash[:8], size_delta)
@@ -321,9 +430,12 @@ def run_skillopt_loop(
             history.append(record)
 
             # ── Step artifacts ─────────────────────────────
-            _save_step_artifacts(output_dir, step_counter, ranked, edit_reports,
-                                 current_skill, candidate_content, candidate_hard,
-                                 candidate_soft, action)
+            _save_step_artifacts(
+                output_dir, step_counter, ranked, edit_reports,
+                current_skill, candidate_content, candidate_hard,
+                candidate_soft, action,
+                rollout_results=all_results, patches=patches,
+            )
 
             # ── Step checkpoint ────────────────────────────
             from .test_eval import StepCheckpoint
@@ -333,6 +445,19 @@ def run_skillopt_loop(
                 last_minibatch_completed=1,
             )
             ckpt.save(os.path.join(output_dir, "step_checkpoint.json"))
+
+            skill_snap = os.path.join(output_dir, "skills", f"skill_v{step_counter:04d}.md")
+            save_runtime_state(
+                output_dir, step_counter, current_score, best_score, best_step,
+                current_skill_path=skill_snap if os.path.isfile(skill_snap) else "",
+                best_skill_path=os.path.join(output_dir, "best_skill.md"),
+                epoch=epoch,
+                next_batch_start=batch_start + batch_size,
+                step_internal=ckpt.to_dict(),
+            )
+            with open(os.path.join(output_dir, "history.json"), "w", encoding="utf-8") as f:
+                json.dump(history, f, indent=2, ensure_ascii=False)
+            cache.save()
 
             if gate.should_early_stop:
                 break
@@ -390,8 +515,14 @@ def run_skillopt_loop(
             rollout_completed=step_counter * batch_size, rollout_total=step_counter * batch_size,
             last_minibatch_completed=1,
         )
-        save_runtime_state(output_dir, step_counter, current_score, best_score, best_step,
-                           step_internal=epoch_ckpt.to_dict())
+        save_runtime_state(
+            output_dir, step_counter, current_score, best_score, best_step,
+            current_skill_path=os.path.join(output_dir, "skills", f"skill_v{step_counter:04d}.md"),
+            best_skill_path=os.path.join(output_dir, "best_skill.md"),
+            epoch=epoch + 1,
+            next_batch_start=0,
+            step_internal=epoch_ckpt.to_dict(),
+        )
         cache.save()
 
     # ── Final ───────────────────────────────────────────────
@@ -433,44 +564,66 @@ def _save_config(output_dir: str, cfg: dict) -> None:
     logger.debug("Saved config.json")
 
 def _save_step_artifacts(
-    output_dir: str, step: int, ranked: list, edit_reports: list,
-    prev_skill: str, candidate_skill: str,
-    candidate_hard: float, candidate_soft: float, action: str,
+    output_dir: str,
+    step: int,
+    ranked: list,
+    edit_reports: list,
+    prev_skill: str,
+    candidate_skill: str,
+    candidate_hard: float,
+    candidate_soft: float,
+    action: str,
+    *,
+    rollout_results: list[dict] | None = None,
+    patches: list[dict] | None = None,
+    rejected_edits: list[dict] | None = None,
 ) -> None:
+    from .edit_traceability import ranked_edit_to_proposal, rollout_failure_records
+
     step_dir = os.path.join(output_dir, "steps", f"step_{step:04d}")
     os.makedirs(step_dir, exist_ok=True)
-    # Proposal
-    proposals = [{
-        "op": getattr(r.edit, "op", "?"),
-        "content": getattr(r.edit, "content", ""),
-        "target": getattr(r.edit, "target", ""),
-        "rank": r.rank,
-        "score": r.score,
-    } for r in ranked]
-    with open(os.path.join(step_dir, "edit_proposals.json"), "w") as f:
-        json.dump(proposals, f, indent=2, ensure_ascii=False)
-    # Apply report
-    with open(os.path.join(step_dir, "edit_apply_report.json"), "w") as f:
-        json.dump({
-            "gate_action": action,
-            "candidate_hard": candidate_hard,
-            "candidate_soft": candidate_soft,
-            "per_edit": edit_reports,
-        }, f, indent=2, ensure_ascii=False)
-    # Eval results
-    with open(os.path.join(step_dir, "eval_results.json"), "w") as f:
-        json.dump({
-            "hard": candidate_hard,
-            "soft": candidate_soft,
-            "action": action,
-        }, f, indent=2)
 
-    # Skill version snapshot — use post-gate final skill
-    skills_dir = os.path.join(output_dir, "skills")
-    os.makedirs(skills_dir, exist_ok=True)
-    final_skill = candidate_skill if action != "reject" else prev_skill
-    with open(os.path.join(skills_dir, f"skill_v{step:04d}.md"), "w") as f:
-        f.write(final_skill)
+    if rollout_results is not None:
+        with open(os.path.join(step_dir, "rollout_summary.json"), "w", encoding="utf-8") as f:
+            json.dump({
+                "step": step,
+                "total": len(rollout_results),
+                "passed": sum(1 for r in rollout_results if r.get("hard") == 1),
+                "failed": sum(1 for r in rollout_results if r.get("hard") == 0),
+                "failures": rollout_failure_records(rollout_results),
+            }, f, indent=2, ensure_ascii=False)
+
+    if patches is not None:
+        with open(os.path.join(step_dir, "reflect_patches.json"), "w", encoding="utf-8") as f:
+            json.dump(patches, f, indent=2, ensure_ascii=False)
+
+    if rejected_edits:
+        with open(os.path.join(step_dir, "rejected_edits.json"), "w", encoding="utf-8") as f:
+            json.dump(rejected_edits, f, indent=2, ensure_ascii=False)
+
+    if ranked:
+        proposals = [ranked_edit_to_proposal(r) for r in ranked]
+        with open(os.path.join(step_dir, "edit_proposals.json"), "w", encoding="utf-8") as f:
+            json.dump(proposals, f, indent=2, ensure_ascii=False)
+        with open(os.path.join(step_dir, "edit_apply_report.json"), "w", encoding="utf-8") as f:
+            json.dump({
+                "gate_action": action,
+                "candidate_hard": candidate_hard,
+                "candidate_soft": candidate_soft,
+                "per_edit": edit_reports,
+            }, f, indent=2, ensure_ascii=False)
+        with open(os.path.join(step_dir, "eval_results.json"), "w", encoding="utf-8") as f:
+            json.dump({
+                "hard": candidate_hard,
+                "soft": candidate_soft,
+                "action": action,
+            }, f, indent=2)
+
+        final_skill = candidate_skill if action != "reject" else prev_skill
+        skills_dir = os.path.join(output_dir, "skills")
+        os.makedirs(skills_dir, exist_ok=True)
+        with open(os.path.join(skills_dir, f"skill_v{step:04d}.md"), "w", encoding="utf-8") as f:
+            f.write(final_skill)
     logger.debug("Saved step %d artifacts", step)
 
 def _save_slow_update_artifacts(

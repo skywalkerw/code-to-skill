@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from ..token_budgets import get_token_budgets
 from ..types import EditOp, MergedPatch
 
 logger = logging.getLogger(__name__)
@@ -74,13 +75,17 @@ def merge_patches(
 
 def _deduplicate_edits(edits: list[EditOp]) -> list[EditOp]:
     """去重：相同 op + 相同 content 前 100 字符的编辑只保留一个。"""
-    seen: set[str] = set()
+    from ..edit_traceability import merge_edit_traceability
+
+    seen: dict[str, EditOp] = {}
     unique: list[EditOp] = []
     for e in edits:
         key = f"{e.op}:{(e.content or '')[:100].strip()}"
         if key not in seen:
-            seen.add(key)
+            seen[key] = e
             unique.append(e)
+        else:
+            merge_edit_traceability(seen[key], e)
     return unique
 
 
@@ -114,7 +119,7 @@ def _llm_hierarchical_merge(
                     edits=failure_text[:2000],
                 ),
             }],
-            max_output_tokens=512,
+            max_output_tokens=get_token_budgets().aggregate,
             temperature=0.2,
         ))
         parsed = safe_json_parse(resp.content)
@@ -136,7 +141,7 @@ def _llm_hierarchical_merge(
                     edits=success_text[:2000],
                 ),
             }],
-            max_output_tokens=512,
+            max_output_tokens=get_token_budgets().aggregate,
             temperature=0.2,
         ))
         parsed = safe_json_parse(resp.content)

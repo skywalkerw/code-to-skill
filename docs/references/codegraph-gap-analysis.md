@@ -31,25 +31,25 @@
 | 能力 | CodeGraph | M1 | 差距 |
 |------|----------|-----|------|
 | 节点/边模型 | ✅ types.ts | ✅ types.py | 基本对齐 |
-| 图遍历 | ✅ `traversal.ts`（BFS/DFS/影响范围） | ❌ | **缺失** |
-| 图查询 | ✅ `queries.ts`（查询语言） | ❌ | **缺失** |
-| 持久化 | ✅ SQLite（db/） | ⚠️ 文件 JSON | 规模受限 |
+| 图遍历 | ✅ `traversal.ts`（BFS/DFS/影响范围） | ✅ `traversal.py` | 基本对齐 |
+| 图查询 | ✅ `queries.ts`（查询语言） | ✅ `graph_queries.py` | 子集对齐 |
+| 持久化 | ✅ SQLite（db/） | ✅ `db.py` + JSON 产物 | 基本对齐 |
 
 ### 3. 引用解析（resolution）
 
 | 能力 | CodeGraph | M1 | 差距 |
 |------|----------|-----|------|
 | import/export | ✅ | ✅ | 对齐 |
-| 调用关系 | ✅ | ⚠️ 仅 import，无 method call | **缺失** |
+| 调用关系 | ✅ | ⚠️ 启发式 method call + import | 部分对齐 |
 | 类型解析 | ✅ | ❌ | 不做类型系统 |
 
 ### 4. 搜索（search）
 
 | 能力 | CodeGraph | M1 | 差距 |
 |------|----------|-----|------|
-| 符号搜索 | ✅ 查询语法 | ❌ | **缺失** |
-| 模糊匹配 | ✅ | ❌ | **缺失** |
-| 影响分析 | ✅ traversal | ❌ | **缺失** |
+| 符号搜索 | ✅ 查询语法 | ✅ FTS5 + `GraphQueryEngine.search` | 基本对齐 |
+| 模糊匹配 | ✅ | ✅ `find_symbol` 模糊 | 基本对齐 |
+| 影响分析 | ✅ traversal | ✅ `impact()` | 基本对齐 |
 
 ### 5. 上下文构建（context）
 
@@ -57,7 +57,7 @@
 |------|----------|-----|------|
 | LLM 上下文包 | ✅ 专门模块 | ✅ leaf_context | 对齐 |
 | Token 控制 | ✅ | ✅ token 预算 | 对齐 |
-| 按需查询 | ✅ search-driven | ❌ 仅全量 leaf | **缺失** |
+| 按需查询 | ✅ search-driven | ✅ `ContextBuilder` + SkillOpt 图谱工具 | 基本对齐 |
 
 ### 6. M1 独有能力
 
@@ -115,5 +115,22 @@
 | P0 | 图遍历 API（callees/callers） | ✅ 已完成（traversal.py） | M3 可追踪调用链 |
 | P0 | 符号搜索接口 | ✅ 已完成（traversal.py） | M3/M4 可按需查询 |
 | P1 | SQLite 持久化 | ✅ 已完成（db.py） | 增量更新基础 |
-| P2 | 预编译 tree-sitter grammar → vendor/ | ⬜ 待实现 | M3 抽取质量提升 |
-| P2 | 框架提取器 | ⬜ 待实现 | 覆盖 Spring/Vue 等框架 |
+| P2 | tree-sitter Query 深度解析 | ✅ Phase 10 | `ts_queries.py` + 14 grammar；默认 `tree-sitter-languages`；需 `tree-sitter<0.22` |
+| P2 | 框架提取器 | ✅ 部分（Spring/MyBatis/Fineract） | `framework.py` + `mybatis_xml.py`；Vue/Svelte 等未覆盖 |
+| P2 | SkillOpt explore_symbol + code_evidence | ✅ Phase 10 | reflect 预取 benchmark `context_refs` 真实源码 |
+| P1 | 图查询 + ContextBuilder + SkillOpt 接线 | ✅ 已完成 | M4 可用 search_symbol / get_code_context / trace_symbol |
+| P1 | 增量解析缓存（use_cache） | ✅ 已完成 | `run all` 默认启用 |
+| P1 | qualified_name + manifest.json | ✅ 已完成 | 对齐设计文档 01 |
+| P1 | kind:/file: 查询语法 | ✅ 已完成 | query_parser.py |
+| P2 | MCP 工具暴露 | ✅ 已完成 | codegraph-mcp + **6 工具** |
+| P2 | Spring/MyBatis 框架边 | ✅ 已完成 | framework.py + resolver inheritance |
+| P2 | M3 evidence_index | ✅ 已完成 | EvidenceBuilder + edge_path |
+| P3 | 文件监听增量 | ✅ 已完成 | watcher + code-graph-watch CLI |
+| P2 | 生成代码检测 | ✅ 已完成 | generated_detection.py |
+| P2 | 接口派发合成 | ✅ 已完成 | callback_synthesis.py |
+| P2 | 多仓库图谱 | ✅ 已完成 | GraphRegistry + graph_sources |
+| P2 | MCP impact 工具 | ✅ 已完成 | codegraph_impact |
+| P2 | MyBatis XML 解析 | ✅ 已完成 | mybatis_xml.py |
+| P2 | JS 回调合成 | ✅ 已完成 | js_callbacks.py |
+| P2 | MCP daemon | ✅ 已完成 | codegraph-daemon |
+| P2 | SkillOpt impact/status 工具 | ✅ 已完成 | impact_symbol / graph_status |

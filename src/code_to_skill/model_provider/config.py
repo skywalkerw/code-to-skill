@@ -104,6 +104,7 @@ def create_backend_from_config(backend_id: str, backend_config: dict) -> Interac
             api_key=resolved.get("api_key", ""),
             model=resolved.get("model", "gpt-4o"),
             context_window=resolved.get("context_window", 128000),
+            max_output_tokens=resolved.get("max_output_tokens", 16384),
             timeout_seconds=resolved.get("timeout_seconds", 180),
         )
 

@@ -52,8 +52,8 @@ class EditOp(BaseModel):
     support_count: int | None = None
     source_type: Literal["failure", "success"] | None = None
     merge_level: int | None = None
-    update_origin: str = ""
-    update_target: str = ""
+    related_task_ids: list[str] = Field(default_factory=list)
+    related_missed_checks: list[str] = Field(default_factory=list)
 
 
 class FailureSummaryEntry(BaseModel):

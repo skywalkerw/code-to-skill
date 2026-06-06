@@ -12,6 +12,7 @@ from code_to_skill.model_provider.types import InteractionRequest
 from code_to_skill.model_provider.structured_output import invoke_with_structured_output
 
 from code_to_skill.atom_extractor.types import SkillAtom, RawAtom, SourceRef
+from code_to_skill.skillopt_loop.token_budgets import get_token_budgets
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +69,7 @@ def extract_from_code_llm(leaf_contexts: list[dict]) -> list[RawAtom]:
                 "role": "user",
                 "content": context_text[:4000]
             }],
-            max_output_tokens=2048,
+            max_output_tokens=get_token_budgets().atom_extract,
             temperature=0.0,
         )
 
@@ -134,7 +135,7 @@ def extract_from_docs_llm(chunks: list[dict]) -> list[RawAtom]:
             "role": "user",
             "content": context[:4000]
         }],
-        max_output_tokens=2048,
+        max_output_tokens=get_token_budgets().atom_extract,
         temperature=0.0,
     )
 

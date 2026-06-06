@@ -11,6 +11,7 @@ from typing import Any
 
 from . import InteractionBackend
 from ..types import InteractionRequest, InteractionResponse, ModelResponse, HealthStatus
+from ..tracer import record_interaction
 
 
 class MockReplayBackend(InteractionBackend):
@@ -67,7 +68,7 @@ class MockReplayBackend(InteractionBackend):
         except json.JSONDecodeError:
             pass
 
-        return ModelResponse(
+        response = ModelResponse(
             request_id=request.request_id,
             backend_id=self.backend_id,
             model=self.model,
@@ -77,6 +78,8 @@ class MockReplayBackend(InteractionBackend):
             latency_ms=int((time.monotonic() - start) * 1000),
             usage=data.get("usage", {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150}),
         )
+        record_interaction(request, response, backend_id=self.backend_id)
+        return response
 
     def healthcheck(self) -> HealthStatus:
         return HealthStatus(backend_id=self.backend_id, healthy=True)

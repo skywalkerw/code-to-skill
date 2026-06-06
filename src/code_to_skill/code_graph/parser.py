@@ -1,46 +1,53 @@
 """符号与结构提取。
 
-使用 tree-sitter 解析源码，生成 GraphNode 和 contains 边。
-当 tree-sitter 或语言 grammar 不可用时，降级为基于正则的启发式解析。
+优先 tree-sitter Query 解析；降级为全树遍历或正则启发式。
 """
 from __future__ import annotations
 
+import hashlib
+import logging
 import os
 import re
-import logging
-from pathlib import Path
+from dataclasses import dataclass, field
 
+from .ts_backend import get_parser_bundle, grammar_id_for_language, is_ts_language
+from .ts_queries import extract_with_queries, extract_with_walk
 from .types import CodeGraph, GraphNode, GraphEdge, NodeKind, EdgeKind, ParseError
 
 logger = logging.getLogger(__name__)
 
-# ── tree-sitter 初始化（可选依赖）─────────────────────────
 
-_treesitter_available = False
-_Language = None
-_Parser = None
+@dataclass
+class ParseStats:
+    """单文件解析后端统计。"""
+    files: dict[str, str] = field(default_factory=dict)
+    counts: dict[str, int] = field(default_factory=dict)
 
-try:
-    from tree_sitter import Language, Parser
-    _treesitter_available = True
-    _Language = Language
-    _Parser = Parser
-except ImportError:
-    logger.info("tree-sitter not installed; using heuristic fallback parser")
+    def record(self, rel_path: str, backend: str) -> None:
+        self.files[rel_path] = backend
+        self.counts[backend] = self.counts.get(backend, 0) + 1
+
+    def to_dict(self) -> dict:
+        return {
+            "by_backend": self.counts,
+            "files": self.files,
+            "total": sum(self.counts.values()),
+        }
 
 
-# ── 主接口 ──────────────────────────────────────────────────
+# 模块级统计（pipeline 可读取）
+_last_parse_stats = ParseStats()
+
+
+def get_last_parse_stats() -> ParseStats:
+    return _last_parse_stats
+
 
 def parse_files(file_paths: list[str], repo_root: str) -> tuple[CodeGraph, list[ParseError]]:
-    """解析一批文件，返回 CodeGraph 和解析错误。
+    """解析一批文件，返回 CodeGraph 和解析错误。"""
+    global _last_parse_stats
+    _last_parse_stats = ParseStats()
 
-    Args:
-        file_paths: 相对于 repo_root 的文件路径列表
-        repo_root: 仓库根路径
-
-    Returns:
-        (CodeGraph, ParseError[])
-    """
     graph = CodeGraph()
     errors: list[ParseError] = []
 
@@ -51,119 +58,186 @@ def parse_files(file_paths: list[str], repo_root: str) -> tuple[CodeGraph, list[
 
         full_path = os.path.join(repo_root, rel_path)
         try:
-            if _treesitter_available and lang in ("python", "java", "javascript", "typescript", "go"):
-                nodes, errs = _parse_with_treesitter(full_path, rel_path, lang)
-            else:
-                nodes, errs = _parse_with_regex(full_path, rel_path, lang)
+            nodes, errs, backend = _parse_file(full_path, rel_path, lang)
+            _last_parse_stats.record(rel_path, backend)
         except Exception as e:
             errors.append(ParseError(file_path=rel_path, error=str(e), language=lang))
+            _last_parse_stats.record(rel_path, "error")
             continue
 
+        if lang == "java":
+            nodes = _drop_spurious_java_type_nodes(nodes)
         graph.nodes.extend(nodes)
         errors.extend(errs)
 
-    # 生成 contains 边（文件 → 节点）
     _build_contains_edges(graph)
-
     return graph, errors
 
 
-# ── tree-sitter 解析（当可用时）──────────────────────────────
+# walk 回退或旧图谱可能把 @Component/@Path 注解误标为 class 名
+_JAVA_ANNOTATION_TYPE_NAMES = frozenset({
+    "Component", "Service", "Repository", "Controller", "RestController",
+    "Configuration", "ConfigurationProperties", "Path", "RequiredArgsConstructor",
+    "RequestMapping", "GetMapping", "PostMapping", "PutMapping", "DeleteMapping",
+    "PatchMapping", "Scheduled", "Quartz", "Autowired", "Transactional", "Bean",
+})
 
-def _parse_with_treesitter(full_path: str, rel_path: str, language: str) -> tuple[list[GraphNode], list[ParseError]]:
+
+def _drop_spurious_java_type_nodes(nodes: list[GraphNode]) -> list[GraphNode]:
+    """同文件已有真实类名时，丢弃注解名的伪 class 节点。"""
+    from collections import defaultdict
+
+    by_file: dict[str, list[GraphNode]] = defaultdict(list)
+    for node in nodes:
+        if node.language == "java" and node.kind in (NodeKind.class_, NodeKind.interface):
+            by_file[node.file_path].append(node)
+
+    drop_ids: set[str] = set()
+    for file_nodes in by_file.values():
+        real = [n for n in file_nodes if n.name not in _JAVA_ANNOTATION_TYPE_NAMES]
+        if not real:
+            continue
+        for n in file_nodes:
+            if n.name in _JAVA_ANNOTATION_TYPE_NAMES:
+                drop_ids.add(n.id)
+
+    if not drop_ids:
+        return nodes
+    return [n for n in nodes if n.id not in drop_ids]
+
+
+def _parse_file(
+    full_path: str,
+    rel_path: str,
+    language: str,
+) -> tuple[list[GraphNode], list[ParseError], str]:
+    if is_ts_language(language, rel_path):
+        nodes, errs, backend = _parse_with_treesitter(full_path, rel_path, language)
+        if nodes:
+            if language == "java":
+                nodes = _supplement_java_types_from_regex(full_path, rel_path, nodes)
+            return nodes, errs, backend
+    nodes, errs = _parse_with_regex(full_path, rel_path, language)
+    return nodes, errs, "regex"
+
+
+def _parse_with_treesitter(
+    full_path: str,
+    rel_path: str,
+    language: str,
+) -> tuple[list[GraphNode], list[ParseError], str]:
+    bundle = get_parser_bundle(language, rel_path)
+    if bundle is None:
+        return [], [], "regex"
+
+    parser, lang_obj, _backend_label = bundle
     file_hash = _hash_file(full_path)
     with open(full_path, "rb") as f:
         source = f.read()
 
-    # 需要语言 grammar 已编译到共享库
-    # 运行时尝试加载，失败则降级为 regex
     try:
-        parser = Parser()
-        lang_obj = Language(_build_lang_lib(), language)
-        parser.set_language(lang_obj)
         tree = parser.parse(source)
-    except Exception:
-        return _parse_with_regex(full_path, rel_path, language)
+    except Exception as exc:
+        logger.debug("tree-sitter parse failed %s: %s", rel_path, exc)
+        return [], [], "regex"
 
-    nodes: list[GraphNode] = []
-    file_node_id = rel_path
+    grammar_id = grammar_id_for_language(language, rel_path) or language
+    scope = _file_scope(source.decode("utf-8", errors="replace"), rel_path, language)
 
-    def _walk(node, depth=0):
-        if depth > 2:  # 只取前两层：文件 → class/function → method
-            return
-        kind = _ts_node_kind(node.type, language)
-        if kind is None:
-            for child in node.children:
-                _walk(child, depth + 1)
-            return
+    nodes = extract_with_queries(
+        source, tree.root_node, lang_obj, grammar_id,
+        rel_path=rel_path, file_hash=file_hash, language=language, scope=scope,
+    )
+    if nodes:
+        return nodes, [], "tree-sitter-query"
 
-        name = _extract_name(source, node, kind, language)
-        if not name:
-            for child in node.children:
-                _walk(child, depth + 1)
-            return
+    nodes = extract_with_walk(
+        source, tree.root_node, grammar_id,
+        rel_path=rel_path, file_hash=file_hash, language=language, scope=scope,
+    )
+    if nodes:
+        return nodes, [], "tree-sitter-walk"
 
-        node_id = f"{rel_path}::{name}"
-        nodes.append(GraphNode(
-            id=node_id,
-            kind=kind,
-            name=name,
-            file_path=rel_path,
-            start_line=node.start_point[0] + 1,
-            end_line=node.end_point[0] + 1,
-            language=language,
-            source_hash=file_hash,
-        ))
-        for child in node.children:
-            _walk(child, depth + 1)
-
-    _walk(tree.root_node)
-    return nodes, []
+    return [], [], "regex"
 
 
 # ── 正则降级解析 ────────────────────────────────────────────
 
+def _supplement_java_types_from_regex(
+    full_path: str,
+    rel_path: str,
+    existing: list[GraphNode],
+) -> list[GraphNode]:
+    """tree-sitter 可能漏掉 class/interface 声明时，用正则补全。"""
+    regex_nodes, _ = _parse_with_regex(full_path, rel_path, "java")
+    have = {
+        (n.file_path, n.name)
+        for n in existing
+        if n.kind in (NodeKind.class_, NodeKind.interface)
+    }
+    merged = list(existing)
+    for node in regex_nodes:
+        if node.kind not in (NodeKind.class_, NodeKind.interface):
+            continue
+        if (node.file_path, node.name) in have:
+            continue
+        merged.append(node)
+        have.add((node.file_path, node.name))
+    return merged
+
+
 def _parse_with_regex(full_path: str, rel_path: str, language: str) -> tuple[list[GraphNode], list[ParseError]]:
-    """基于正则的启发式解析。"""
     file_hash = _hash_file(full_path)
     try:
         with open(full_path, "r", encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()
+            content = f.read()
+            lines = content.splitlines(keepends=True)
     except OSError as e:
         return [], [ParseError(file_path=rel_path, error=str(e), language=language)]
 
     nodes: list[GraphNode] = []
-
+    scope = _file_scope(content, rel_path, language)
+    current_class = ""
     patterns = _PATTERNS.get(language, [])
+
     for lineno, line in enumerate(lines, start=1):
         line_stripped = line.strip()
         for pat, kind in patterns:
             m = re.match(pat, line_stripped)
-            if m:
-                name = m.group(1)
-                node_id = f"{rel_path}::{name}"
-                nodes.append(GraphNode(
-                    id=node_id,
-                    kind=kind,
-                    name=name,
-                    file_path=rel_path,
-                    start_line=lineno,
-                    end_line=lineno,
-                    language=language,
-                    source_hash=file_hash,
-                ))
-                break
+            if not m:
+                continue
+            name = m.group(m.lastindex or 1)
+            if kind in (NodeKind.class_, NodeKind.interface):
+                current_class = name
+            qname = _build_qualified_name(
+                language, scope, [current_class] if current_class else [], name, kind,
+            )
+            doc = ""
+            if language == "python" and kind == NodeKind.function:
+                doc = _extract_python_docstring(lines, lineno)
+            nodes.append(GraphNode(
+                id=f"{rel_path}::{name}",
+                kind=kind,
+                name=name,
+                file_path=rel_path,
+                start_line=lineno,
+                end_line=lineno,
+                language=language,
+                source_hash=file_hash,
+                qualified_name=qname,
+                signature=line_stripped[:240],
+                docstring=doc,
+                metadata={"extractor": "regex"},
+            ))
+            break
 
     return nodes, []
 
-
-# ── 正则模式定义 ────────────────────────────────────────────
 
 _PATTERNS: dict[str, list[tuple[str, NodeKind]]] = {
     "java": [
         (r"(?:public\s+)?(?:class|interface|enum)\s+(\w+)", NodeKind.class_),
         (r"(?:public|private|protected)\s+(?:static\s+)?(?:abstract\s+)?(?:final\s+)?[\w<>\[\],\s]+?\s+(\w+)\s*\([^)]*\)\s*(?:\{|throws)", NodeKind.method),
-        (r"@(RestController|Controller|Service|Repository|Component)\b", NodeKind.class_),
         (r"@(RequestMapping|GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping)\b", NodeKind.route),
         (r"@(Scheduled|Quartz)\b", NodeKind.job),
         (r"@(Configuration|ConfigurationProperties)\b", NodeKind.config),
@@ -196,69 +270,71 @@ _PATTERNS: dict[str, list[tuple[str, NodeKind]]] = {
         (r"impl\s+(\w+)", NodeKind.class_),
         (r"#\[(get|post|put|delete|route)", NodeKind.route),
     ],
+    "kotlin": [
+        (r"class\s+(\w+)", NodeKind.class_),
+        (r"fun\s+(\w+)\s*\(", NodeKind.function),
+    ],
+    "csharp": [
+        (r"class\s+(\w+)", NodeKind.class_),
+        (r"(?:public|private|protected)\s+[\w<>\[\],\s]+\s+(\w+)\s*\(", NodeKind.method),
+    ],
+    "cpp": [
+        (r"class\s+(\w+)", NodeKind.class_),
+        (r"(\w+)\s*\([^)]*\)\s*\{", NodeKind.method),
+    ],
+    "ruby": [
+        (r"class\s+(\w+)", NodeKind.class_),
+        (r"def\s+(\w+)", NodeKind.function),
+    ],
+    "php": [
+        (r"class\s+(\w+)", NodeKind.class_),
+        (r"function\s+(\w+)\s*\(", NodeKind.function),
+    ],
 }
 
 
-# ── 辅助 ─────────────────────────────────────────────────────
-
 def _build_contains_edges(graph: CodeGraph):
-    """为每个文件节点生成 contains 边。"""
+    from collections import defaultdict
+
     file_nodes: dict[str, str] = {}
+    types_by_file: dict[str, list[GraphNode]] = defaultdict(list)
     for node in graph.nodes:
         if node.file_path not in file_nodes and node.kind != NodeKind.file:
             file_id = node.file_path
             file_nodes[node.file_path] = file_id
-            # 添加隐式文件节点
             graph.nodes.append(GraphNode(
                 id=file_id, kind=NodeKind.file, name=os.path.basename(node.file_path),
-                file_path=node.file_path, language=node.language
+                file_path=node.file_path, language=node.language,
             ))
-            break  # 只加一个就够了，后面统一处理
+        if node.kind in (NodeKind.class_, NodeKind.interface):
+            types_by_file[node.file_path].append(node)
+
+    for fp in types_by_file:
+        types_by_file[fp].sort(key=lambda n: n.start_line)
 
     seen_contains: set[tuple[str, str]] = set()
     for node in graph.nodes:
         if node.kind == NodeKind.file:
             continue
-        edge = (node.file_path, node.id)
+        owner_id = node.file_path
+        if node.kind in (NodeKind.method, NodeKind.function):
+            owner = None
+            for typ in types_by_file.get(node.file_path, []):
+                if typ.start_line <= node.start_line:
+                    owner = typ
+            if owner is not None:
+                owner_id = owner.id
+        edge = (owner_id, node.id)
         if edge not in seen_contains:
             seen_contains.add(edge)
             graph.edges.append(GraphEdge(
-                source=node.file_path, target=node.id,
-                kind=EdgeKind.contains, provenance="static"
+                source=owner_id, target=node.id,
+                kind=EdgeKind.contains, provenance="static",
             ))
-
-
-def _ts_node_kind(node_type: str, language: str) -> NodeKind | None:
-    """将 tree-sitter 节点类型映射到 NodeKind。"""
-    _MAP = {
-        "python": {"class_definition": NodeKind.class_, "function_definition": NodeKind.function},
-        "java": {"class_declaration": NodeKind.class_, "interface_declaration": NodeKind.interface,
-                 "method_declaration": NodeKind.method, "constructor_declaration": NodeKind.method},
-        "javascript": {"class_declaration": NodeKind.class_, "function_declaration": NodeKind.function,
-                       "method_definition": NodeKind.method, "arrow_function": NodeKind.function},
-        "typescript": {"class_declaration": NodeKind.class_, "function_declaration": NodeKind.function,
-                       "method_definition": NodeKind.method},
-        "go": {"type_declaration": NodeKind.class_, "function_declaration": NodeKind.function,
-               "method_declaration": NodeKind.method},
-    }
-    return _MAP.get(language, {}).get(node_type)
-
-
-def _extract_name(source: bytes, node, kind, language: str) -> str | None:
-    """从 tree-sitter 节点提取名称。"""
-    for child in node.children:
-        if child.type in ("identifier", "name", "property_identifier"):
-            return source[child.start_byte:child.end_byte].decode()
-        # 递归子节点
-        name = _extract_name(source, child, kind, language)
-        if name:
-            return name
-    return None
 
 
 def _hash_file(path: str) -> str:
     try:
-        import hashlib
         with open(path, "rb") as f:
             return hashlib.sha256(f.read()).hexdigest()[:16]
     except OSError:
@@ -268,19 +344,61 @@ def _hash_file(path: str) -> str:
 def _infer_language(path: str) -> str:
     ext = os.path.splitext(path)[1].lower()
     return {
-        ".py": "python", ".java": "java", ".js": "javascript", ".ts": "typescript",
-        ".go": "go", ".rs": "rust", ".cpp": "cpp", ".c": "c",
+        ".py": "python", ".java": "java", ".js": "javascript", ".jsx": "javascript",
+        ".ts": "typescript", ".tsx": "typescript", ".go": "go", ".rs": "rust",
+        ".cpp": "cpp", ".cc": "cpp", ".c": "c", ".h": "c", ".hpp": "cpp",
+        ".cs": "csharp", ".kt": "kotlin", ".kts": "kotlin", ".rb": "ruby",
+        ".php": "php", ".swift": "swift", ".scala": "scala",
     }.get(ext, "")
 
 
-def _build_lang_lib() -> str:
-    """构建语言 grammar 库路径。"""
-    # 尝试多个可能路径
-    candidates = [
-        os.path.expanduser("~/.local/share/tree-sitter/languages.so"),
-        "/usr/local/lib/tree-sitter/languages.so",
-    ]
-    for p in candidates:
-        if os.path.exists(p):
-            return p
-    raise RuntimeError("tree-sitter language library not found")
+def _file_scope(content: str, rel_path: str, language: str) -> str:
+    if language == "java":
+        for line in content.splitlines():
+            m = re.match(r"package\s+([\w.]+)\s*;", line.strip())
+            if m:
+                return m.group(1)
+        return ""
+    if language == "python":
+        mod = rel_path.replace(os.sep, "/")
+        if mod.endswith(".py"):
+            mod = mod[:-3]
+        if mod.endswith("__init__"):
+            mod = mod[: -len("__init__")].rstrip("/.")
+        return mod.replace("/", ".")
+    return ""
+
+
+def _build_qualified_name(
+    language: str,
+    scope: str,
+    outer_names: list[str],
+    name: str,
+    kind: NodeKind,
+) -> str:
+    parts: list[str] = []
+    if scope:
+        parts.append(scope)
+    if kind in (NodeKind.class_, NodeKind.interface, NodeKind.function) and language != "java":
+        parts.append(name)
+        return ".".join(parts) if parts else name
+    if outer_names:
+        parts.extend(outer_names)
+    if kind in (NodeKind.method, NodeKind.function) or (
+        language == "java" and kind not in (NodeKind.class_, NodeKind.interface)
+    ):
+        parts.append(name)
+    elif kind in (NodeKind.class_, NodeKind.interface):
+        parts.append(name)
+    return ".".join(parts) if parts else name
+
+
+def _extract_python_docstring(lines: list[str], def_line: int) -> str:
+    if def_line >= len(lines):
+        return ""
+    tail = "".join(lines[def_line:def_line + 8])
+    m = re.search(r'"""(.*?)"""', tail, re.DOTALL)
+    if m:
+        return m.group(1).strip()[:500]
+    m = re.search(r"'''(.*?)'''", tail, re.DOTALL)
+    return m.group(1).strip()[:500] if m else ""

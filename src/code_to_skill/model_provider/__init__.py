@@ -10,10 +10,10 @@
 - backend_id：实例标识（deepseek, qwen-local-target 等）
 
 使用方式（推荐 — 通过 config.yaml 统一配置）：
-    from code_to_skill.cli.config_loader import load_project_config
+    from code_to_skill.cli.config_loader import load_config
     from code_to_skill.model_provider import build_router_from_app_config
 
-    cfg = load_project_config("config.yaml")
+    cfg = load_config("config.yaml")
     router, backends = build_router_from_app_config(cfg)
     response = router.invoke(request)
 
@@ -45,6 +45,7 @@ from .config import (
     validate_interaction_config,
 )
 from .llm_backend import create_llm_backend, is_llm_available
+from .tracer import configure_trace, record_interaction, is_trace_enabled
 
 __all__ = [
     # 核心类型
@@ -71,4 +72,8 @@ __all__ = [
     # 环境变量快速启动
     "create_llm_backend",
     "is_llm_available",
+    # Trace
+    "configure_trace",
+    "record_interaction",
+    "is_trace_enabled",
 ]

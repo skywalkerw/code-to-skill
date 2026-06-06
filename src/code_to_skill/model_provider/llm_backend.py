@@ -55,6 +55,8 @@ _ENV_MAP = {
         "model_env": "DEEPSEEK_MODEL",
         "default_model": "deepseek-chat",
         "default_base_url": "https://api.deepseek.com",
+        "context_window": 1_000_000,
+        "max_output_tokens": 384_000,
     },
     "openai": {
         "base_url_env": "OPENAI_BASE_URL",
@@ -85,9 +87,9 @@ def create_llm_backend(backend_id: str | None = None) -> InteractionBackend:
     for project_yaml in [Path("config.yaml"), Path("skill-lab.yaml")]:
         if project_yaml.exists():
             try:
-                from code_to_skill.cli.config_loader import load_project_config
+                from code_to_skill.cli.config_loader import load_config
                 from code_to_skill.model_provider.config import create_backend_from_config
-                cfg = load_project_config(str(project_yaml))
+                cfg = load_config(str(project_yaml))
                 mp = cfg.settings.model_provider
                 backend_cfg = mp.backends.get(backend_id)
                 if backend_cfg:
@@ -131,6 +133,8 @@ def create_llm_backend(backend_id: str | None = None) -> InteractionBackend:
         base_url=base_url,
         api_key=api_key,
         model=model,
+        context_window=cfg.get("context_window", 128000),
+        max_output_tokens=cfg.get("max_output_tokens", 16384),
     )
 
 
@@ -151,8 +155,8 @@ def is_llm_available(backend_id: str | None = None) -> bool:
     for project_yaml in [Path("config.yaml"), Path("skill-lab.yaml")]:
         if project_yaml.exists():
             try:
-                from code_to_skill.cli.config_loader import load_project_config
-                cfg = load_project_config(str(project_yaml))
+                from code_to_skill.cli.config_loader import load_config
+                cfg = load_config(str(project_yaml))
                 if cfg.settings.model_provider.backends.get(backend_id):
                     return True
             except Exception:

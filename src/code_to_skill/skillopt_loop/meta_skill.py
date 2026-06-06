@@ -11,6 +11,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from .token_budgets import get_token_budgets
+
 logger = logging.getLogger(__name__)
 
 
@@ -167,7 +169,7 @@ def _llm_generate_meta_skill(
                 pairs_summary=str(comparison_pairs or {})[:500],
             ),
         }],
-        max_output_tokens=400,
+        max_output_tokens=get_token_budgets().meta_skill,
         temperature=0.2,
     ))
 

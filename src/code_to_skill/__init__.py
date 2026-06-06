@@ -2,8 +2,11 @@
 
 import logging
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s  %(levelname)-5s  %(message)s",
-    datefmt="%H:%M:%S",
-)
+from .time_utils import LocalTimeFormatter
+
+_handler = logging.StreamHandler()
+_handler.setFormatter(LocalTimeFormatter(
+    fmt="%(asctime)s  %(levelname)-5s  %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+))
+logging.basicConfig(level=logging.INFO, handlers=[_handler])

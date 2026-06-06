@@ -7,8 +7,9 @@ from code_to_skill.atom_extractor.extractor import extract_from_code, extract_fr
 from code_to_skill.atom_extractor import run_atom_extraction
 
 from code_to_skill.skillopt_loop.types import EditOp, BenchmarkItem, RolloutResult
+from code_to_skill.skillopt_loop.skill_ops import apply_edits
 from code_to_skill.skillopt_loop import (
-    score_rollout_result, apply_edits, compute_semantic_hash,
+    score_rollout_result, compute_semantic_hash,
     run_skillopt_loop, save_runtime_state,
 )
 
@@ -83,13 +84,13 @@ class TestM4Scorer:
 
 class TestM4Updater:
     def test_append(self):
-        result = apply_edits("line 1", [EditOp(op="append", content="line 2")])
-        assert "line 2" in result
+        content, _ = apply_edits("line 1", [EditOp(op="append", content="line 2")])
+        assert "line 2" in content
 
     def test_delete(self):
-        result = apply_edits("remove_me\ngood", [EditOp(op="delete", target="remove_me")])
-        assert "remove_me" not in result
-        assert "good" in result
+        content, _ = apply_edits("remove_me\ngood", [EditOp(op="delete", target="remove_me")])
+        assert "remove_me" not in content
+        assert "good" in content
 
     def test_semantic_hash(self):
         h1 = compute_semantic_hash("a  b")
@@ -97,26 +98,68 @@ class TestM4Updater:
         assert h1 == h2
 
 
+class _OfflineStubAdapter:
+    """离线确定性 adapter：rollout 固定失败以驱动 reflect/history。"""
+
+    code_tools = None
+
+    def setup(self, cfg=None):
+        return None
+
+    def rollout(self, skill, items, target_backend=None, out_dir=""):
+        out = []
+        for item in items:
+            checks = item.get("expected_checks", [])
+            out.append({
+                "id": item.get("id", ""),
+                "question": item.get("question", ""),
+                "expected_checks": checks,
+                "passed_checks": checks[:1],
+                "missed_checks": checks[1:3] or checks[:1],
+                "hard": 0,
+                "soft": 0.25,
+                "accuracy": 0.0,
+                "precision": 0.0,
+                "recall": 0.0,
+                "f1": 0.0,
+                "predicted_answer": "## 会计凭证\n借\n贷",
+                "fail_reason": "stub: missed checks",
+                "task_type": item.get("task_type", ""),
+            })
+        return out
+
+    def evaluate(self, skill, items, target_backend=None):
+        return {"soft": 0.4, "accuracy": 0.0, "f1": 0.2}
+
+
 class TestM4Pipeline:
     def test_skillopt_mvp(self, tmp_path):
-        skill = "# Test Skill\n## Workflow\n1. Check idempotency\n2. Limit retries to 3"
+        skill = (
+            "# Test Skill\n### 2.3 生成会计凭证\n\n"
+            "## 六、验证检查清单"
+        )
         items = [
-            {"id": "t1", "question": "Review code", "task_type": "code_review",
-             "expected_checks": ["idempotency", "retry"]},
-            {"id": "t2", "question": "Review code", "task_type": "code_review",
-             "expected_checks": ["idempotency"]},
-            {"id": "t3", "question": "Review code", "task_type": "code_review",
-             "expected_checks": ["retry"]},
-            {"id": "t4", "question": "Review code", "task_type": "code_review",
-             "expected_checks": ["audit"]},
+            {"id": "jv_001", "question": "买入库存 100", "task_type": "journal_entry",
+             "expected_checks": ["会计凭证", "借", "贷", "库存", "100.00"]},
+            {"id": "jv_002", "question": "付款 50", "task_type": "journal_entry",
+             "expected_checks": ["会计凭证", "借", "贷", "银行", "50.00"]},
         ]
         result = run_skillopt_loop(
             initial_skill=skill,
             benchmark_items=items,
+            selection_items=[{
+                "id": "jv_sel_001",
+                "question": "发放贷款",
+                "task_type": "journal_entry",
+                "expected_checks": ["会计凭证", "借", "贷", "贷款"],
+            }],
             output_dir=str(tmp_path / "output"),
-            num_epochs=2,
+            num_epochs=1,
             batch_size=2,
             edit_budget=2,
+            use_llm_rollout=False,
+            enable_code_tools=False,
+            adapter=_OfflineStubAdapter(),
         )
         assert len(result["history"]) > 0
         assert (tmp_path / "output" / "best_skill.md").exists()

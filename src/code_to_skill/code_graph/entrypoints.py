@@ -93,3 +93,35 @@ def find_entrypoints(graph: CodeGraph, repo_root: str) -> list[Entrypoint]:
             unique.append(ep)
 
     return unique
+
+
+def attach_entrypoints_to_graph(graph: CodeGraph, entrypoints: list[Entrypoint]) -> int:
+    """将入口点挂入图谱：route 节点 + entry_to 边，供 trace 从 REST/CLI 追到 handler。"""
+    from .types import EdgeKind, GraphEdge, GraphNode, NodeKind
+
+    existing = {n.id for n in graph.nodes}
+    added = 0
+    for ep in entrypoints:
+        if not ep.handler_node_id or ep.id in existing:
+            continue
+        handler = next((n for n in graph.nodes if n.id == ep.handler_node_id), None)
+        graph.nodes.append(GraphNode(
+            id=ep.id,
+            kind=NodeKind.route,
+            name=f"{ep.kind}:{handler.name if handler else ep.path}",
+            file_path=ep.path,
+            language=handler.language if handler else "",
+            start_line=handler.start_line if handler else 0,
+            end_line=handler.end_line if handler else 0,
+            metadata={"entry_kind": ep.kind, "protocol": ep.protocol},
+        ))
+        graph.edges.append(GraphEdge(
+            source=ep.id,
+            target=ep.handler_node_id,
+            kind=EdgeKind.entry_to,
+            provenance="static",
+            confidence=ep.confidence,
+        ))
+        existing.add(ep.id)
+        added += 1
+    return added

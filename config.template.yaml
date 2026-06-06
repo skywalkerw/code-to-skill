@@ -13,17 +13,12 @@
 # =============================================================================
 
 settings:
-  # ── 初始 Skill（可选：为空则由 M3 从代码/文档自动生成）────
-  initial_skill: ""
-
-  # ── Benchmark（可选：为空则用 M3 自动生成的 benchmark_seeds）──
-  benchmark: ""
-
   # ── 模块 1：代码图谱与模块树 ──────────────────────────────
   code_graph:
     max_leaf_tokens: 8000
     max_module_depth: 3
     tokenizer: cl100k_base
+    use_cache: true   # 增量解析 graph.db，二次运行跳过未变更文件
 
   # ── 模块 2：文档规范化 ────────────────────────────────────
   document_normalizer:
@@ -42,6 +37,21 @@ settings:
     batch_size: 20
     edit_budget: 3
     gate_metric: soft
+    enable_code_tools: true
+    max_tool_rounds: 5
+    rollout_max_tool_rounds: 2
+    # 各阶段 LLM 输出 token 预算（须 ≤ backend.max_output_tokens）
+    token_budgets:
+      rollout: 8192
+      reflect_failure: 16384
+      reflect_success: 4096
+      reflect_retry: [32768, 65536]
+      select_edits: 4096
+      judge: 4096
+      aggregate: 4096
+      slow_update: 4096
+      meta_skill: 2048
+      atom_extract: 8192
 
   # ── 模块 5：模型与智能体交互 ──────────────────────────────
   # backend 由 type（高层类别）和 provider（具体实现）两个维度定义：
@@ -49,14 +59,15 @@ settings:
   #   provider: openai_compatible | mock
   model_provider:
     backends:
-      # 生产级 LLM（DashScope 百炼平台）
+      # 生产级 LLM
       deepseek:
         type: llm_api
         provider: openai_compatible
-        base_url: ${DASHSCOPE_BASE_URL}
-        api_key_env: DASHSCOPE_API_KEY
+        base_url: ${DEEPSEEK_BASE_URL}
+        api_key_env: ${DEEPSEEK_API_KEY}
         model: deepseek-v4-pro
-        context_window: 1000000
+        context_window: 1000000      # 1M 上下文
+        max_output_tokens: 384000    # 最大 384K 输出
         timeout_seconds: 180
 
       # 本地开发 LLM（vLLM / Ollama）
@@ -101,6 +112,8 @@ settings:
     policies:
       default_retries: 3
       retry_backoff: exponential
+      # trace 模式：开启后将每次 LLM 调用的完整 messages 输入和 content 输出
+      # 写入 <output.root>/<run_id>/traces/traces.jsonl 及 calls/NNNN.json
       trace_enabled: true
       cache_enabled: false
       redact_secrets: true
@@ -128,6 +141,14 @@ project:
   name: code-to-skill
   domain: agent-skill
   description: "从知识库和代码提取并优化 Agent Skill"
+
+  # ── 初始 Skill（可选：为空则由 M3 从代码/文档自动生成）────
+  initial_skill: ""
+
+  # ── Benchmark（可选：为空则用 M3 自动生成的 benchmark_seeds）──
+  # 目录结构: train/items.json, selection/items.json, test/items.json
+  benchmark: ""
+  # benchmark: test-data/benchmarks/fineract
 
   sources:
     repos:

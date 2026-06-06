@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+from code_to_skill.time_utils import local_timestamp
 
 from .knowledge_source import get_provider
 from .parsers import parse_raw_document
@@ -54,7 +54,7 @@ def normalize_document(
         source_version=source_version,
         sha256=raw.metadata.get("sha256", ""),
         authority_level=authority_level,
-        normalized_at=datetime.now(timezone.utc).isoformat(),
+        normalized_at=local_timestamp(),
     )
 
     # Parse → clean → structure → chunk

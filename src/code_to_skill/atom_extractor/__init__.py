@@ -19,6 +19,8 @@ def run_atom_extraction(
     leaf_contexts: list[dict] | None = None,
     document_chunks: list[dict] | None = None,
     output_root: str | None = None,
+    graph_db_path: str = "",
+    repo_root: str = "",
 ) -> dict:
     """运行 SkillAtom 抽取流水线。
 
@@ -59,6 +61,17 @@ def run_atom_extraction(
     # Step 3.5: 证据对齐（跨来源匹配 + 置信度提升）
     merged = align_atoms(merged)
 
+    # Step 3.6: 图谱证据增强（edge_path + evidence_index）
+    evidence_index = []
+    if graph_db_path:
+        try:
+            from code_to_skill.code_graph.evidence import EvidenceBuilder
+            builder = EvidenceBuilder(graph_db_path, repo_root)
+            merged = builder.enrich_atoms(merged)
+            evidence_index = builder.build_evidence_index(merged)
+        except (FileNotFoundError, OSError):
+            pass
+
     # Step 4: 聚类
     clusters = cluster_by_domain(merged)
 
@@ -70,6 +83,7 @@ def run_atom_extraction(
         "merged_atoms": merged,
         "benchmark_seeds": seeds,
         "clusters": clusters,
+        "evidence_index": evidence_index,
     }
 
     # 写文件
@@ -98,5 +112,18 @@ def _write_outputs(results: dict, output_root: str):
         for a in rejected:
             f.write(a.model_dump_json() + "\n")
 
+    # evidence_index.json
+    if results.get("evidence_index"):
+        with open(os.path.join(output_root, "evidence_index.json"), "w", encoding="utf-8") as f:
+            json.dump(
+                [e.model_dump() for e in results["evidence_index"]],
+                f, indent=2, ensure_ascii=False,
+            )
+
     accepted_count = sum(1 for a in results["merged_atoms"] if a.status in ("accepted", "candidate"))
-    print(f"[M3] Atom 抽取完成: {len(results['raw_atoms'])} raw → {len(results['merged_atoms'])} merged → {accepted_count} accepted")
+    ev_count = len(results.get("evidence_index") or [])
+    print(
+        f"[M3] Atom 抽取完成: {len(results['raw_atoms'])} raw → "
+        f"{len(results['merged_atoms'])} merged → {accepted_count} accepted"
+        + (f" | evidence={ev_count}" if ev_count else "")
+    )

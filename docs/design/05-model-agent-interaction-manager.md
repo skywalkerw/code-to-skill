@@ -197,7 +197,7 @@ trace 中不得保存明文 API key、cookie、生产密钥。
 
 | 类型 | 说明 | 示例 |
 |---|---|---|
-| `llm_api` | 裸模型 API | OpenAI-compatible、Azure OpenAI、Anthropic、DashScope |
+| `llm_api` | 裸模型 API | OpenAI-compatible、DeepSeek、Azure OpenAI、Anthropic |
 | `local_llm` | 本地模型服务 | vLLM、Ollama、llama.cpp server |
 | `agent_cli` | 命令行智能体 | Codex CLI、Claude Code |
 | `agent_service` | 远程智能体服务 | 内部 Agent API、工作流平台 |
@@ -270,8 +270,8 @@ backends:
   deepseek:
     type: llm_api
     provider: openai_compatible
-    base_url: ${DASHSCOPE_BASE_URL}
-    api_key_env: DASHSCOPE_API_KEY
+    base_url: ${DEEPSEEK_BASE_URL}
+    api_key_env: DEEPSEEK_API_KEY
     model: deepseek
     context_window: 1000000
     timeout_seconds: 180

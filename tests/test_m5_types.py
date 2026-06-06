@@ -1,4 +1,5 @@
 """M5 + M6 集成测试。"""
+import json
 import pytest
 from pathlib import Path
 from click.testing import CliRunner
@@ -6,6 +7,7 @@ from click.testing import CliRunner
 from code_to_skill.model_provider.types import InteractionRequest, InteractionResponse, ModelResponse
 from code_to_skill.model_provider.backends.mock import MockReplayBackend
 from code_to_skill.model_provider.router import Router
+from code_to_skill.model_provider.tracer import configure_trace
 from code_to_skill.cli.types import RunManifest, RunState, RunStatus, StepInternal, ModuleEvent
 from code_to_skill.cli.config_loader import ProjectConfig, RepoSource, DocSource
 
@@ -42,14 +44,39 @@ class TestM5Mock:
         assert '"mock": true' in resp.content
 
 
+class TestM5Trace:
+    def test_trace_records_full_io(self, tmp_path):
+        configure_trace(str(tmp_path / "traces"), enabled=True, redact_secrets=False)
+        backend = MockReplayBackend("mock-1", fixture_dir="/nonexistent")
+        req = InteractionRequest(
+            role="target",
+            stage="rollout",
+            messages=[
+                {"role": "system", "content": "You are an expert."},
+                {"role": "user", "content": "买入 A物品 花费 100.00"},
+            ],
+        )
+        backend.invoke(req)
+
+        trace_file = tmp_path / "traces" / "traces.jsonl"
+        call_file = tmp_path / "traces" / "calls" / "0001.json"
+        assert trace_file.exists()
+        assert call_file.exists()
+
+        record = json.loads(trace_file.read_text(encoding="utf-8").strip())
+        assert record["request"]["messages"][1]["content"] == "买入 A物品 花费 100.00"
+        assert record["response"]["content"]
+        assert record["call_index"] == 1
+
+
 class TestM5Router:
     def test_resolve(self):
         router = Router(
-            route_config={"optimizer": {"primary": "dashscope", "fallback": ["azure"]}},
+            route_config={"optimizer": {"primary": "deepseek", "fallback": ["azure"]}},
             backends={},
         )
         candidates = router.resolve("optimizer")
-        assert candidates == ["dashscope", "azure"]
+        assert candidates == ["deepseek", "azure"]
 
 
 class TestM6Types:
@@ -92,7 +119,7 @@ class TestM6CLI:
         workspace = str(tmp_path / "test-proj")
         result = runner.invoke(_init_cmd, ["--workspace", workspace, "--domain", "fintech"])
         assert result.exit_code == 0
-        assert Path(workspace, "project.yaml").exists()
+        assert Path(workspace, "config.yaml").exists()
 
     def test_config_validate_missing(self):
         from code_to_skill.cli.main import config_validate
