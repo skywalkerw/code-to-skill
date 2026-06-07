@@ -33,10 +33,19 @@ settings:
 
   # ── 模块 4：SkillOpt 优化 ──────────────────────────────────
   skillopt:
-    num_epochs: 3
+    use_llm_rollout: true     # 训练/评估 rollout 使用 target LLM
+    # rollout_backend: qwen-local   # rollout 专用 backend（默认同 routes.target.primary）
+    # optimizer_backend: deepseek   # reflect/select 专用（默认同 routes.optimizer.primary）
+    num_epochs: 5
     batch_size: 20
-    edit_budget: 3
-    gate_metric: soft
+    edit_budget: 4
+    budget_strategy: cosine   # constant | cosine | linear
+    gate_metric: hard         # hard（selection≥20）| mixed（5–19）| soft（<5）
+    patience: 10
+    accumulation: 1
+    enable_slow_update: true
+    enable_meta_skill: true
+    slow_update_gate: true
     enable_code_tools: true
     max_tool_rounds: 5
     rollout_max_tool_rounds: 2
@@ -86,25 +95,35 @@ settings:
         provider: mock
         model: mock-model-v1
 
+    # routes：按调用角色（role）选择 backend；primary 失败时按 fallback 顺序降级。
+    # SkillOpt 训练可在 settings.skillopt 用 rollout_backend / optimizer_backend 覆盖 target / optimizer。
     routes:
+      # M3 Atom 抽取：从代码片段与文档块中识别 SkillAtom（run extract-atoms）
       extractor:
         primary: deepseek
         fallback: [qwen-local, mock-backend]
+      # M1 代码图谱：LLM 辅助模块聚类（code_graph.llm_clustering_enabled=true 时）
       clusterer:
         primary: deepseek
         fallback: [qwen-local, mock-backend]
+      # M4 SkillOpt 优化器：reflect / select / aggregate / slow-update / meta-skill
       optimizer:
         primary: deepseek
         fallback: [qwen-local, mock-backend]
+      # M4 SkillOpt 执行端（rollout）：benchmark 上跑当前 Skill 生成答案；selection/test gate 评估
+      # 建议用较快模型（如 deepseek-flash），与 optimizer 强弱分离
       target:
         primary: deepseek
         fallback: [qwen-local, mock-backend]
+      # 可选 LLM Judge 评分：benchmark scorer=llm_judge 时的 rubric 语义打分
       judge:
         primary: deepseek
         fallback: [qwen-local, mock-backend]
+      # 预留：外部 Agent CLI / workspace 写操作类任务（当前流水线未默认启用）
       agent_worker:
         primary: deepseek
         fallback: [qwen-local, mock-backend]
+      # 未匹配到具体 role 时的兜底路由
       default:
         primary: deepseek
         fallback: [qwen-local, mock-backend]
@@ -113,7 +132,8 @@ settings:
       default_retries: 3
       retry_backoff: exponential
       # trace 模式：开启后将每次 LLM 调用的完整 messages 输入和 content 输出
-      # 写入 <output.root>/<run_id>/traces/traces.jsonl 及 calls/NNNN.json
+      # 写入 <output.root>/<run_id>/traces/traces.jsonl 及 calls/NNNN_role_stage.json
+      # 运行日志（INFO+）同时写入 <output.root>/<run_id>/logs/run.log
       trace_enabled: true
       cache_enabled: false
       redact_secrets: true

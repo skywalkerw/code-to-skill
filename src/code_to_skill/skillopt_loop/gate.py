@@ -63,7 +63,7 @@ class GateManager:
     - 连续 reject 超过 patience → 触发早停信号
 
     metric="hard" 按论文默认：hard pass rate 严格门控。
-    小 selection 集（< 30 条）建议用 "soft"。
+    小 selection 集（< 20 条）hard 会自动降级为 mixed。
     """
 
     def __init__(
@@ -87,11 +87,17 @@ class GateManager:
         candidate_soft: float,
         best_score: float,
         current_score: float,
+        *,
+        train_rollout: float | None = None,
+        prev_train_rollout: float | None = None,
+        train_delta: float = 0.03,
     ) -> GateDecision:
         """评估候选分数是否通过门禁。
 
         Uses select_gate_score to project (hard, soft) to a scalar
         according to self.metric before comparison.
+
+        当 selection 分数持平但 train rollout 显著提升时，仍 accept 以推进 current_skill。
         """
         candidate = select_gate_score(
             candidate_hard, candidate_soft,
@@ -117,6 +123,25 @@ class GateManager:
                 best_score=best_score,
                 current_score=candidate,
                 reason=f"improved ({current_score:.3f} → {candidate:.3f}) [{self.metric}]",
+            )
+
+        if (
+            train_rollout is not None
+            and prev_train_rollout is not None
+            and train_rollout >= prev_train_rollout + train_delta
+            and candidate >= current_score - 1e-9
+        ):
+            self._consecutive_rejects = 0
+            self._total_accepts += 1
+            return GateDecision(
+                action="accept",
+                candidate_score=candidate,
+                best_score=best_score,
+                current_score=candidate,
+                reason=(
+                    f"train_improved ({prev_train_rollout:.3f} → {train_rollout:.3f}) "
+                    f"selection_held ({candidate:.3f}) [{self.metric}]"
+                ),
             )
 
         self._consecutive_rejects += 1

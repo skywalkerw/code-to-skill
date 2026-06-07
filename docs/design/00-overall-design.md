@@ -55,35 +55,91 @@ skills/<skill_name>/
 ## 3. 总体架构
 
 ```mermaid
-flowchart LR
-  C[代码仓库] --> M1[模块 1<br/>代码图谱与模块树]
-  D[知识库 / PDF / Wiki] --> M2[模块 2<br/>文档规范化]
+flowchart TB
+  subgraph IN["输入层"]
+    C["代码仓库"]
+    D["知识库 PDF Wiki"]
+    T["历史轨迹 CI Review"]
+  end
 
-  M1 --> M3[模块 3<br/>SkillAtom 抽取]
+  subgraph PIPE["业务流水线"]
+    M1["模块1 代码图谱"]
+    M2["模块2 文档规范化"]
+    M3["模块3 SkillAtom"]
+    M4["模块4 SkillOpt"]
+  end
+
+  subgraph M5["模块5 模型与智能体交互"]
+    R["routes 按 role 路由"]
+    LLM["LLM backends extractor clusterer target optimizer judge"]
+    TR["traces token_usage"]
+    R --> LLM
+    LLM --> TR
+  end
+
+  CLI["模块6 CLI 编排"]
+
+  C --> M1
+  D --> M2
+  M1 --> M3
   M2 --> M3
-  T[历史任务轨迹 / CI / Review] --> M3
+  T --> M3
+  M3 --> M4
 
-  M3 --> M4[模块 4<br/>SkillOpt 优化循环]
-  M1 --> M5[模块 5<br/>模型与智能体交互管理]
-  M2 --> M5
-  M3 --> M5
-  M4 --> M5
+  M1 -.->|clusterer| R
+  M3 -.->|extractor| R
+  M4 -.->|target optimizer judge| R
 
-  M4 --> S[SkillBundle]
-  S --> P[发布 / 回滚 / 在线反馈]
+  M4 --> S["SkillBundle"]
+  S --> P["发布 回滚 反馈"]
   P --> T
 
-  CLI[模块 6<br/>CLI 人机交互与编排] --> M1
+  CLI --> M1
   CLI --> M2
   CLI --> M3
   CLI --> M4
-  CLI --> M5
+  CLI --> R
   CLI --> P
 ```
 
-整体架构按“来源接入 -> 证据规范化 -> 技能原子抽取 -> Skill 优化 -> 发布回流”组织。模块 1 和模块 2 是证据生产层；模块 3 是证据到 Skill 语义的转换层；模块 4 是优化与评测层；模块 5 是模型能力适配层；模块 6 是用户入口和编排层。图中模块 1-4 指向模块 5 表示“调用统一交互接口”，不是模块 5 反向依赖业务模块。
+整体架构按“来源接入 → 证据规范化 → 技能原子抽取 → Skill 优化 → 发布回流”组织：
 
-**分层依赖规则**：模块 5 是基础设施层，处于最底层。模块 1-4 只允许依赖模块 5 的接口定义（`InteractionBackend` 抽象类、`InteractionRequest`/`InteractionResponse` 等标准类型），不得直接依赖任何具体 backend 实现。模块 4 调用 target Agent 或 optimizer 模型时，通过依赖注入接收已配置好的 backend 实例，避免在模块 4 内部 import 模块 5 的具体类。CLI（模块 6）负责在启动时将配置好的 backend 实例注入各模块。
+| 层次 | 模块 | 职责 |
+|---|---|---|
+| 证据生产 | M1、M2 | 代码图谱、文档 chunk、来源锚点 |
+| 语义转换 | M3 | 代码/文档证据 → `SkillAtom`、benchmark 种子 |
+| 优化评测 | M4 | SkillOpt 循环、gate、test eval |
+| **LLM 基础设施** | **M5** | **按 role 路由到不同 backend，统一 trace/预算/结构化输出** |
+| 用户入口 | M6 CLI | 配置加载、backend 注入、审批、续训、发布 |
+
+图中虚线表示业务模块**调用** M5 的 `InteractionBackend`，不是 M5 反向依赖业务逻辑。模块 5 内 **routes** 按 role 将请求分发到不同 LLM backend（图中合并为单一节点）；典型配置为 `extractor`/`clusterer`（M1/M3）、`target`（rollout/eval）、`optimizer`（reflect/select）、`judge`（可选）。M4 同时依赖 **target 与 optimizer** 两类 backend，前者扮演被优化的执行 Agent，后者负责反思与编辑（不进入线上部署）。
+
+**分层依赖规则**：模块 1–4 只依赖 M5 的接口（`InteractionBackend`、`InteractionRequest`/`InteractionResponse`），不得 import 具体供应商 SDK。CLI 读取 `config.yaml` 的 `model_provider.backends` + `routes`，通过 `BackendManager` 将 backend 实例注入 M4；可用 `skillopt.rollout_backend` / `optimizer_backend` 覆盖 `routes.target` / `routes.optimizer`。
+
+### 3.1 确保优化效果的主要因素
+
+以下因素直接决定 SkillOpt 能否产生**可上线、可复现**的收益（按优先级排列）：
+
+| 优先级 | 因素 | 说明 | 配置/产物 |
+|:---:|---|---|---|
+| P0 | **真实 LLM Rollout** | `use_llm_rollout: false` 时 rollout 走规则降级，分数与 reflect 信号不可信 | `skillopt.use_llm_rollout: true` |
+| P0 | **Benchmark 三份 split** | train 驱动编辑；selection 做 gate；test 仅最终报告；**ID 不得重叠** | `benchmark/{train,selection,test}/items.json` |
+| P0 | **Selection Gate 口径** | selection < 5 降级 soft；5–19 且 hard 降级 mixed；≥ 20 可用 hard | `gate_metric` + selection 规模 |
+| P1 | **Target / Optimizer 分离** | rollout 量大用较快模型；reflect 用较强模型，对齐论文 | `routes.target` vs `routes.optimizer`，或 `rollout_backend` / `optimizer_backend` |
+| P1 | **初始 Skill 质量** | 劣质起点或 best 未同步会导致 gate 长期拒绝 | `project.initial_skill`、每步 `best_skill.md` |
+| P1 | **Benchmark 可检查性** | 每条 item 须有 `expected_checks`；不完整/约束题用 `response_mode` | item 字段 + deterministic scorer |
+| P2 | **代码证据注入** | Reflect/Rollout 可调用 CodeGraph 工具读真实源码 | `enable_code_tools`、`context_refs` |
+| P2 | **编辑可追溯与去重** | 拒绝无效编辑、场景规则兜底、rejected-edit buffer | `edit_validator`、`step_buffer` |
+| P2 | **Edit budget 与 patience** | 控制每步改动幅度；连续 reject 早停 | `edit_budget`、`budget_strategy`、`patience` |
+| P3 | **Slow update / Meta skill** | epoch 级纵向归纳，适合多 epoch 稳定训练 | `enable_slow_update`、`enable_meta_skill` |
+| P3 | **Token 预算** | 防止 reflect 截断或 rollout 空输出 | `skillopt.token_budgets` |
+
+**常见失效模式**（实践中已验证）：
+
+1. 关闭 LLM rollout → train 全绿但 selection 不升，reflect 优化“假失败”。
+2. selection 过小仍用 hard gate → 噪声大、编辑难通过。
+3. optimizer 与 target 混用同一弱模型 → reflect 质量差，编辑破坏已有规则。
+4. Skill 正文堆砌重复“必须” → rollout 回显 skill、checks 失真。
 
 ## 4. 模块划分
 
@@ -92,7 +148,7 @@ flowchart LR
 | 1. 代码仓库到代码图谱与模块树 | [01-code-repo-to-code-graph-module-tree.md](01-code-repo-to-code-graph-module-tree.md) | 解析仓库快照，抽取符号、依赖、调用链、入口点和模块层级 | `graph.json`、`module_tree.json`、`leaf_contexts/` |
 | 2. 知识库/PDF/Wiki 到文档规范化 | [02-knowledge-pdf-wiki-normalization.md](02-knowledge-pdf-wiki-normalization.md) | 统一解析多格式文档，恢复结构、切分 chunk、保留来源锚点 | `document_index.json`、`chunks.jsonl`、`tables.jsonl` |
 | 3. SkillAtom 抽取 | [03-skillatom-extraction.md](03-skillatom-extraction.md) | 将代码证据和文档证据转成可执行、可验证的技能原子 | `raw_atoms.jsonl`、`merged_atoms.jsonl`、`benchmark_seeds.jsonl` |
-| 4. SkillOpt 优化循环 | [04-skillopt-loop.md](04-skillopt-loop.md) | 基于 rollout、反思、聚合、选择、更新、评测循环优化 Skill | `best_skill.md`、`skill_bundle.json`、`history.json`、`final_eval/` |
+| 4. SkillOpt 优化循环 | [04-skillopt-loop.md](04-skillopt-loop.md) | 基于 rollout、反思、聚合、选择、更新、评测循环优化 Skill（**已实现**） | `best_skill.md`、`history.json`、`runtime_state.json`、`final_eval/` |
 | 5. 模型与智能体交互管理 | [05-model-agent-interaction-manager.md](05-model-agent-interaction-manager.md) | 提供可插拔模型、外部 Agent、路由、预算、追踪和结构化输出能力 | `traces/`、`token_usage.jsonl`、`cost_usage.jsonl` |
 | 6. CLI 人机交互与模块编排 | [06-cli-human-interaction-orchestrator.md](06-cli-human-interaction-orchestrator.md) | 提供命令行入口、运行计划、审批、状态、恢复、发布和报告 | `run_manifest.json`、`run_state.json`、`events.jsonl` |
 
@@ -124,7 +180,7 @@ flowchart LR
 | `SkillAtom` | 模块 3 | 模块 4 | 表达最小可复用技能规则、约束和验证断言 |
 | `BenchmarkItem` | 模块 3、4 | 模块 4 | 评测 Skill 是否提高目标 Agent 表现 |
 | `SkillBundle` | 模块 4 | CLI、发布流程 | 可部署 Skill 包及其评测、版本、来源记录 |
-| `RunState` | 模块 6 | CLI、恢复流程 | 记录当前运行阶段、失败点、审批状态和产物路径 |
+| `RunState` / `runtime_state` | 模块 6 / 4 | CLI、M4 续训 | CLI 全流程状态；M4 用 `optimization/runtime_state.json` 断点续训 |
 
 ### 5.3 输出层
 
@@ -195,7 +251,7 @@ flowchart LR
 {
   "schema_version": "1.0",
   "request_id": "req-20260603-0001",
-  "role": "atom_extractor",
+  "role": "extractor",
   "task": "extract_skill_atoms",
   "input_refs": ["runs/payment-skill-20260603-001/sources/docs/payment-runbook/v2026-05-28/chunks.jsonl"],
   "response_format": {"type": "json_schema", "schema_name": "SkillAtomList"},
@@ -210,28 +266,40 @@ flowchart LR
 ```mermaid
 sequenceDiagram
   participant User as 用户
-  participant CLI as 模块 6 CLI
-  participant Code as 模块 1 代码图谱
-  participant Doc as 模块 2 文档规范化
-  participant Atom as 模块 3 Atom 抽取
-  participant Model as 模块 5 模型/Agent 管理
-  participant Opt as 模块 4 SkillOpt
+  participant CLI as 模块6 CLI
+  participant Code as 模块1 代码图谱
+  participant Doc as 模块2 文档规范化
+  participant Atom as 模块3 Atom抽取
+  participant M5 as 模块5 LLM路由
+  participant Extractor as extractor LLM
+  participant Target as target LLM
+  participant Optimizer as optimizer LLM
+  participant M4 as 模块4 SkillOpt
 
   User->>CLI: run config.yaml
-  CLI->>Code: build graph/module tree
+  CLI->>Code: build graph and module tree
   CLI->>Doc: normalize docs
-  Code-->>CLI: CodeGraph + ModuleTree
+  Code-->>CLI: CodeGraph ModuleTree
   Doc-->>CLI: DocumentChunk index
   CLI->>Atom: extract atoms
-  Atom->>Model: structured extraction calls
-  Model-->>Atom: SkillAtom candidates
-  Atom-->>CLI: atoms + conflicts + bench seeds
-  CLI->>User: approve high-risk atoms/conflicts
+  Atom->>M5: role extractor
+  M5->>Extractor: route
+  Extractor-->>Atom: SkillAtom candidates
+  Atom-->>CLI: atoms conflicts bench seeds
+  CLI->>User: approve high-risk atoms
   User-->>CLI: approval decision
-  CLI->>Opt: optimize SkillBundle
-  Opt->>Model: rollout/reflect/update/evaluate
-  Model-->>Opt: model or agent results
-  Opt-->>CLI: best SkillBundle + eval report
+  CLI->>M4: optimize SkillBundle
+  loop each epoch step
+    M4->>M5: role target
+    M5->>Target: rollout benchmark
+    Target-->>M4: trajectories and check scores
+    M4->>M5: role optimizer
+    M5->>Optimizer: reflect and select
+    Optimizer-->>M4: patches and ranked edits
+    M4->>Target: selection gate eval
+    Target-->>M4: gate accept or reject
+  end
+  M4-->>CLI: best SkillBundle and test eval
   CLI->>User: publish or inspect
 ```
 
@@ -246,6 +314,8 @@ sequenceDiagram
 7. **发布回流**：发布通过门禁的版本，并将在线反馈写回轨迹池。
 
 ## 8. SkillOpt 优化策略
+
+> 实现细节与论文对照见 [04-skillopt-loop.md](04-skillopt-loop.md)。确保效果的关键因素见 **§3.1**。
 
 优化循环采用离线可审计策略，而不是让模型直接覆盖 Skill 文档。核心阶段为：
 
@@ -316,12 +386,14 @@ code-to-skill/
 │       ├── atoms/
 │       ├── benchmarks/
 │       ├── optimization/
-│       ├── model_interactions/
-│       └── reports/
+│       │   ├── runtime_state.json   # M4 断点续训
+│       │   ├── best_skill.md
+│       │   └── steps/
+│       ├── traces/                  # M5 LLM 调用 trace
+│       └── logs/run.log
 ├── skills/
 │   └── <skill_name>/
-├── configs/
-│   └── <project>.yaml
+├── config.yaml                      # 项目配置（可用 config.test.yaml 等）
 └── src/
     ├── code_graph/
     ├── document_normalizer/
@@ -503,8 +575,9 @@ code-to-skill/
     - "**/target/**"
   ```
 - 固定一个知识库目录（目标仓库的官方文档 Markdown 导出）和一组相关 PDF。
-- 建立 `project.yaml`、运行目录规范和模型路由配置。
-- 准备最小 benchmark：10 到 20 个真实任务（从目标仓库的 Issues、PR review、故障工单中抽取）。
+- 建立 `config.yaml`（或 `config.test.yaml`）、运行目录规范和 `model_provider.routes`。
+- 准备 benchmark 三份 split：train（驱动 rollout）、selection（≥20 条推荐，用于 hard gate）、test（held-out）；任务来自 Issues、PR review、故障工单等真实场景。
+- 配置 `use_llm_rollout: true`，并按需分离 `routes.target`（flash）与 `routes.optimizer`（pro）。
 
 ### Phase 1：离线证据构建
 
@@ -533,7 +606,7 @@ code-to-skill/
 
 系统各模块产出的中间文件（`graph.json`、`chunks.jsonl`、`merged_atoms.jsonl` 等）在迭代中 schema 会演进。为避免模块间隐性不兼容，所有中间产物必须遵守以下规则：
 
-### 13.1 强制 `schema_version` 字段
+### 14.1 强制 `schema_version` 字段
 
 每个模块产出的结构化产物必须声明 `schema_version`（语义化版本 `MAJOR.MINOR`）。消费模块在读取时必须校验：
 
@@ -554,7 +627,7 @@ code-to-skill/
 }
 ```
 
-### 13.2 各模块产物当前目标版本
+### 14.2 各模块产物当前目标版本
 
 | 产物 | 生产模块 | 版本位置 | 说明 |
 |---|---|---|---|
@@ -568,9 +641,10 @@ code-to-skill/
 | `benchmark_seeds.jsonl` | 模块 3 | 每行 `schema_version=1.0` | 评测种子 |
 | `skill_bundle.json` | 模块 4 | 顶层 `schema_version=1.0` | 最终 Skill 包元数据 |
 | `history.json` | 模块 4 | 顶层 `schema_version=1.0` | 训练历史 |
-| `run_state.json` | 模块 6 | 顶层 `schema_version=1.0` | 运行状态 |
+| `runtime_state.json` | 模块 4 | 顶层 `schema_version=1.1` | M4 断点续训状态 |
+| `run_state.json` | 模块 6 | 顶层 `schema_version=1.0` | CLI 全流程运行状态（可选） |
 
-### 13.3 版本升级流程
+### 14.3 版本升级流程
 
 1. 生产模块升级 schema 时，递增 `MAJOR` 或 `MINOR`。
 2. 在模块设计文档中记录 changelog。
@@ -586,7 +660,9 @@ code-to-skill/
 | 代码与文档冲突 | 文档 SOP 和实际代码行为不一致 | 冲突进入 `conflicts.jsonl`，不得自动写入核心 Skill |
 | 优化过拟合 | benchmark 分数提升但真实任务退化 | 使用 selection split、held-out set、退化检查和拒绝记录 |
 | 模型供应商绑定 | 各模块直接调用固定模型 | 统一走模块 5 的 provider/router/capability 抽象 |
-| 运行不可恢复 | 长任务失败后无法定位阶段 | CLI 维护 `run_state.json`、事件日志和幂等输出目录 |
+| 运行不可恢复 | 长任务失败后无法定位阶段 | M4 维护 `runtime_state.json`；CLI 维护事件日志和幂等输出目录 |
+| Rollout 未用真实 LLM | 分数虚高、reflect 无效 | 强制 `use_llm_rollout: true`；见 §3.1 |
+| Target/Optimizer 未分离 | 成本高或反思质量差 | `routes` 或 `rollout_backend` / `optimizer_backend` 分设 |
 
 ## 16. 成功标准
 

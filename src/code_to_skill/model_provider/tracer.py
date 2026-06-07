@@ -39,6 +39,26 @@ def _redact_text(text: str) -> tuple[str, bool]:
     return redacted, changed
 
 
+def _call_file_slug(request: InteractionRequest) -> str:
+    """从 role/stage 生成 calls/ 文件名步骤概要（仅 ASCII 安全字符）。"""
+    parts: list[str] = []
+    if request.role:
+        parts.append(str(request.role))
+    if request.stage:
+        parts.append(str(request.stage))
+    if not parts:
+        return "unknown"
+    raw = "_".join(parts)
+    slug = re.sub(r"[^\w\-]+", "_", raw)
+    slug = re.sub(r"_+", "_", slug).strip("_").lower()
+    return (slug[:80] if slug else "unknown")
+
+
+def _call_file_name(call_index: int, request: InteractionRequest) -> str:
+    """序号前缀 + 步骤概要，如 0001_target_rollout.json。"""
+    return f"{call_index:04d}_{_call_file_slug(request)}.json"
+
+
 def _redact_obj(obj: Any) -> tuple[Any, bool]:
     """递归脱敏 dict/list/str。"""
     if isinstance(obj, str):
@@ -100,9 +120,11 @@ class Tracer:
             if resp_changed:
                 redactions.append("response")
 
+        call_file = _call_file_name(self._call_index, request)
         trace = {
             "schema_version": "1.0",
             "call_index": self._call_index,
+            "call_file": call_file,
             "created_at": ts,
             "backend_id": backend_id or getattr(response, "backend_id", ""),
             "request": req_dump,
@@ -114,7 +136,7 @@ class Tracer:
         self._append_jsonl(self._trace_path, trace)
 
         # 单条调用文件，便于直接打开查看完整内容
-        call_path = os.path.join(self.output_dir, "calls", f"{self._call_index:04d}.json")
+        call_path = os.path.join(self.output_dir, "calls", call_file)
         with open(call_path, "w", encoding="utf-8") as f:
             json.dump(trace, f, ensure_ascii=False, indent=2)
 

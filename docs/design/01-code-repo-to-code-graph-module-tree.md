@@ -1,5 +1,11 @@
 # 模块 1：从代码仓库到代码图谱与模块树
 
+> 版本: 2.0  
+> 状态: **已实现**（2026-06-07 代码对照完成）  
+> 实现路径: `src/code_to_skill/code_graph/`、`src/code_to_skill/codegraph_mcp/`  
+> 参考实现: `external/codegraph`（TypeScript MCP 服务，算法对齐参考）  
+> 差距分析: [codegraph-gap-analysis.md](../references/codegraph-gap-analysis.md)
+
 ## 1. 模块目标
 
 本模块把一个或多个代码仓库转换为可被后续 SkillAtom 抽取模块消费的结构化代码证据，包括：
@@ -408,3 +414,92 @@ SkillAtom 抽取模块只依赖以下文件：
 - `diagnostics/*.json`
 
 不得直接扫描原始仓库，除非某个 leaf context 标记为 `requires_source_read=true` 且提供了精确文件路径和行号。
+
+---
+
+## 8. 与 external/codegraph 对齐
+
+本节记录 M1 相对 external/codegraph 的架构对比、分阶段交付与验收状态（原独立复刻计划已合并入本文档）。
+
+### 8.1 架构对比
+
+| 维度 | external/codegraph | 本项目 M1 |
+|------|-------------------|----------|
+| 定位 | Agent 实时代码智能服务（MCP） | 离线批处理 → SkillAtom / SkillOpt 证据 |
+| 存储 | SQLite + FTS5 + unresolved_refs | SQLite + `graph.json` |
+| 解析 | tree-sitter WASM，28 语言 | tree-sitter 可选 + 正则，14 语言 grammar |
+| 解析精度 | AST 级 + 框架插件（20+） | tree-sitter Query + Spring/MyBatis 补充 |
+| 引用解析 | import + FQN + 框架 + callback 合成 | import + 方法体 calls + callback 合成 |
+| 遍历/搜索 | GraphTraverser + QueryBuilder + FTS | `GraphQueryEngine` + FTS ✅ |
+| 上下文 | ContextBuilder（1200+ 行启发式） | `ContextBuilder` + `build_deep()` ✅ |
+| 增量 | mtime/hash sync + 文件监听 | hash 检测 + `watcher.py` ✅ |
+| MCP | 10 工具 + daemon | `codegraph_mcp` 10 工具 + `codegraph-daemon` ✅ |
+| 独有能力 | — | 模块树、入口点、多仓库、benchmark 链路 |
+
+### 8.2 差距关闭状态
+
+| 优先级 | 原差距 | 状态 | 关键代码 |
+|:---:|--------|:---:|----------|
+| P0 | 图索引查询、FTS、上下文构建、增量索引、calls 边 | ✅ | `graph_queries.py`, `db.py`, `context_builder.py`, `resolver.py` |
+| P1 | tree-sitter、qualified_name、unresolved_refs、query 语法、manifest | ✅ | `parser.py`, `ts_backend.py`, `query_parser.py` |
+| P2 | MCP 工具、框架解析、文件监听、生成代码检测 | ✅ | `codegraph_mcp/`, `framework.py`, `watcher.py`, `generated_detection.py` |
+| P3 | 20+ 框架、28 语言、完整 callback parity | ⬜ 长期 | 非 M1 阻塞项，预估 50k+ LOC |
+
+### 8.3 执行阶段（Phase 1–12）
+
+| Phase | 主题 | 交付要点 | 状态 |
+|:---:|------|----------|:---:|
+| 1 | 图驱动代码工具 + DB 查询层 | `GraphQueryEngine`、`ContextBuilder`、SkillOpt `code_tools` 图索引 | ✅ |
+| 2 | 解析与 schema 对齐 | tree-sitter 可选、`qualified_name`、FTS、`manifest.json` | ✅ |
+| 3 | MCP 暴露 | 6 工具 → 扩展至 10 工具 | ✅ |
+| 4 | 框架与运维 | Spring/MyBatis 边、`EvidenceBuilder`、`watcher.py` | ✅ |
+| 5 | 派发合成与多仓库 | `callback_synthesis.py`、`GraphRegistry` 多 graph.db | ✅ |
+| 6 | 框架插件与运行时 | `mybatis_xml.py`、`js_callbacks.py`、`codegraph-daemon` | ✅ |
+| 7 | SkillOpt Rollout 可靠性 | `rollout_max_tool_rounds` 分离、`rollout_helpers.py` | ✅ |
+| 8 | M4 断点续训 | `resume_state.py`、`--resume` | ✅ |
+| 9 | E2E 质量兜底 | `scenario_rules.py`、`--resume-run-id` | ✅ |
+| 10 | tree-sitter Query 深度解析 | `ts_queries.py`、`explore_symbol`、`code_evidence.py` | ✅ |
+| 11 | MCP/工具 parity + rollout 代码注入 | `list_graph_files`、`find_callers/callees`、`build_rollout_item_context` | ✅ |
+| 12 | 深度上下文 + 会计链接 | `build_deep()`、`accounting_linker.py`、`react_renders.py` | ✅ |
+
+Phase 1 数据流：
+
+```text
+graph.db ──► GraphQueryEngine ──► ContextBuilder
+                │                      │
+                └──────► CodeToolsHandler（search_symbol / get_code_context / trace_symbol）
+                │
+run pipeline ──► 增量 parse + FTS 索引
+resolver ──► 方法 calls 边 + callback 合成
+```
+
+### 8.4 验收标准
+
+| # | 标准 | 状态 | 验证 |
+|---|------|:---:|------|
+| 1 | `use_cache=True` 二次运行只解析变更文件 | ✅ | `test_m1_code_graph.py` |
+| 2 | `GraphQueryEngine.search("JournalEntry")` 返回符号 | ✅ | `test_graph_queries.py` |
+| 3 | `ContextBuilder.build(...)` 返回片段 + 符号 | ✅ | `test_graph_queries.py` |
+| 4 | SkillOpt `search_symbol` 走 graph.db | ✅ | `test_code_tools.py` |
+| 5 | trace callers/callees | ✅ | `test_code_tools.py` |
+| 6 | MCP 10 工具 | ✅ | `test_codegraph_mcp.py` |
+| 7 | Spring/MyBatis / callback / generated 边 | ✅ | `test_phase4_framework.py` ~ `test_phase6.py` |
+| 8 | watcher + daemon | ✅ | `test_watcher.py` |
+| 9 | rollout 降级凭证 + 代码注入 | ✅ | `test_rollout_helpers.py` |
+| 10 | `build_deep()` + accounting_linker | ✅ | `test_phase12.py` |
+
+深度检查（2026-06-06）：codegraph + skillopt 相关 **73 passed**。
+
+### 8.5 与 SkillOpt（M4）的关系
+
+| M1 能力 | M4 消费方式 |
+|---------|------------|
+| `graph.db` | `run all` M1 产物 → M4 `code_tools.graph_db_path` |
+| `search_symbol` | reflect / rollout optimizer 自主查规则 |
+| `get_code_context` / `explore_symbol` | 失败 case 根因分析时拉上下文 |
+| `trace_symbol` | 验证调用链是否覆盖 benchmark check |
+| `build_rollout_item_context` | rollout 自动注入 benchmark `context_refs` 源码 |
+| `accounting_linker` | reflect 无 context_refs 时预取图谱块 |
+| `LeafContext` | M3 atom 抽取（不变） |
+
+图查询与文件读取**并存**：符号级优先，文件级兜底。详见 [04-skillopt-loop.md §4.4](./04-skillopt-loop.md)。

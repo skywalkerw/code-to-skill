@@ -34,17 +34,24 @@ _CHECK_SEMANTIC_RULES: dict[str, str] = {
     "利息": "利息相关：须区分利息科目与本金科目",
     "收入": "利息/费用收入：贷方须含「收入」类科目",
     "费用": "费用扣款：须含「费用」科目",
-    "Charge": "费用类交易：须引用 Charge 费用类型",
+    "Charge": "逾期/手续费交易：科目或摘要须含 Charge 或「费用收入」",
+    "Portfolio": "Charge-Off 交易：贷方科目须含「贷款组合」，正文可出现 Portfolio",
+    "penalty": "储蓄罚息：科目或摘要须含 penalty 或「罚息」",
+    "损失": "贷款核销：借方科目须含「损失」或 LOSSES_WRITTEN_OFF",
     "计提": "计提交易：交易类型标注「计提」",
     "应收利息": "利息计提：借方须含「应收利息」",
     "销售": "销售交易：交易摘要须含「销售」",
     "资产": "资产购入：借方须含「资产」类科目",
     "储蓄": "储蓄账户：须含「储蓄」科目",
-    "待确认": "信息不足时：不确定字段填「[待确认]」，但仍须输出完整凭证表格",
-    "补充": "信息不足时：列出缺失项后须追问用户补充",
-    "会计口径": "还款未拆分本金/利息时：须追问会计口径（CashBased/AccrualBased）",
+    "待确认": "信息不足时：输出澄清说明（含 待确认、缺少、金额），禁止输出完整凭证表",
+    "缺少": "信息不足时：明确列出缺少的字段（金额/客户/拆分等）",
+    "补充": "信息不足时：列出缺失项并请用户补充",
+    "会计口径": "还款未拆分本金/利息时：须追问会计口径（CashBased/AccrualBased）及本金/利息拆分",
     "产品": "缺少产品 ID 时：须追问关联产品或 GL Account 配置",
-    "凭证": "任何场景均须输出会计凭证，不得仅返回缺失清单",
+    "拆分": "还款未说明本金/利息拆分时：须要求用户补充拆分",
+    "关账": "关账期间：须说明 GLClosure/关账 约束，不得过账",
+    "GLClosure": "须引用关账检查逻辑，说明不得过账",
+    "closure": "关账约束：不得输出正常过账凭证",
     "借贷平衡": "不得输出借贷不平的凭证",
     "不平": "借贷金额不等时：拒绝输出并说明须满足 isBalanced()",
     "isBalanced": "须确保 isBalanced() 为 true 方可输出",
@@ -223,6 +230,111 @@ After research, respond with JSON only (no more tool calls).
 """
 
 
+_BOUNDARY_MISSED = frozenset({
+    "待确认", "缺少", "补充", "金额", "本金", "利息", "拆分", "会计口径", "产品", "客户",
+    "关账", "GLClosure", "closure", "借贷平衡", "不平", "isBalanced", "不得",
+})
+
+
+def _split_failure_groups(failed: list[dict]) -> tuple[list[dict], list[dict]]:
+    """将失败 case 分为凭证生成 vs 边界/澄清场景。"""
+    journal: list[dict] = []
+    boundary: list[dict] = []
+    for r in failed:
+        rid = r.get("id") or ""
+        missed = set(r.get("missed_checks") or [])
+        if (
+            rid.startswith("jv_incomplete")
+            or rid.startswith("jv_closure")
+            or rid.startswith("jv_constraint")
+            or (missed & _BOUNDARY_MISSED and not (missed - _BOUNDARY_MISSED))
+        ):
+            boundary.append(r)
+        else:
+            journal.append(r)
+    return journal, boundary
+
+
+def _reflect_failure_group(
+    failed_group: list[dict],
+    *,
+    current_skill: str,
+    buffer_summary: str,
+    meta_skill_context: str,
+    backend: Any,
+    code_tools: Any,
+    max_tool_rounds: int,
+    focus: str,
+) -> dict | None:
+    """对单类失败（journal / boundary）调用 reflect。"""
+    if not failed_group:
+        return None
+
+    extra_hint = (
+        _REFLECT_JOURNAL_FOCUS
+        if focus == "journal"
+        else _REFLECT_BOUNDARY_FOCUS
+    )
+    system_content = _REFLECT_SYSTEM_PROMPT.format(
+        section_index=_skill_section_index(current_skill),
+        step_buffer_summary=buffer_summary,
+    ) + extra_hint
+    if meta_skill_context.strip():
+        system_content = meta_skill_context + "\n---\n" + system_content
+    if code_tools is not None and getattr(code_tools, "enabled", False):
+        system_content += _CODE_TOOLS_REFLECT_HINT
+
+    from .code_evidence import build_reflect_code_evidence
+
+    code_evidence = build_reflect_code_evidence(failed_group, code_tools)
+    failure_text = _format_failure_cases(failed_group[:8])
+    user_content = _REFLECT_USER_PROMPT.format(
+        current_skill=_skill_compact_for_reflect(current_skill),
+        failure_text=failure_text[:3000],
+    )
+    if code_evidence:
+        user_content += "\n\n" + code_evidence[:4500]
+
+    stage = "reflect_failure_journal" if focus == "journal" else "reflect_failure_boundary"
+    request = InteractionRequest(
+        role="optimizer",
+        stage=stage,
+        messages=[
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": user_content},
+        ],
+        max_output_tokens=get_token_budgets().reflect_failure,
+        temperature=0.2,
+    )
+
+    try:
+        response = _invoke_reflect_with_retry(
+            backend, request, code_tools=code_tools, max_tool_rounds=max_tool_rounds,
+        )
+        parsed = _parse_reflect_response(response) if response else None
+        if not parsed:
+            return None
+        edits = _sanitize_llm_edits(
+            parsed.get("edits", []), current_skill, failed_results=failed_group,
+        )
+        if not edits:
+            logger.warning("[reflect] %s: LLM returned no valid edits", focus)
+            return None
+        from .edit_traceability import missed_check_summary
+
+        return {
+            "source_type": "failure",
+            "batch_size": len(failed_group),
+            "reasoning": parsed.get("reasoning", ""),
+            "edits": edits,
+            "failure_summary": missed_check_summary(failed_group),
+            "focus": focus,
+        }
+    except Exception as e:
+        logger.warning("LLM reflect %s failed: %s", focus, e)
+        return None
+
+
 def reflect_llm(
     rollout_results: list[dict],
     current_skill: str,
@@ -247,60 +359,24 @@ def reflect_llm(
     patches: list[dict] = []
 
     if failed:
-        failure_text = _format_failure_cases(failed[:8])
-        system_content = _REFLECT_SYSTEM_PROMPT.format(
-            section_index=_skill_section_index(current_skill),
-            step_buffer_summary=buffer_summary,
+        journal_failed, boundary_failed = _split_failure_groups(failed)
+        logger.info(
+            "[reflect] failure split: journal=%d boundary=%d",
+            len(journal_failed), len(boundary_failed),
         )
-        if meta_skill_context.strip():
-            system_content = meta_skill_context + "\n---\n" + system_content
-        if code_tools is not None and getattr(code_tools, "enabled", False):
-            system_content += _CODE_TOOLS_REFLECT_HINT
-
-        from .code_evidence import build_reflect_code_evidence
-
-        code_evidence = build_reflect_code_evidence(failed, code_tools)
-        user_content = _REFLECT_USER_PROMPT.format(
-            current_skill=_skill_compact_for_reflect(current_skill),
-            failure_text=failure_text[:3000],
-        )
-        if code_evidence:
-            user_content += "\n\n" + code_evidence[:4500]
-
-        request = InteractionRequest(
-            role="optimizer",
-            stage="reflect_failure",
-            messages=[
-                {"role": "system", "content": system_content},
-                {"role": "user", "content": user_content},
-            ],
-            max_output_tokens=get_token_budgets().reflect_failure,
-            temperature=0.2,
-        )
-
-        try:
-            response = _invoke_reflect_with_retry(
-                backend, request, code_tools=code_tools, max_tool_rounds=max_tool_rounds,
+        for focus, group in (("journal", journal_failed), ("boundary", boundary_failed)):
+            patch = _reflect_failure_group(
+                group,
+                current_skill=current_skill,
+                buffer_summary=buffer_summary,
+                meta_skill_context=meta_skill_context,
+                backend=backend,
+                code_tools=code_tools,
+                max_tool_rounds=max_tool_rounds,
+                focus=focus,
             )
-            parsed = _parse_reflect_response(response) if response else None
-            if parsed:
-                edits = _sanitize_llm_edits(
-                    parsed.get("edits", []), current_skill, failed_results=failed,
-                )
-                if edits:
-                    from .edit_traceability import missed_check_summary
-
-                    patches.append({
-                        "source_type": "failure",
-                        "batch_size": len(failed),
-                        "reasoning": parsed.get("reasoning", ""),
-                        "edits": edits,
-                        "failure_summary": missed_check_summary(failed),
-                    })
-                else:
-                    logger.warning("[reflect] LLM returned no valid edits")
-        except Exception as e:
-            logger.warning("LLM reflect failure analysis failed: %s", e)
+            if patch:
+                patches.append(patch)
 
     if succeeded and not _patches_have_edits(patches):
         success_text = "\n".join([f"- {r.get('id', '?')}: PASS" for r in succeeded[:5]])
@@ -699,7 +775,8 @@ _REFLECT_SYSTEM_PROMPT = """You are a Skill document optimizer for an accounting
 2. Propose 1-3 edits with op="insert_after", targeting the most relevant section.
 3. Each edit content: bullet rules using 必须/不得, >= 50 chars, covering missed checks semantically.
 4. For journal_entry failures: add rules about voucher table format, debit/credit rows, account names.
-5. For incomplete-info failures: require outputting full voucher with [待确认] placeholders.
+5. For incomplete-info failures (missed 待确认/缺少/金额): add rules to §五 — clarify first, NO voucher table.
+6. For journal_entry placeholder failures (（借方科目）): add concrete account-name rules in §2.2.1 / §2.3.
 
 FORBIDDEN: "# Verify", "need improvement", "TODO", keyword-only lists without actionable rules.
 
@@ -712,6 +789,21 @@ _REFLECT_USER_PROMPT = """## Current Skill
 
 ## Failure Cases
 {failure_text}"""
+
+_REFLECT_JOURNAL_FOCUS = """
+
+## Focus: journal_entry failures
+Target §2.2 / §2.3 / §三. Add concrete debit/credit account-name rules.
+Preserve user wording in account names when checks expect English tokens:
+Charge, Portfolio, penalty, Write-Off → include them in 科目 or 业务摘要.
+"""
+
+_REFLECT_BOUNDARY_FOCUS = """
+
+## Focus: boundary / incomplete-info failures
+Target §五 and §三 only. Require 待确认/缺少/金额/关账/不得 — do NOT add voucher-table rules.
+When user omits amount or principal/interest split, clarify instead of inventing entries.
+"""
 
 _REFLECT_SUCCESS_PROMPT = """Based on successful cases, propose edits to preserve effective patterns.
 Return JSON: {{"reasoning": "...", "edits": []}} If no changes needed, return empty edits array."""

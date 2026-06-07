@@ -217,16 +217,17 @@ class DEFAULTAdapter(EnvAdapter):
                 from code_to_skill.model_provider.types import InteractionRequest
                 from code_to_skill.model_provider.tool_loop import invoke_with_tool_loop
                 from ..rollout_helpers import (
-                    ROLLOUT_SYNTHESIS_HINT,
+                    build_rollout_synthesis_hint,
                     build_rollout_system_prompt,
                     build_rollout_user_message,
+                    extract_rollout_answer,
                     fallback_predicted_from_tools,
                     fallback_skill_voucher,
                 )
                 try:
                     from ..code_evidence import build_rollout_item_context
 
-                    user_msg = build_rollout_user_message(question, checks)
+                    user_msg = build_rollout_user_message(question, checks, item=item)
                     code_ctx = build_rollout_item_context(item, self.code_tools)
                     if code_ctx:
                         user_msg = user_msg + code_ctx
@@ -244,7 +245,7 @@ class DEFAULTAdapter(EnvAdapter):
                         ],
                         max_output_tokens=get_token_budgets().rollout,
                         temperature=0.3,
-                        metadata={"synthesis_hint": ROLLOUT_SYNTHESIS_HINT},
+                        metadata={"synthesis_hint": build_rollout_synthesis_hint(checks)},
                     )
                     tool_rounds = (
                         self.rollout_max_tool_rounds
@@ -263,7 +264,7 @@ class DEFAULTAdapter(EnvAdapter):
                         )
                     else:
                         resp = backend.invoke(request)
-                    predicted = (resp.content or "").strip()
+                    predicted = extract_rollout_answer((resp.content or "").strip())
                     if not predicted:
                         tool_snippets = getattr(resp, "tool_snippets", "") or ""
                         if tool_snippets:

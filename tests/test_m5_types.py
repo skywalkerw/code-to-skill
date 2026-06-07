@@ -7,7 +7,12 @@ from click.testing import CliRunner
 from code_to_skill.model_provider.types import InteractionRequest, InteractionResponse, ModelResponse
 from code_to_skill.model_provider.backends.mock import MockReplayBackend
 from code_to_skill.model_provider.router import Router
-from code_to_skill.model_provider.tracer import configure_trace
+from code_to_skill.model_provider.tracer import configure_trace, _call_file_name
+from code_to_skill.model_provider.tracker import (
+    format_tool_call_summary,
+    format_tool_calls_log,
+    format_tools_log,
+)
 from code_to_skill.cli.types import RunManifest, RunState, RunStatus, StepInternal, ModuleEvent
 from code_to_skill.cli.config_loader import ProjectConfig, RepoSource, DocSource
 
@@ -59,7 +64,7 @@ class TestM5Trace:
         backend.invoke(req)
 
         trace_file = tmp_path / "traces" / "traces.jsonl"
-        call_file = tmp_path / "traces" / "calls" / "0001.json"
+        call_file = tmp_path / "traces" / "calls" / "0001_target_rollout.json"
         assert trace_file.exists()
         assert call_file.exists()
 
@@ -67,6 +72,35 @@ class TestM5Trace:
         assert record["request"]["messages"][1]["content"] == "买入 A物品 花费 100.00"
         assert record["response"]["content"]
         assert record["call_index"] == 1
+        assert record["call_file"] == "0001_target_rollout.json"
+
+    def test_call_file_name_slug(self):
+        assert _call_file_name(3, InteractionRequest(role="optimizer", stage="reflect_failure")) == (
+            "0003_optimizer_reflect_failure.json"
+        )
+        assert _call_file_name(12, InteractionRequest(role="extractor")) == "0012_extractor.json"
+
+
+class TestM5Tracker:
+    def test_format_tools_log(self):
+        tools = [
+            {"type": "function", "function": {"name": "trace_symbol", "parameters": {}}},
+            {"type": "function", "function": {"name": "search_symbol", "parameters": {}}},
+        ]
+        assert "tools=2[trace_symbol,search_symbol]" in format_tools_log(tools)
+
+    def test_format_tool_calls_log(self):
+        tcs = [{
+            "id": "tc1",
+            "function": {
+                "name": "trace_symbol",
+                "arguments": '{"from_symbol":"A","to_symbol":"B"}',
+            },
+        }]
+        out = format_tool_calls_log(tcs)
+        assert "tool_calls=1[" in out
+        assert "trace_symbol(" in out
+        assert format_tool_call_summary(tcs[0]).startswith("trace_symbol(")
 
 
 class TestM5Router:

@@ -20,7 +20,7 @@ class TestBenchmarkSplits:
         path = Path("test-data/benchmarks/fineract")
         splits = BenchmarkSplits.from_dir(str(path))
         assert len(splits.train) == 15
-        assert len(splits.selection) == 6
+        assert len(splits.selection) == 22
         assert len(splits.test) == 8
         assert splits.has_explicit_splits
 
@@ -36,7 +36,7 @@ class TestBenchmarkSplits:
         assert resolved.use_explicit_splits
         assert resolved.source == "explicit_files"
         assert len(resolved.train) == 15
-        assert len(resolved.selection) == 6
+        assert len(resolved.selection) == 22
         assert len(resolved.test) == 8
 
     def test_resolve_ratio_fallback(self):

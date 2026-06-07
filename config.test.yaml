@@ -1,5 +1,6 @@
-# Fineract 金融核心系统 Skill 优化项目
+# Fineract 金融核心系统 Skill 优化项目（稳定版配置，对齐论文推荐）
 # 使用方法: skill-lab run all --config-path config.test.yaml
+# 续训:     skill-lab resume --config-path config.test.yaml --run-id <run_id>
 
 settings:
   code_graph:
@@ -23,16 +24,22 @@ settings:
     llm_adjustment: 0.05
 
   skillopt:
-    num_epochs: 3
-    batch_size: 20
-    edit_budget: 3
-    gate_metric: soft
-    use_slow_update: false
-    use_meta_skill: false
+    use_llm_rollout: true     # 训练/评估 rollout 使用 target LLM（论文默认）
+    # rollout_backend: qwen-local   # 覆盖 routes.target，为 rollout 指定独立 LLM
+    # optimizer_backend: deepseek   # 覆盖 routes.optimizer
+    num_epochs: 5
+    batch_size: 15          # train=15，每 epoch 一轮
+    edit_budget: 4          # 论文推荐 L=4
+    budget_strategy: cosine # 论文消融：cosine/constant 均优于无 budget
+    gate_metric: hard       # selection≥20 时启用 hard gate（论文默认）
+    patience: 10
+    accumulation: 1
+    enable_slow_update: true
+    enable_meta_skill: true
+    slow_update_gate: true  # slow update 须经 selection gate（论文默认）
     enable_code_tools: true
-    max_tool_rounds: 5          # reflect 阶段工具轮次
-    rollout_max_tool_rounds: 2  # rollout 阶段限制查代码，优先输出凭证
-    # 各阶段 LLM 输出 token 预算（须 ≤ backend.max_output_tokens）
+    max_tool_rounds: 5
+    rollout_max_tool_rounds: 2
     token_budgets:
       rollout: 8192
       reflect_failure: 16384
@@ -47,18 +54,26 @@ settings:
 
   model_provider:
     backends:
-      # 生产级 LLM
       deepseek:
         type: llm_api
         provider: openai_compatible
         base_url: ${DEEPSEEK_BASE_URL}
-        api_key_env: ${DEEPSEEK_API_KEY}
+        api_key_env: DEEPSEEK_API_KEY
         model: deepseek-v4-pro
-        context_window: 1000000      # 1M 上下文
-        max_output_tokens: 384000    # 最大 384K 输出
+        context_window: 1000000
+        max_output_tokens: 384000
         timeout_seconds: 180
 
-      # 本地开发 LLM（vLLM / Ollama）
+      deepseek-flash:
+        type: llm_api
+        provider: openai_compatible
+        base_url: ${DEEPSEEK_BASE_URL}
+        api_key_env: DEEPSEEK_API_KEY
+        model: deepseek-v4-flash
+        context_window: 1000000
+        max_output_tokens: 384000
+        timeout_seconds: 180
+
       qwen-local:
         type: local_llm
         provider: openai_compatible
@@ -68,31 +83,39 @@ settings:
         context_window: 32768
         timeout_seconds: 120
 
-      # 测试桩（离线 / CI / 无 API key 环境）
       mock-backend:
         type: mock
         provider: mock
         model: mock-model-v1
 
+    # routes：按调用角色（role）选择 backend；primary 失败时按 fallback 顺序降级。
+    # 本文件未写 skillopt.rollout_backend 时，rollout 使用 target.primary（deepseek-flash）。
     routes:
+      # M3 Atom 抽取：从代码片段与文档块中识别 SkillAtom
       extractor:
         primary: deepseek
         fallback: [qwen-local, mock-backend]
+      # M1 代码图谱：LLM 辅助模块聚类（llm_clustering_enabled=true 时）
       clusterer:
         primary: deepseek
         fallback: [qwen-local, mock-backend]
+      # M4 优化器：reflect / select / aggregate / slow-update / meta-skill（强模型）
       optimizer:
         primary: deepseek
         fallback: [qwen-local, mock-backend]
+      # M4 执行端 rollout：train/selection/test benchmark 答题（量大，用 flash 降本提速）
       target:
-        primary: deepseek
+        primary: deepseek-flash
         fallback: [qwen-local, mock-backend]
+      # 可选 LLM Judge：benchmark scorer=llm_judge 时的 rubric 打分
       judge:
         primary: deepseek
         fallback: [qwen-local, mock-backend]
+      # 预留：外部 Agent CLI 任务（当前 Fineract 流水线未默认启用）
       agent_worker:
         primary: deepseek
         fallback: [qwen-local, mock-backend]
+      # 未匹配 role 时的兜底
       default:
         primary: deepseek
         fallback: [qwen-local, mock-backend]
@@ -117,10 +140,7 @@ project:
   domain: fintech
   description: "Apache Fineract 金融核心系统 Agent Skill——贷款/储蓄/会计/费用/互操作"
 
-  # 初始 Skill（如果指定，跳过 M3 自动生成）
   initial_skill: test-data/initial_skill.md
-
-  # Benchmark 目录（如果指定，跳过 M3 自动生成 benchmark_seeds）
   benchmark: test-data/benchmarks/fineract
 
   sources:

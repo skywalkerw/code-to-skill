@@ -37,6 +37,63 @@ def _new_run_id() -> str:
     return local_timestamp_compact()
 
 
+def _skillopt_get(skillopt: dict, key: str, *aliases: str, default=None):
+    """读取 skillopt 配置，支持新旧键名别名。"""
+    if key in skillopt:
+        return skillopt[key]
+    for alias in aliases:
+        if alias in skillopt:
+            return skillopt[alias]
+    return default
+
+
+def _skillopt_run_kwargs(
+    skillopt: dict,
+    model_provider: dict | None = None,
+    **overrides,
+) -> dict:
+    """从 settings.skillopt 构建 run_skillopt_loop 通用参数。"""
+    from code_to_skill.skillopt_loop.separation import resolve_skillopt_backend_ids
+
+    mp_dump = (
+        model_provider.model_dump()
+        if model_provider is not None and hasattr(model_provider, "model_dump")
+        else model_provider
+    )
+    rollout_backend_id, optimizer_backend_id = resolve_skillopt_backend_ids(
+        skillopt, mp_dump,
+    )
+    kwargs = {
+        "num_epochs": _skillopt_get(skillopt, "num_epochs", default=3),
+        "batch_size": _skillopt_get(skillopt, "batch_size", default=20),
+        "accumulation": _skillopt_get(skillopt, "accumulation", default=1),
+        "edit_budget": _skillopt_get(skillopt, "edit_budget", default=3),
+        "gate_metric": _skillopt_get(skillopt, "gate_metric", default="soft"),
+        "budget_strategy": _skillopt_get(skillopt, "budget_strategy", default="cosine"),
+        "patience": _skillopt_get(skillopt, "patience", default=10),
+        "enable_slow_update": _skillopt_get(
+            skillopt, "enable_slow_update", "use_slow_update", default=False,
+        ),
+        "enable_meta_skill": _skillopt_get(
+            skillopt, "enable_meta_skill", "use_meta_skill", default=False,
+        ),
+        "slow_update_gate": _skillopt_get(skillopt, "slow_update_gate", default=True),
+        "test_split_ratio": _skillopt_get(skillopt, "test_split_ratio", default=0.0),
+        "token_budgets": skillopt.get("token_budgets"),
+        "enable_code_tools": _skillopt_get(skillopt, "enable_code_tools", default=True),
+        "max_tool_rounds": _skillopt_get(skillopt, "max_tool_rounds", default=5),
+        "rollout_max_tool_rounds": _skillopt_get(
+            skillopt, "rollout_max_tool_rounds", default=2,
+        ),
+        "use_llm_rollout": _skillopt_get(skillopt, "use_llm_rollout", default=False),
+        "rollout_backend_id": rollout_backend_id,
+        "optimizer_backend_id": optimizer_backend_id,
+        "model_provider": mp_dump,
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
 # 目录骨架模板
 _SKELETON_DIRS = [
     "sources/code",
@@ -363,6 +420,16 @@ def _init_trace(settings: SettingsConfig, output_root: str) -> str | None:
     return trace_dir
 
 
+def _init_run_outputs(settings: SettingsConfig, output_root: str) -> None:
+    """初始化 run 产物目录：trace + 文件日志。"""
+    from code_to_skill.run_logging import configure_run_logging
+
+    _init_trace(settings, output_root)
+    log_path = configure_run_logging(output_root)
+    if log_path:
+        click.echo(f"   📋 Log 已写入: {log_path}")
+
+
 def _load_initial_skill(project: ProjectConfig) -> str:
     """从配置文件指定的 initial_skill 路径读取 Skill 内容。"""
     path = project.initial_skill_path
@@ -397,15 +464,19 @@ def _load_benchmark_splits(project: ProjectConfig, benchmark_dir: str | None = N
 
 
 def _resolve_run_dir(run_id: str, output_root: str) -> Path | None:
-    """定位可恢复的 run 目录（需存在 runtime_state.json）。"""
+    """定位可恢复的 run 目录（optimization 产物或 atoms 目录存在即可）。"""
     candidates = [
         Path(output_root) / run_id,
         Path("runs") / run_id,
         Path(run_id),
     ]
     for path in candidates:
+        if not path.is_dir():
+            continue
         opt = path / "optimization"
         if (opt / "runtime_state.json").exists():
+            return path
+        if (opt / "best_skill.md").is_file() or (path / "atoms").is_dir():
             return path
     return None
 
@@ -484,6 +555,7 @@ def run_all(
     cfg = load_config(config_path)
     s = cfg.settings
     p = cfg.project
+    os.environ["SKILL_LAB_CONFIG_PATH"] = os.path.abspath(config_path)
 
     m4_resume = False
     if resume_run_id:
@@ -503,7 +575,7 @@ def run_all(
 
     from code_to_skill.skillopt_loop.token_budgets import configure_token_budgets
     configure_token_budgets(s.skillopt.get("token_budgets"))
-    _init_trace(s, output_root)
+    _init_run_outputs(s, output_root)
 
     skip_prefix = m4_resume or (from_step in ("optimize-skill", "m4", "4"))
     graph_ready = bool(p.repos) and os.path.isfile(
@@ -602,23 +674,12 @@ def run_all(
         selection_items=splits.selection,
         test_items=splits.test,
         output_dir=os.path.join(output_root, "optimization"),
-        num_epochs=s.skillopt.get("num_epochs", 3),
-        batch_size=s.skillopt.get("batch_size", 20),
-        accumulation=s.skillopt.get("accumulation", 1),
-        edit_budget=s.skillopt.get("edit_budget", 3),
-        gate_metric=s.skillopt.get("gate_metric", "soft"),
-        enable_slow_update=s.skillopt.get("enable_slow_update", False),
-        enable_meta_skill=s.skillopt.get("enable_meta_skill", False),
-        test_split_ratio=s.skillopt.get("test_split_ratio", 0.0),
-        token_budgets=s.skillopt.get("token_budgets"),
         code_repos=code_repos,
         graph_db_path=graph_db_path,
         repo_root=repo_root,
         graph_sources=graph_sources or None,
-        enable_code_tools=s.skillopt.get("enable_code_tools", True),
-        max_tool_rounds=s.skillopt.get("max_tool_rounds", 5),
-        rollout_max_tool_rounds=s.skillopt.get("rollout_max_tool_rounds", 2),
         resume=m4_resume,
+        **_skillopt_run_kwargs(s.skillopt, s.model_provider),
     )
     click.echo(f"   最优分数: {m4['best_score']:.3f}")
 
@@ -633,6 +694,7 @@ def run_code_graph(repo: str | None, config_path: str):
     cfg = load_config(config_path)
     s = cfg.settings
     p = cfg.project
+    os.environ["SKILL_LAB_CONFIG_PATH"] = os.path.abspath(config_path)
     targets = p.repos
     if repo:
         targets = [r for r in p.repos if r.id == repo or r.path == repo] or p.repos
@@ -735,6 +797,7 @@ def run_normalize_docs(docs: str | None, config_path: str):
     cfg = load_config(config_path)
     s = cfg.settings
     p = cfg.project
+    os.environ["SKILL_LAB_CONFIG_PATH"] = os.path.abspath(config_path)
     from code_to_skill.document_normalizer import normalize_document
     targets = p.docs
     if docs:
@@ -757,7 +820,7 @@ def run_extract_atoms(from_dir: str | None, config_path: str):
     from code_to_skill.atom_extractor import run_atom_extraction
     cfg = load_config(config_path)
     out_root = from_dir or "runs/latest"
-    _init_trace(cfg.settings, out_root)
+    _init_run_outputs(cfg.settings, out_root)
     result = run_atom_extraction(
         leaf_contexts=[],
         document_chunks=[],
@@ -795,10 +858,11 @@ def run_optimize_skill(
     cfg = load_config(config_path)
     s = cfg.settings
     p = cfg.project
+    os.environ["SKILL_LAB_CONFIG_PATH"] = os.path.abspath(config_path)
     configure_token_budgets(s.skillopt.get("token_budgets"))
 
     out_dir = output or "runs/latest/optimization"
-    _init_trace(s, os.path.dirname(out_dir) or "runs/latest")
+    _init_run_outputs(s, os.path.dirname(out_dir) or "runs/latest")
     splits = _load_benchmark_splits(p, benchmark_dir=benchmark)
     initial_skill = _load_initial_skill(p) or "# Initial Skill\n- Default rule"
 
@@ -806,29 +870,39 @@ def run_optimize_skill(
     run_root = os.path.dirname(out_dir.rstrip("/")) if resume else None
     graph_db_path, repo_root, graph_sources = _m4_graph_context(p, run_root, s)
 
+    skillopt_kwargs = _skillopt_run_kwargs(s.skillopt, s.model_provider)
+    if skillopt_kwargs.get("rollout_backend_id"):
+        click.echo(
+            f"   🤖 Rollout backend: {skillopt_kwargs['rollout_backend_id']}"
+        )
+    if skillopt_kwargs.get("optimizer_backend_id"):
+        click.echo(
+            f"   🧠 Optimizer backend: {skillopt_kwargs['optimizer_backend_id']}"
+        )
+
     result = run_skillopt_loop(
         initial_skill=initial_skill,
         benchmark_items=splits.train,
         selection_items=splits.selection,
         test_items=splits.test,
         output_dir=out_dir,
-        num_epochs=epochs,
-        batch_size=batch_size,
-        accumulation=accumulation,
-        edit_budget=s.skillopt.get("edit_budget", 3),
-        gate_metric=s.skillopt.get("gate_metric", "soft"),
-        enable_slow_update=slow_update or s.skillopt.get("enable_slow_update", False),
-        enable_meta_skill=meta_skill or s.skillopt.get("enable_meta_skill", False),
-        test_split_ratio=s.skillopt.get("test_split_ratio", 0.0),
-        token_budgets=s.skillopt.get("token_budgets"),
         code_repos=code_repos,
         graph_db_path=graph_db_path,
         repo_root=repo_root,
         graph_sources=graph_sources or None,
-        enable_code_tools=s.skillopt.get("enable_code_tools", True),
-        max_tool_rounds=s.skillopt.get("max_tool_rounds", 5),
-        rollout_max_tool_rounds=s.skillopt.get("rollout_max_tool_rounds", 2),
         resume=resume,
+        **{
+            **skillopt_kwargs,
+            "num_epochs": epochs,
+            "batch_size": batch_size,
+            "accumulation": accumulation,
+            "enable_slow_update": slow_update or _skillopt_get(
+                s.skillopt, "enable_slow_update", "use_slow_update", default=False,
+            ),
+            "enable_meta_skill": meta_skill or _skillopt_get(
+                s.skillopt, "enable_meta_skill", "use_meta_skill", default=False,
+            ),
+        },
     )
     click.echo(f"✅ best_score={result['best_score']:.3f}")
     if result.get("test_report"):
@@ -1037,6 +1111,7 @@ def resume(run_id: str, config_path: str, from_step: str | None):
     """从 runtime_state.json 恢复 M4 SkillOpt 训练。"""
     cfg = load_config(config_path)
     s, p = cfg.settings, cfg.project
+    os.environ["SKILL_LAB_CONFIG_PATH"] = os.path.abspath(config_path)
 
     run_dir = _resolve_run_dir(run_id, s.output_root)
     opt_dir = None
@@ -1074,7 +1149,7 @@ def resume(run_id: str, config_path: str, from_step: str | None):
 
     configure_token_budgets(s.skillopt.get("token_budgets"))
     out_dir = str(run_dir / "optimization")
-    _init_trace(s, str(run_dir))
+    _init_run_outputs(s, str(run_dir))
     splits = _load_benchmark_splits(p)
     initial_skill = _load_initial_skill(p) or "# Initial Skill\n- Default rule"
     code_repos = [{"path": r.path, "include": r.include, "exclude": r.exclude} for r in p.repos]
@@ -1086,23 +1161,12 @@ def resume(run_id: str, config_path: str, from_step: str | None):
         selection_items=splits.selection,
         test_items=splits.test,
         output_dir=out_dir,
-        num_epochs=s.skillopt.get("num_epochs", 3),
-        batch_size=s.skillopt.get("batch_size", 20),
-        accumulation=s.skillopt.get("accumulation", 1),
-        edit_budget=s.skillopt.get("edit_budget", 3),
-        gate_metric=s.skillopt.get("gate_metric", "soft"),
-        enable_slow_update=s.skillopt.get("enable_slow_update", False),
-        enable_meta_skill=s.skillopt.get("enable_meta_skill", False),
-        test_split_ratio=s.skillopt.get("test_split_ratio", 0.0),
-        token_budgets=s.skillopt.get("token_budgets"),
         code_repos=code_repos,
         graph_db_path=graph_db_path,
         repo_root=repo_root,
         graph_sources=graph_sources or None,
-        enable_code_tools=s.skillopt.get("enable_code_tools", True),
-        max_tool_rounds=s.skillopt.get("max_tool_rounds", 5),
-        rollout_max_tool_rounds=s.skillopt.get("rollout_max_tool_rounds", 2),
         resume=True,
+        **_skillopt_run_kwargs(s.skillopt, s.model_provider),
     )
     click.echo(f"✅ 续训完成: best_score={result['best_score']:.3f}")
 

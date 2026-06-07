@@ -86,8 +86,10 @@ class OpenAICompatibleBackend(InteractionBackend):
         }
 
     def invoke(self, request: InteractionRequest) -> InteractionResponse:
-        log_llm_input("openai", request.role, request.stage, self.model,
-                      request.messages, request.max_output_tokens)
+        log_llm_input(
+            "openai", request.role, request.stage, self.model,
+            request.messages, request.max_output_tokens, tools=request.tools,
+        )
         start = time.monotonic()
         try:
             effective_max_tokens = min(request.max_output_tokens, self.max_output_tokens)
@@ -140,7 +142,10 @@ class OpenAICompatibleBackend(InteractionBackend):
                 },
                 tool_calls=tool_calls,
             )
-            log_llm_output("openai", self.model, content, response.usage, latency_ms)
+            log_llm_output(
+                "openai", self.model, content, response.usage, latency_ms,
+                tool_calls=tool_calls, finish_reason=response.finish_reason,
+            )
             record_interaction(request, response, backend_id=self.backend_id)
             return response
         except Exception as exc:

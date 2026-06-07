@@ -14,6 +14,74 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
+def _as_config_dict(obj: Any) -> dict:
+    """将 dict 或 Pydantic settings 转为普通 dict。"""
+    if obj is None:
+        return {}
+    if isinstance(obj, dict):
+        return obj
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump()
+    return {}
+
+
+def resolve_skillopt_backend_ids(
+    skillopt: dict | Any | None,
+    model_provider: dict | Any | None = None,
+) -> tuple[str | None, str | None]:
+    """解析 rollout(target) 与 optimizer 的 backend ID。
+
+    优先级（各自独立）：
+    1. ``settings.skillopt.rollout_backend`` / ``target_backend``
+    2. ``settings.skillopt.optimizer_backend``
+    3. ``model_provider.routes.target.primary`` / ``optimizer.primary``
+    4. 环境变量 ``SKILL_LAB_TARGET_BACKEND`` / ``SKILL_LAB_OPTIMIZER_BACKEND``
+    """
+    skillopt = _as_config_dict(skillopt)
+    mp = _as_config_dict(model_provider)
+    routes = mp.get("routes") or {}
+    if not routes and model_provider is not None and not isinstance(model_provider, dict):
+        routes = getattr(model_provider, "routes", None) or {}
+
+    def _route_primary(role: str) -> str | None:
+        route = routes.get(role) or {}
+        if hasattr(route, "model_dump"):
+            route = route.model_dump()
+        elif not isinstance(route, dict):
+            primary = getattr(route, "primary", "") or ""
+            return str(primary).strip() or None
+        primary = (route.get("primary") or "").strip()
+        return primary or None
+
+    rollout = (
+        skillopt.get("rollout_backend")
+        or skillopt.get("target_backend")
+        or _route_primary("target")
+        or os.environ.get("SKILL_LAB_TARGET_BACKEND")
+    )
+    optimizer = (
+        skillopt.get("optimizer_backend")
+        or _route_primary("optimizer")
+        or os.environ.get("SKILL_LAB_OPTIMIZER_BACKEND")
+    )
+    return (
+        str(rollout).strip() if rollout else None,
+        str(optimizer).strip() if optimizer else None,
+    )
+
+
+def _lookup_backend(
+    backend_id: str | None,
+    prebuilt: dict[str, Any] | None,
+) -> Any | None:
+    if not backend_id:
+        return None
+    if prebuilt and backend_id in prebuilt:
+        return prebuilt[backend_id]
+    return BackendManager._try_create_backend(backend_id)
+
+
 # ── Backend Manager ──────────────────────────────────────────
 
 class BackendManager:
@@ -121,6 +189,71 @@ class BackendManager:
             target_backend=target,
             optimizer_backend=optimizer,
             auto_create=use_llm,
+        )
+
+    @classmethod
+    def from_skillopt(
+        cls,
+        *,
+        use_llm_rollout: bool = True,
+        use_llm_optimizer: bool = True,
+        rollout_backend_id: str | None = None,
+        optimizer_backend_id: str | None = None,
+        model_provider: dict | None = None,
+    ) -> "BackendManager":
+        """从 skillopt / model_provider 配置创建分离的 target 与 optimizer 后端。"""
+        prebuilt: dict[str, Any] = {}
+        if model_provider:
+            try:
+                from code_to_skill.model_provider.config import build_router_from_dict
+
+                mp_dump = (
+                    model_provider.model_dump()
+                    if hasattr(model_provider, "model_dump")
+                    else model_provider
+                )
+                _, prebuilt = build_router_from_dict(mp_dump)
+            except Exception as exc:
+                logger.warning("[BackendManager] pre-build backends failed: %s", exc)
+
+        target = (
+            _lookup_backend(rollout_backend_id, prebuilt)
+            if use_llm_rollout
+            else None
+        )
+        optimizer = (
+            _lookup_backend(optimizer_backend_id, prebuilt)
+            if use_llm_optimizer
+            else None
+        )
+
+        if target and optimizer:
+            if rollout_backend_id == optimizer_backend_id:
+                logger.info(
+                    "[BackendManager] Rollout and optimizer share backend: %s",
+                    rollout_backend_id or "default",
+                )
+            else:
+                logger.info(
+                    "[BackendManager] Separate backends — rollout=%s, optimizer=%s",
+                    rollout_backend_id or "default",
+                    optimizer_backend_id or "default",
+                )
+        elif target:
+            logger.info(
+                "[BackendManager] Rollout backend: %s",
+                rollout_backend_id or "default",
+            )
+        elif optimizer:
+            logger.info(
+                "[BackendManager] Optimizer backend: %s",
+                optimizer_backend_id or "default",
+            )
+
+        return cls(
+            target_backend=target,
+            optimizer_backend=optimizer,
+            auto_create=False,
         )
 
 

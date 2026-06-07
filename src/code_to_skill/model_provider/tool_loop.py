@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Protocol
 
+from .tracker import format_tool_calls_log, log_tool_execute, tool_call_args_text
 from .types import InteractionRequest, InteractionResponse
 
 logger = logging.getLogger(__name__)
@@ -65,14 +66,22 @@ def invoke_with_tool_loop(
                 response.tool_snippets = snippets
             return response
 
-        logger.info("[tool_loop] round %d: %d tool call(s)", round_idx + 1, len(tool_calls))
+        logger.info(
+            "[tool_loop] round %d: %d tool call(s)%s",
+            round_idx + 1, len(tool_calls), format_tool_calls_log(tool_calls),
+        )
         messages.append({
             "role": "assistant",
             "content": response.content or "",
             "tool_calls": tool_calls,
         })
         for tc in tool_calls:
+            fn = tc.get("function", {})
+            tool_name = fn.get("name", "?")
             result = handler.execute(tc)
+            log_tool_execute(
+                tool_name, tool_call_args_text(tc), result, round_idx=round_idx + 1,
+            )
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc.get("id", ""),

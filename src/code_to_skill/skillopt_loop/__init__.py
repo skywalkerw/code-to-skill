@@ -57,12 +57,16 @@ def run_skillopt_loop(
     edit_budget: int = 3,
     selection_split_ratio: float = 0.3,
     use_llm_rollout: bool = False,
+    rollout_backend_id: str | None = None,
+    optimizer_backend_id: str | None = None,
+    model_provider: dict | None = None,
     budget_strategy: str = "constant",
     patience: int = 10,
     gate_metric: str = "hard",
     accumulation: int = 1,
     enable_slow_update: bool = False,
     enable_meta_skill: bool = False,
+    slow_update_gate: bool = True,
     test_split_ratio: float = 0.0,
     selection_items: list[dict] | None = None,
     test_items: list[dict] | None = None,
@@ -105,7 +109,15 @@ def run_skillopt_loop(
 
     # ── Backend 初始化 ─────────────────────────────────────
     from .separation import BackendManager, Accumulator
-    backend_mgr = BackendManager.from_separate(use_llm=use_llm_rollout)
+    backend_mgr = BackendManager.from_skillopt(
+        use_llm_rollout=use_llm_rollout,
+        use_llm_optimizer=True,
+        rollout_backend_id=rollout_backend_id,
+        optimizer_backend_id=optimizer_backend_id,
+        model_provider=model_provider,
+    )
+    if use_llm_rollout and backend_mgr.target is None:
+        logger.warning("[M4] use_llm_rollout=true 但 rollout backend 不可用，将降级为规则 rollout")
 
     # ── Adapter 初始化 ─────────────────────────────────────
     from .envs import DEFAULTAdapter
@@ -163,10 +175,15 @@ def run_skillopt_loop(
     _save_config(output_dir, {
         "num_epochs": num_epochs, "batch_size": batch_size,
         "edit_budget": edit_budget, "selection_split_ratio": selection_split_ratio,
-        "use_llm_rollout": use_llm_rollout, "budget_strategy": budget_strategy,
+        "use_llm_rollout": use_llm_rollout,
+        "rollout_backend": rollout_backend_id,
+        "optimizer_backend": optimizer_backend_id,
+        "budget_strategy": budget_strategy,
         "patience": patience, "gate_metric": gate_metric,
         "accumulation": accumulation, "enable_slow_update": enable_slow_update,
-        "enable_meta_skill": enable_meta_skill, "test_split_ratio": test_split_ratio,
+        "enable_meta_skill": enable_meta_skill,
+        "slow_update_gate": slow_update_gate,
+        "test_split_ratio": test_split_ratio,
         "use_explicit_splits": resolved.use_explicit_splits,
         "split_source": resolved.source,
         "initial_skill_chars": len(initial_skill),
@@ -181,9 +198,14 @@ def run_skillopt_loop(
 
     # selection 较小时自动用 soft gate
     effective_gate_metric = gate_metric
-    if len(selection_items) < 5 and gate_metric == "hard":
+    n_sel = len(selection_items)
+    if n_sel < 5:
         effective_gate_metric = "soft"
-        logger.info("[M4] selection=%d < 5，gate_metric 自动降级为 soft", len(selection_items))
+        if gate_metric != "soft":
+            logger.info("[M4] selection=%d < 5，gate_metric %s → soft", n_sel, gate_metric)
+    elif n_sel < 20 and gate_metric == "hard":
+        effective_gate_metric = "mixed"
+        logger.info("[M4] selection=%d < 20，gate_metric hard → mixed", n_sel)
 
     current_skill = initial_skill
     prev_epoch_skill = initial_skill
@@ -195,6 +217,7 @@ def run_skillopt_loop(
     best_step = 0
     history: list[dict] = []
     start_epoch, start_batch_start, step_counter = 0, 0, 0
+    last_rollout_avg = 0.0
 
     if resume and os.path.isdir(output_dir):
         loaded_current, loaded_best, last_step = load_skills_for_resume(output_dir, initial_skill)
@@ -208,6 +231,8 @@ def run_skillopt_loop(
             best_score = float(state.get("best_score", 0.0))
             best_step = int(state.get("best_step", 0))
             current_score = float(state.get("current_score", best_score))
+            if history:
+                last_rollout_avg = float(history[-1].get("rollout_score", 0.0))
             logger.info(
                 "[M4] 断点续训: step=%d epoch=%d batch_start=%d best_score=%.3f",
                 last_step, start_epoch, start_batch_start, best_score,
@@ -382,7 +407,12 @@ def run_skillopt_loop(
                              eval_result.get("f1", 0.0), candidate_gate, best_score, gate.metric)
 
             # Gate — uses the gate metric projection
-            decision = gate.evaluate(candidate_hard, candidate_soft, best_score, current_score)
+            decision = gate.evaluate(
+                candidate_hard, candidate_soft, best_score, current_score,
+                train_rollout=rollout_avg,
+                prev_train_rollout=last_rollout_avg,
+            )
+            last_rollout_avg = rollout_avg
             action = decision.action
             candidate_gate = decision.candidate_score  # the projected score
             logger.info("[M4] gate: %s reason=%s", _gate_icon(action), decision.reason)
@@ -394,6 +424,10 @@ def run_skillopt_loop(
                 for r in ranked:
                     buffer.record_accepted_edit(step_counter, r.edit)
             elif action == "accept":
+                if candidate_gate >= best_score - 1e-9:
+                    best_score = candidate_gate
+                    best_skill = candidate_content
+                    best_step = step_counter
                 for r in ranked:
                     buffer.record_accepted_edit(step_counter, r.edit)
             else:
@@ -481,11 +515,63 @@ def run_skillopt_loop(
                 optimizer_backend=backend_mgr.optimizer,
             )
             if slow_result["slow_update_content"]:
-                current_skill = apply_slow_update(current_skill, slow_result["slow_update_content"])
-                best_skill = apply_slow_update(best_skill, slow_result["slow_update_content"])
-                _save_slow_update_artifacts(output_dir, epoch + 1,
-                                            slow_result, prev_epoch_skill, current_skill)
-                logger.info("[M4] Slow update applied: %d chars", len(slow_result["slow_update_content"]))
+                candidate_slow = apply_slow_update(
+                    current_skill, slow_result["slow_update_content"],
+                )
+                apply_slow = True
+                slow_action = "force_apply"
+                if slow_update_gate and selection_items:
+                    slow_hash = compute_semantic_hash(candidate_slow)
+                    cached_slow = cache.get(slow_hash)
+                    if cached_slow is not None:
+                        slow_hard = cached_slow.get("hard", cached_slow["gate_score"])
+                        slow_soft = cached_slow.get("soft", cached_slow["gate_score"])
+                        slow_gate = cached_slow["gate_score"]
+                    else:
+                        slow_eval = adapter.evaluate(
+                            candidate_slow, selection_items, target_backend=backend_mgr.target,
+                        )
+                        slow_hard = slow_eval.get("accuracy", 0.0)
+                        slow_soft = slow_eval["soft"]
+                        slow_gate = select_gate_score(
+                            slow_hard, slow_soft, metric=gate.metric, mixed_weight=gate.mixed_weight,
+                        )
+                        cache.put(slow_hash, slow_hard, slow_soft, slow_gate, epoch + 1, step_counter)
+                    slow_decision = gate.evaluate(
+                        slow_hard, slow_soft, best_score, current_score,
+                    )
+                    slow_action = slow_decision.action
+                    apply_slow = slow_action != "reject"
+                    logger.info(
+                        "[M4] slow update gate: %s (%s)",
+                        _gate_icon(slow_action), slow_decision.reason,
+                    )
+                    if apply_slow:
+                        if slow_action == "accept_new_best":
+                            best_score = slow_decision.candidate_score
+                            best_skill = candidate_slow
+                            best_step = step_counter
+                        current_score = slow_decision.candidate_score
+                        current_hard = slow_hard
+                        current_soft = slow_soft
+                if apply_slow:
+                    current_skill = candidate_slow
+                    if not slow_update_gate or not selection_items:
+                        best_skill = apply_slow_update(
+                            best_skill, slow_result["slow_update_content"],
+                        )
+                    elif slow_action == "accept_new_best":
+                        pass  # best_skill already set above
+                    _save_slow_update_artifacts(
+                        output_dir, epoch + 1, {**slow_result, "gate_action": slow_action},
+                        prev_epoch_skill, current_skill,
+                    )
+                    logger.info(
+                        "[M4] Slow update applied: %d chars (gate=%s)",
+                        len(slow_result["slow_update_content"]), slow_action,
+                    )
+                else:
+                    logger.info("[M4] Slow update rejected by selection gate")
 
             # Meta Skill
             if enable_meta_skill:
@@ -526,6 +612,34 @@ def run_skillopt_loop(
         cache.save()
 
     # ── Final ───────────────────────────────────────────────
+    # 训练结束时：若 current_skill 在 selection 上优于 best_skill，提升导出产物
+    if selection_items and current_skill.strip() != best_skill.strip():
+        curr_eval = adapter.evaluate(
+            current_skill, selection_items, target_backend=backend_mgr.target,
+        )
+        best_eval = adapter.evaluate(
+            best_skill, selection_items, target_backend=backend_mgr.target,
+        )
+        curr_gate = select_gate_score(
+            curr_eval.get("accuracy", 0.0), curr_eval["soft"],
+            metric=gate.metric, mixed_weight=gate.mixed_weight,
+        )
+        best_gate = select_gate_score(
+            best_eval.get("accuracy", 0.0), best_eval["soft"],
+            metric=gate.metric, mixed_weight=gate.mixed_weight,
+        )
+        if curr_gate > best_gate + gate.delta or (
+            curr_gate >= best_gate - 1e-9
+            and current_skill.strip() != best_skill.strip()
+        ):
+            logger.info(
+                "[M4] Finalize: export current_skill on selection "
+                "(%.3f vs best %.3f)",
+                curr_gate, best_gate,
+            )
+            best_skill = current_skill
+            best_score = max(curr_gate, best_gate)
+
     # Test eval
     test_report = {}
     if test_items:

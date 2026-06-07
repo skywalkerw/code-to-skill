@@ -1,4 +1,4 @@
-"""Rollout 辅助：输出模板与 tool 结果降级。"""
+"""Rollout 辅助：输出模板与 tool 结果降级（通用框架，不含目标项目领域知识）。"""
 from __future__ import annotations
 
 import json
@@ -6,50 +6,161 @@ import re
 
 
 ROLLOUT_SYNTHESIS_HINT = (
-    "Stop using tools. Output the final answer NOW in Chinese. "
-    "Start with '## 会计凭证', include a debit/credit table (借/贷), "
-    "use amounts from the user question, and end with '借贷校验：平衡'."
+    "Stop using tools. Output your final answer now. "
+    "Follow the skill document for format and constraints. "
+    "Do NOT paste or repeat the skill document."
+)
+
+# 通用占位符标记（语言无关）
+_PLACEHOLDER_MARKERS = (
+    "(placeholder)",
+    "<placeholder>",
+    "TBD",
+    "TODO:",
+    "TODO ",
 )
 
 
-def build_rollout_user_message(question: str, expected_checks: list[str]) -> str:
-    """在用户问题后附加可检查的输出要求。"""
-    checks_hint = "、".join(expected_checks[:8]) if expected_checks else "会计凭证、借、贷、借贷校验"
-    return (
+def _format_checks(checks: list[str], *, limit: int = 12) -> str:
+    tokens = [c.strip() for c in checks if c and c.strip()]
+    return ", ".join(tokens[:limit])
+
+
+def build_rollout_synthesis_hint(expected_checks: list[str]) -> str:
+    """按 expected_checks 追加 synthesis 阶段的验证 token 提醒。"""
+    hint = ROLLOUT_SYNTHESIS_HINT
+    checks_hint = _format_checks(expected_checks or [])
+    if checks_hint:
+        hint += f" Your answer must include these verification tokens: {checks_hint}."
+    return hint
+
+
+def build_rollout_user_message(
+    question: str,
+    expected_checks: list[str],
+    *,
+    item: dict | None = None,
+) -> str:
+    """在用户问题后附加可检查的输出要求。
+
+    Benchmark item 可选字段：
+    - ``response_mode``: ``clarify`` | ``reject`` | ``answer``（默认 ``answer``）
+    - ``rollout_hint``: 项目/任务级补充说明（由 benchmark 或 skill 侧提供）
+    """
+    checks = expected_checks or []
+    item = item or {}
+    checks_hint = _format_checks(checks)
+    rollout_hint = str(item.get("rollout_hint") or "").strip()
+    mode = str(item.get("response_mode") or "answer").strip().lower()
+
+    if mode == "clarify":
+        msg = (
+            f"{question.strip()}\n\n"
+            "Follow the skill document. If information is insufficient, "
+            "respond with a clarification instead of the primary deliverable."
+        )
+        if checks_hint:
+            msg += f" Include these verification tokens: {checks_hint}."
+        if rollout_hint:
+            msg += f" {rollout_hint}"
+        return msg
+
+    if mode == "reject":
+        msg = (
+            f"{question.strip()}\n\n"
+            "Follow the skill document. This input violates constraints — "
+            "refuse the primary deliverable and explain why."
+        )
+        if checks_hint:
+            msg += f" Include these verification tokens: {checks_hint}."
+        if rollout_hint:
+            msg += f" {rollout_hint}"
+        return msg
+
+    msg = (
         f"{question.strip()}\n\n"
-        f"请根据 Skill 生成完整会计凭证。输出必须包含：{checks_hint}。\n"
-        "格式：以「## 会计凭证」开头，表格含借/贷列，末尾写「借贷校验：平衡」。"
-        "代码工具最多查 2 轮，之后必须直接输出凭证。"
+        "Follow the skill document to complete this task."
     )
+    if checks_hint:
+        msg += f" Your answer must satisfy these verification checks: {checks_hint}."
+    if rollout_hint:
+        msg += f" {rollout_hint}"
+    msg += " Output only the final answer; do not paste the skill document."
+    msg += " Use code tools briefly if needed, then produce the final answer."
+    return msg
+
+
+def sanitize_skill_for_rollout(skill: str) -> str:
+    """去掉会诱导模型照抄的占位符示例，保留规则正文。"""
+    if not skill:
+        return skill
+    lines: list[str] = []
+    in_fence = False
+    for line in skill.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        lower = line.lower()
+        if any(m.lower() in lower for m in _PLACEHOLDER_MARKERS):
+            continue
+        lines.append(line)
+    cleaned = "\n".join(lines)
+    return cleaned if cleaned.strip() else skill
+
+
+def extract_rollout_answer(predicted: str) -> str:
+    """评分前截取主回答段落，去掉模型回显的 skill 正文。"""
+    if not predicted:
+        return predicted
+    m = re.search(r"^##\s+\S", predicted, re.MULTILINE)
+    if not m:
+        return predicted
+    text = predicted[m.start():]
+    for marker in ("\n# ", "\n---\n# "):
+        idx = text.find(marker, 10)
+        if idx > 20:
+            text = text[:idx]
+    return text.strip()
+
+
+# 兼容旧名
+extract_voucher_text = extract_rollout_answer
 
 
 def build_rollout_system_prompt(skill: str, *, code_tools_enabled: bool) -> str:
     parts = [
         "You are a domain expert agent. Follow the skill document to complete the user task.",
-        "When the task is journal-entry generation, output 「## 会计凭证」 with balanced debits/credits.",
+        "Output only the final deliverable required by the skill — never paste or repeat the skill document.",
+        "When the skill requires clarification or refusal for incomplete/invalid inputs, "
+        "follow those rules instead of producing the primary deliverable.",
     ]
     if code_tools_enabled:
         parts.append(
-            "You may use explore_symbol / get_code_context briefly (≤2 rounds) to read real "
-            "accounting rules from the project graph, then MUST output the final journal entry — "
-            "never end with only tool calls."
+            "You may use available code tools briefly to gather context from the project, "
+            "then MUST output the final answer — never end with only tool calls."
         )
-    parts.append(skill[:4000])
+    parts.append(sanitize_skill_for_rollout(skill)[:4000])
     return "\n".join(parts)
 
 
 def fallback_skill_voucher(question: str, checks: list[str], skill: str) -> str:
-    """无 LLM 输出时，从 skill 关键词拼最小凭证骨架（不伪造 check 关键词）。"""
+    """无 LLM 输出时，从 skill 与 checks 拼最小可评分骨架（不注入领域模板）。"""
+    checks = checks or []
     relevant_lines = [
         line for line in skill.split("\n")
         if any(c.lower() in line.lower() for c in checks)
     ]
     relevant_text = "\n".join(relevant_lines[:10]) if relevant_lines else skill[:300]
-    return (
-        f"## 会计凭证\n\n业务：{question.strip()}\n\n"
-        f"{relevant_text}\n\n"
-        "借贷校验：平衡"
-    )
+    checks_line = _format_checks(checks, limit=8)
+    parts = [f"Task: {question.strip()}"]
+    if checks_line:
+        parts.append(f"Checks: {checks_line}")
+    if relevant_text:
+        parts.append(relevant_text)
+    return "\n".join(parts)
 
 
 def fallback_predicted_from_tools(
@@ -58,25 +169,21 @@ def fallback_predicted_from_tools(
     expected_checks: list[str],
     skill: str,
 ) -> str:
-    """工具轮次用尽且 LLM 无文本时，从 tool 结果拼最小可评分凭证。"""
-    amount = _extract_amount(question)
+    """工具轮次用尽且 LLM 无文本时，从 tool 结果与 skill 拼最小可评分回答。"""
     evidence = _summarize_tool_snippets(tool_snippets)
     skill_lines = [
         ln.strip() for ln in skill.splitlines()
         if ln.strip() and not ln.strip().startswith("#")
     ][:6]
+    checks_line = _format_checks(expected_checks or [], limit=8)
 
-    lines = ["## 会计凭证", "", f"业务：{question.strip()}", ""]
-    lines.append("| 借/贷 | 科目 | 金额 |")
-    lines.append("| --- | --- | --- |")
-    lines.append(f"| 借 | （待匹配科目） | {amount or '—'} |")
-    lines.append(f"| 贷 | （待匹配科目） | {amount or '—'} |")
-    lines.append("")
-    lines.append("借贷校验：平衡")
+    lines = [f"Task: {question.strip()}", ""]
+    if checks_line:
+        lines.append(f"Checks: {checks_line}")
     if skill_lines:
-        lines.extend(["", "Skill 参考：", *skill_lines[:4]])
+        lines.extend(["", "Skill reference:", *skill_lines[:4]])
     if evidence:
-        lines.extend(["", "代码检索摘要：", evidence[:1200]])
+        lines.extend(["", "Code context:", evidence[:1200]])
     return "\n".join(lines)
 
 

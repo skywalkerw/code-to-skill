@@ -83,8 +83,18 @@ def create_llm_backend(backend_id: str | None = None) -> InteractionBackend:
     if backend_id is None:
         backend_id = os.environ.get("SKILL_LAB_LLM_BACKEND", "deepseek")
 
-    # 1. 尝试 config.yaml 内嵌配置（推荐）
-    for project_yaml in [Path("config.yaml"), Path("skill-lab.yaml")]:
+    # 1. 尝试项目 config（推荐）
+    config_candidates: list[Path] = []
+    env_config = os.environ.get("SKILL_LAB_CONFIG_PATH", "").strip()
+    if env_config:
+        config_candidates.append(Path(env_config))
+    config_candidates.extend([Path("config.yaml"), Path("skill-lab.yaml")])
+    seen: set[str] = set()
+    for project_yaml in config_candidates:
+        key = str(project_yaml.resolve()) if project_yaml.exists() else str(project_yaml)
+        if key in seen:
+            continue
+        seen.add(key)
         if project_yaml.exists():
             try:
                 from code_to_skill.cli.config_loader import load_config
@@ -151,8 +161,18 @@ def is_llm_available(backend_id: str | None = None) -> bool:
     if backend_id is None:
         backend_id = os.environ.get("SKILL_LAB_LLM_BACKEND", "deepseek")
 
-    # 1. 检查 config.yaml
-    for project_yaml in [Path("config.yaml"), Path("skill-lab.yaml")]:
+    # 1. 检查项目 config
+    config_candidates: list[Path] = []
+    env_config = os.environ.get("SKILL_LAB_CONFIG_PATH", "").strip()
+    if env_config:
+        config_candidates.append(Path(env_config))
+    config_candidates.extend([Path("config.yaml"), Path("skill-lab.yaml")])
+    seen: set[str] = set()
+    for project_yaml in config_candidates:
+        key = str(project_yaml.resolve()) if project_yaml.exists() else str(project_yaml)
+        if key in seen:
+            continue
+        seen.add(key)
         if project_yaml.exists():
             try:
                 from code_to_skill.cli.config_loader import load_config
