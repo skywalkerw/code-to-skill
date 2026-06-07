@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Any
+
+from .reflect_helpers import is_graph_searchable_check
 
 
 def parse_context_ref(ref: str) -> tuple[str, str]:
@@ -16,6 +19,53 @@ def parse_context_ref(ref: str) -> tuple[str, str]:
         path, symbol = ref.rsplit("::", 1)
         return path.strip(), symbol.strip()
     return ref, ""
+
+
+def graph_queries_from_failure(failure: dict) -> list[str]:
+    """从失败 rollout 推断通用图谱搜索词（无项目硬编码）。"""
+    queries: list[str] = []
+    question = (failure.get("question") or "").strip()
+
+    for check in failure.get("missed_checks", []):
+        check = (check or "").strip()
+        if is_graph_searchable_check(check):
+            queries.append(check)
+
+    if question:
+        queries.append(question[:120])
+
+    queries.extend(extract_symbol_hints_from_question(question))
+
+    seen: set[str] = set()
+    out: list[str] = []
+    for q in queries:
+        q = q.strip()
+        if q and q not in seen:
+            seen.add(q)
+            out.append(q)
+    return out[:6]
+
+
+def trace_pairs_from_failure(failure: dict) -> list[tuple[str, str]]:
+    """从 benchmark context_refs 推断 trace_symbol 的 (from, to) 符号对。"""
+    pairs: list[tuple[str, str]] = []
+
+    for ref in failure.get("context_refs") or []:
+        path, symbol = parse_context_ref(ref)
+        if not symbol:
+            continue
+        stem = os.path.splitext(os.path.basename(path))[0]
+        if stem and stem != symbol:
+            pairs.append((stem, symbol))
+
+    seen: set[tuple[str, str]] = set()
+    out: list[tuple[str, str]] = []
+    for a, b in pairs:
+        key = (a.strip(), b.strip())
+        if key[0] and key[1] and key not in seen:
+            seen.add(key)
+            out.append(key)
+    return out[:4]
 
 
 def build_reflect_code_evidence(
@@ -59,7 +109,6 @@ def build_reflect_code_evidence(
                     block_parts.append(
                         _format_explore_card(data, hint=file_path)
                     )
-                    import os
                     stem = os.path.splitext(os.path.basename(file_path))[0] if file_path else ""
                     chain = _fetch_trace_summary(
                         code_tools,
@@ -88,9 +137,7 @@ def build_reflect_code_evidence(
                     )
 
         if len(block_parts) <= 2:
-            from .accounting_linker import graph_queries_for_failure
-
-            for gq in graph_queries_for_failure(result):
+            for gq in graph_queries_from_failure(result):
                 raw = code_tools.execute({
                     "function": {
                         "name": "get_code_context",
@@ -100,16 +147,14 @@ def build_reflect_code_evidence(
                 data = json.loads(raw)
                 for blk in data.get("blocks", [])[:1]:
                     block_parts.append(
-                        f"**图谱[{gq}]** `{blk.get('symbol')}` @ {blk.get('file_path')}:\n"
+                        f"**Graph[{gq}]** `{blk.get('symbol')}` @ {blk.get('file_path')}:\n"
                         f"```\n{(blk.get('content') or '')[:800]}\n```"
                     )
                 if len(block_parts) > 2:
                     break
 
         if len(block_parts) <= 3:
-            from .accounting_linker import trace_pairs_for_failure
-
-            for from_sym, to_sym in trace_pairs_for_failure(result):
+            for from_sym, to_sym in trace_pairs_from_failure(result):
                 chain = _fetch_trace_summary(
                     code_tools, from_symbol=from_sym, to_symbol=to_sym,
                 )
@@ -230,10 +275,9 @@ def build_rollout_item_context(item: dict, code_tools: Any, *, max_chars: int = 
             data = json.loads(raw)
             if not data.get("error") and data.get("source"):
                 chunk = (
-                    f"[代码参考 {symbol_hint} @ {data.get('file_path', file_path)}]\n"
+                    f"[code ref {symbol_hint} @ {data.get('file_path', file_path)}]\n"
                     f"{data['source'][:max_chars // 2]}"
                 )
-                import os
                 stem = os.path.splitext(os.path.basename(file_path))[0]
                 chain = _fetch_trace_summary(
                     code_tools,
@@ -255,11 +299,9 @@ def build_rollout_item_context(item: dict, code_tools: Any, *, max_chars: int = 
             data = json.loads(raw)
             if data.get("content"):
                 parts.append(
-                    f"[文件 {file_path}]\n{data['content'][:max_chars // 2]}"
+                    f"[file {file_path}]\n{data['content'][:max_chars // 2]}"
                 )
             else:
-                import os
-
                 stem = os.path.splitext(os.path.basename(file_path))[0]
                 if stem:
                     raw = code_tools.execute({
@@ -283,14 +325,14 @@ def build_rollout_item_context(item: dict, code_tools: Any, *, max_chars: int = 
                         ex = json.loads(explore_raw)
                         if ex.get("source"):
                             parts.append(
-                                f"[图谱 {top.get('name')} @ {top.get('file_path')}]\n"
+                                f"[graph {top.get('name')} @ {top.get('file_path')}]\n"
                                 f"{ex['source'][:max_chars // 2]}"
                             )
 
     if not parts:
         return ""
     body = "\n\n".join(parts)
-    return f"\n\n--- 项目代码参考（生成凭证前可对照） ---\n{body[:max_chars]}\n"
+    return f"\n\n--- Project code reference (consult before final answer) ---\n{body[:max_chars]}\n"
 
 
 def extract_symbol_hints_from_question(question: str) -> list[str]:

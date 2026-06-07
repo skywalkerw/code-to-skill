@@ -1,11 +1,14 @@
-"""框架专用提取器：Spring / MyBatis / Fineract 模式。"""
+"""框架元数据提取：通用 Spring/MyBatis + 可配置自定义模式。"""
 from __future__ import annotations
 
 import os
 import re
+from typing import Mapping
 
 from .types import CodeGraph, GraphNode, GraphEdge, NodeKind, EdgeKind
 
+# framework_name -> substring -> role（由 project.code_graph.custom_patterns 注入）
+CustomFrameworkPatterns = dict[str, dict[str, str]]
 
 _SPRING_ANNOTATIONS: dict[str, NodeKind] = {
     "@Service": NodeKind.class_,
@@ -34,24 +37,55 @@ _SPRING_FEATURES = {
 
 _MYBATIS_ANNOTATIONS = ("@Mapper", "@Select", "@Insert", "@Update", "@Delete")
 
-_FINERACT_PATTERNS = {
-    "CommandHandler": "command_handler",
-    "ReadPlatformService": "read_service",
-    "WritePlatformService": "write_service",
-    "AccountingProcessor": "accounting_processor",
-    "ApiResource": "api_resource",
-}
+
+def merge_custom_patterns(
+    project_patterns: CustomFrameworkPatterns | None,
+    repo_patterns: CustomFrameworkPatterns | None = None,
+) -> CustomFrameworkPatterns:
+    """合并 project 级与 repo 级自定义框架模式（repo 覆盖同名 framework 的 pattern）。"""
+    merged: CustomFrameworkPatterns = {
+        name: dict(patterns)
+        for name, patterns in (project_patterns or {}).items()
+    }
+    for name, patterns in (repo_patterns or {}).items():
+        merged.setdefault(name, {}).update(patterns)
+    return merged
 
 
-def extract_spring_metadata(
+def parse_custom_patterns(raw: object) -> CustomFrameworkPatterns:
+    """解析 YAML ``custom_patterns`` / ``framework_patterns`` 段。"""
+    if not raw:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+
+    out: CustomFrameworkPatterns = {}
+    for framework_name, patterns in raw.items():
+        if not isinstance(framework_name, str) or not framework_name.strip():
+            continue
+        if not isinstance(patterns, dict):
+            continue
+        parsed: dict[str, str] = {}
+        for pattern, role in patterns.items():
+            if isinstance(pattern, str) and pattern.strip() and isinstance(role, str) and role.strip():
+                parsed[pattern.strip()] = role.strip()
+        if parsed:
+            out[framework_name.strip()] = parsed
+    return out
+
+
+def extract_framework_metadata(
     file_paths: list[str],
     repo_root: str,
     graph: CodeGraph | None = None,
+    *,
+    custom_patterns: CustomFrameworkPatterns | None = None,
 ) -> tuple[list[GraphNode], list[GraphEdge]]:
-    """扫描 Java 文件的 Spring/MyBatis 注解，补充节点和边。"""
+    """扫描 Java 文件的 Spring/MyBatis 注解，并应用自定义框架模式。"""
     nodes: list[GraphNode] = []
     edges: list[GraphEdge] = []
     seen_edges: set[tuple[str, str, str]] = set()
+    custom_patterns = custom_patterns or {}
 
     name_to_id: dict[str, list[str]] = {}
     if graph:
@@ -75,7 +109,6 @@ def extract_spring_metadata(
 
         for annotation, kind in _SPRING_ANNOTATIONS.items():
             aname = annotation.lstrip("@")
-            # 注解挂在真实类上时不再建同名伪节点（避免污染 Component/Path 等符号搜索）
             if class_name and aname in (
                 "Component", "Service", "Repository", "Controller", "RestController",
                 "Path", "Configuration", "ConfigurationProperties",
@@ -118,19 +151,10 @@ def extract_spring_metadata(
                 metadata={"framework": "mybatis", "role": "mapper"},
             ))
 
-        for pattern, role in _FINERACT_PATTERNS.items():
-            if pattern in content:
-                node_id = f"{rel_path}::Fineract::{role}"
-                nodes.append(GraphNode(
-                    id=node_id,
-                    kind=NodeKind.class_,
-                    name=role,
-                    file_path=rel_path,
-                    language="java",
-                    metadata={"framework": "fineract", "role": role},
-                ))
+        nodes.extend(
+            _extract_custom_framework_nodes(content, rel_path, package, custom_patterns)
+        )
 
-        # @Transactional → method references
         for method_name in re.findall(
             r"@Transactional\b[^;]*?\n\s*(?:public|private|protected)\s+[\w<>\[\],\s]+?\s+(\w+)\s*\([^)]*\)",
             content, re.DOTALL,
@@ -139,7 +163,6 @@ def extract_spring_metadata(
                       f"{rel_path}::{method_name}", f"{rel_path}::Spring::transactional",
                       EdgeKind.references, 0.85)
 
-        # @Autowired 字段注入 → references 边（支持注解与字段分行）
         for inj_type in re.findall(
             r"@Autowired\b(?:\s*\n\s*)?(?:private|protected|public)?\s*([\w.]+)\s+\w+\s*;",
             content,
@@ -149,7 +172,6 @@ def extract_spring_metadata(
             for target in targets[:2]:
                 _add_edge(edges, seen_edges, owner, target, EdgeKind.references, 0.75)
 
-        # 构造器注入：public Foo(Bar bar, Baz baz)
         if class_name:
             ctor = re.search(
                 rf"public\s+{re.escape(class_name)}\s*\(([^)]{{0,500}})\)",
@@ -163,7 +185,6 @@ def extract_spring_metadata(
                                   f"{rel_path}::{class_name}", target,
                                   EdgeKind.references, 0.8)
 
-        # @Bean 方法 → config 节点连到返回类型
         for ret_type, method_name in re.findall(
             r"@Bean\b[^;]*?\n\s*(?:public|protected)\s+([\w.]+)\s+(\w+)\s*\(",
             content, re.DOTALL,
@@ -176,6 +197,48 @@ def extract_spring_metadata(
                       f"{rel_path}::{method_name}", bean_id, EdgeKind.references, 0.65)
 
     return nodes, edges
+
+
+def extract_spring_metadata(
+    file_paths: list[str],
+    repo_root: str,
+    graph: CodeGraph | None = None,
+    *,
+    custom_patterns: CustomFrameworkPatterns | None = None,
+) -> tuple[list[GraphNode], list[GraphEdge]]:
+    """兼容旧名；等价于 :func:`extract_framework_metadata`。"""
+    return extract_framework_metadata(
+        file_paths, repo_root, graph, custom_patterns=custom_patterns,
+    )
+
+
+def _extract_custom_framework_nodes(
+    content: str,
+    rel_path: str,
+    package: str,
+    custom_patterns: Mapping[str, Mapping[str, str]],
+) -> list[GraphNode]:
+    nodes: list[GraphNode] = []
+    for framework_name, patterns in custom_patterns.items():
+        for pattern, role in patterns.items():
+            if pattern not in content:
+                continue
+            node_id = f"{rel_path}::{framework_name}::{role}"
+            nodes.append(GraphNode(
+                id=node_id,
+                kind=NodeKind.class_,
+                name=role,
+                file_path=rel_path,
+                language="java",
+                qualified_name=f"{package}.{role}" if package else role,
+                metadata={
+                    "framework": framework_name,
+                    "role": role,
+                    "pattern": pattern,
+                    "custom": True,
+                },
+            ))
+    return nodes
 
 
 def _extract_package(content: str) -> str:

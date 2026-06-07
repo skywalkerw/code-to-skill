@@ -23,6 +23,7 @@ def test_evaluate(
     best_skill: str,
     test_items: list[dict],
     adapter: Any = None,
+    target_backend: Any = None,
     output_dir: str = "",
 ) -> dict:
     """在 held-out test split 上做最终评估。
@@ -31,6 +32,7 @@ def test_evaluate(
         best_skill: 最优 Skill 文档
         test_items: test split 的 benchmark items
         adapter: EnvAdapter 实例
+        target_backend: rollout 后端（与主训练 target 一致）
         output_dir: 产物输出目录
 
     Returns:
@@ -48,7 +50,9 @@ def test_evaluate(
     logger.info("[TestEval] Evaluating best skill on %d test items", len(test_items))
 
     if adapter:
-        results = adapter.rollout(best_skill, test_items)
+        results = adapter.rollout(
+            best_skill, test_items, target_backend=target_backend,
+        )
     else:
         # Fallback: use scoring directly with simple keyword rule
         from .scoring import score_rollout_result

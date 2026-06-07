@@ -9,13 +9,45 @@ import pytest
 from code_to_skill.skillopt_loop.code_evidence import (
     _fetch_trace_summary,
     build_reflect_code_evidence,
+    graph_queries_from_failure,
     parse_context_ref,
+    trace_pairs_from_failure,
 )
 from code_to_skill.codegraph_mcp.handler import CodeToolsHandler, CodeRepoConfig
 
 
 def test_parse_context_ref():
     assert parse_context_ref("a/b/Foo.java#bar") == ("a/b/Foo.java", "bar")
+
+
+def test_graph_queries_from_failure_skips_short_verification_tokens():
+    qs = graph_queries_from_failure({
+        "question": "向客户发放贷款 50000.00",
+        "missed_checks": ["借", "贷", "会计", "金额", "Charge"],
+    })
+    assert "借" not in qs
+    assert "贷" not in qs
+    assert "会计" not in qs
+    assert "金额" not in qs
+    assert "Charge" in qs
+    assert any("发放贷款" in q for q in qs)
+
+
+def test_graph_queries_from_failure_keeps_code_like_tokens():
+    qs = graph_queries_from_failure({
+        "question": "task",
+        "missed_checks": ["会计凭证", "inventory", "无人认领负债"],
+    })
+    assert "会计凭证" not in qs
+    assert "inventory" in qs
+    assert "无人认领负债" in qs
+
+
+def test_trace_pairs_from_context_ref():
+    pairs = trace_pairs_from_failure({
+        "context_refs": ["com/example/FooService.java#processPayment"],
+    })
+    assert ("FooService", "processPayment") in pairs
 
 
 def test_fetch_trace_summary(call_chain_graph_fixture):

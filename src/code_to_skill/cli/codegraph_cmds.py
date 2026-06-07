@@ -28,7 +28,7 @@ _EPILOG = """
   skill-lab codegraph explore JournalEntryWritePlatformService
 
   # 调用关系
-  skill-lab codegraph callers AccountingProcessor --depth 3
+  skill-lab codegraph callers OrderService --depth 3
   skill-lab codegraph trace from --to to_symbol
 
   # 指定 run 目录下的 graph.db
@@ -374,7 +374,7 @@ def cmd_search(
 
     示例:
       skill-lab codegraph search "JournalEntry"
-      skill-lab codegraph search "kind:class Accounting" --limit 5 --format brief
+      skill-lab codegraph search "kind:class Service" --limit 5 --format brief
     """
     g = _graph_from_opts(config_path, db, repo_root, repo, run_id, fmt)
     emit_result(g.registry().search(query, limit=limit), g.fmt)
@@ -466,7 +466,7 @@ def cmd_source(
     仅读取符号对应源码片段（轻量版 explore）。
 
     示例:
-      skill-lab codegraph source AccountingProcessor --format brief
+      skill-lab codegraph source OrderService --format brief
     """
     g = _graph_from_opts(config_path, db, repo_root, repo, run_id, fmt)
     emit_result(g.registry().get_symbol_source(symbol, max_lines=max_lines), g.fmt)

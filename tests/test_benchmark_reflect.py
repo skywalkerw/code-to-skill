@@ -9,7 +9,10 @@ from code_to_skill.skillopt_loop.edit_validator import filter_valid_edits, valid
 from code_to_skill.skillopt_loop.llm_components import (
     _rule_based_patches,
     _rank_edits_by_coverage,
-    _skill_compact_for_reflect,
+)
+from code_to_skill.skillopt_loop.reflect_helpers import (
+    RULE_SECTION_HEADING_PRIMARY,
+    skill_compact_for_reflect,
 )
 from code_to_skill.skillopt_loop.scoring import score_rollout_result
 from code_to_skill.skillopt_loop.types import EditOp
@@ -95,22 +98,22 @@ class TestEditValidator:
             target="### 2.3",
             content="- 输出必须包含关键词「库存」和「银行」",
         )
-        ok, _ = validate_edit(edit, "# Skill\n### 2.3 生成会计凭证")
+        ok, _ = validate_edit(edit, "# Skill\n### Output format")
         assert ok
 
     def test_reject_all_bullets_already_in_skill(self):
         skill = (
-            "# Skill\n### 分录输出要求（自动生成）\n\n"
-            "- 分录表格须包含借方行，「借贷」列标注「借」\n"
-            "- 分录表格须包含贷方行，「借贷」列标注「贷」"
+            f"# Skill\n{RULE_SECTION_HEADING_PRIMARY}\n\n"
+            "- Output must satisfy verification check «借»\n"
+            "- Output must satisfy verification check «贷»"
         )
         edit = EditOp(
             op="insert_after",
-            target="### 分录输出要求（自动生成）",
+            target=RULE_SECTION_HEADING_PRIMARY,
             content=(
-                "### 分录输出要求（自动生成）\n\n"
-                "- 分录表格须包含借方行，「借贷」列标注「借」\n"
-                "- 分录表格须包含贷方行，「借贷」列标注「贷」"
+                f"{RULE_SECTION_HEADING_PRIMARY}\n\n"
+                "- Output must satisfy verification check «借»\n"
+                "- Output must satisfy verification check «贷»"
             ),
         )
         ok, reason = validate_edit(edit, skill)
@@ -144,11 +147,14 @@ class TestTokenBudgets:
 
 class TestReflectPrompt:
     def test_compact_skill_omits_examples(self):
-        skill = "# Title\n## 一、核心任务\nlong intro\n### 2.3 生成会计凭证\nrules here\n## 三、必须遵守的约束\nconstraints"
-        compact = _skill_compact_for_reflect(skill)
-        assert "核心任务" not in compact
-        assert "2.3" in compact
-        assert "约束" in compact
+        skill = (
+            "# Title\n## Intro\nlong intro\n"
+            "### Output format\nrules here\n## Constraints\nconstraints"
+        )
+        compact = skill_compact_for_reflect(skill)
+        assert "long intro" not in compact
+        assert "Output format" in compact
+        assert "Constraints" in compact
 
 
 class TestRuleBasedPatches:
@@ -160,15 +166,15 @@ class TestRuleBasedPatches:
             "missed_checks": ["库存", "银行", "100.00"],
             "expected_checks": ["会计凭证", "借", "贷", "库存", "银行", "100.00"],
         }]
-        skill = "# Skill\n### 2.3 生成会计凭证\n\n## 六、验证检查清单"
+        skill = "# Skill\n## Workflow\n\n### Output format"
         patches = _rule_based_patches(results, skill)
         assert patches
         edit = patches[0]["edits"][0]
         assert "库存" in edit["content"]
         assert "银行" in edit["content"]
-        assert "输出必须包含关键词" not in edit["content"]
+        assert "verification check" in edit["content"]
         assert edit["op"] == "insert_after"
-        assert edit["target"] == "### 2.3 生成会计凭证"
+        assert edit["target"] == "## Workflow"
         assert "# Verify" not in edit["content"]
 
     def test_skips_rules_already_in_skill_and_appends_new(self):
@@ -180,18 +186,17 @@ class TestRuleBasedPatches:
             "expected_checks": ["会计凭证", "借", "贷", "库存", "银行"],
         }]
         skill = (
-            "# Skill\n### 2.3 生成会计凭证\n\n"
-            "### 分录输出要求（自动生成）\n\n"
-            "- 输出必须以「## 会计凭证」为标题\n"
-            "- 分录表格须包含借方行，「借贷」列标注「借」"
+            f"# Skill\n## Workflow\n\n{RULE_SECTION_HEADING_PRIMARY}\n\n"
+            "- Output must satisfy verification check «会计凭证»\n"
+            "- Output must satisfy verification check «借»"
         )
         patches = _rule_based_patches(results, skill)
         assert patches
         edit = patches[0]["edits"][0]
         assert "库存" in edit["content"]
-        assert "输出必须以" not in edit["content"]
+        assert "verification check «会计凭证»" not in edit["content"]
         assert edit["op"] == "insert_after"
-        assert "分录表格须包含借方行" in edit["target"]
+        assert "verification check" in edit["target"] or edit["target"] == "## Workflow"
 
     def test_all_rules_present_emits_task_hint(self):
         results = [{
@@ -202,13 +207,13 @@ class TestRuleBasedPatches:
             "expected_checks": ["库存", "银行"],
         }]
         skill = (
-            "# Skill\n### 分录输出要求（自动生成）\n\n"
-            "- 购入/存货交易：借方科目名称须含「库存」\n"
-            "- 付款类交易：贷方科目名称须含「银行」"
+            f"# Skill\n{RULE_SECTION_HEADING_PRIMARY}\n\n"
+            "- Output must satisfy verification check «库存»\n"
+            "- Output must satisfy verification check «银行»"
         )
         patches = _rule_based_patches(results, skill)
         assert patches
-        assert "针对journal_entry" in patches[0]["edits"][0]["content"]
+        assert "task_type=journal_entry" in patches[0]["edits"][0]["content"]
 
     def test_parse_reflect_from_content(self):
         from code_to_skill.skillopt_loop.llm_components import _parse_reflect_response
@@ -255,7 +260,7 @@ class TestEditTraceability:
             "missed_checks": ["库存", "银行"],
             "expected_checks": ["库存", "银行"],
         }]
-        skill = "# Skill\n### 2.3 生成会计凭证"
+        skill = "# Skill\n## Workflow\n### Output format"
         patches = _rule_based_patches(results, skill)
         edit = patches[0]["edits"][0]
         assert "jv_purchase_001" in edit["related_task_ids"]
@@ -265,7 +270,7 @@ class TestEditTraceability:
     def test_infer_traceability_from_content(self):
         from code_to_skill.skillopt_loop.edit_traceability import infer_edit_traceability
 
-        edit = {"content": "- 购入/存货交易：借方科目名称须含「库存」"}
+        edit = {"content": "- Output must satisfy verification check «库存»"}
         failed = [
             {"id": "a", "missed_checks": ["库存", "银行"]},
             {"id": "b", "missed_checks": ["贷"]},

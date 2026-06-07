@@ -143,6 +143,15 @@ project:
   initial_skill: test-data/initial_skill.md
   benchmark: test-data/benchmarks/fineract
 
+  code_graph:
+    custom_patterns:
+      fineract:
+        CommandHandler: command_handler
+        ReadPlatformService: read_service
+        WritePlatformService: write_service
+        AccountingProcessor: accounting_processor
+        ApiResource: api_resource
+
   sources:
     repos:
       - id: fineract

@@ -164,6 +164,8 @@ class TestM4Pipeline:
         assert len(result["history"]) > 0
         assert (tmp_path / "output" / "best_skill.md").exists()
         assert (tmp_path / "output" / "history.json").exists()
+        assert (tmp_path / "output" / "training_curve.json").exists()
+        assert (tmp_path / "output" / "training_curve.csv").exists()
 
 
 class TestM3Pipeline:

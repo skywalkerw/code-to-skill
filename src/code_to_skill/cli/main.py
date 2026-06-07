@@ -595,6 +595,7 @@ def run_all(
         click.echo("📊 [1/4] 构建代码图谱...")
         if p.repos:
             from code_to_skill.code_graph import run_code_graph_pipeline
+            from .graph_config import resolve_framework_patterns
             for repo in p.repos:
                 m1 = run_code_graph_pipeline(
                     repo_root=repo.path,
@@ -606,6 +607,7 @@ def run_all(
                     use_cache=s.code_graph.get("use_cache", True),
                     repo_id=repo.id,
                     snapshot_ref=repo.ref,
+                    custom_patterns=resolve_framework_patterns(p, repo),
                 )
                 total_nodes += len(m1['graph'].nodes)
                 total_edges += len(m1['graph'].edges)
@@ -702,6 +704,7 @@ def run_code_graph(repo: str | None, config_path: str):
         click.echo("❌ 未指定仓库")
         return
     from code_to_skill.code_graph import run_code_graph_pipeline
+    from .graph_config import resolve_framework_patterns
     for r in targets:
         m1 = run_code_graph_pipeline(
             repo_root=r.path,
@@ -711,6 +714,7 @@ def run_code_graph(repo: str | None, config_path: str):
             use_cache=s.code_graph.get("use_cache", True),
             repo_id=r.id,
             snapshot_ref=r.ref,
+            custom_patterns=resolve_framework_patterns(p, r),
         )
         click.echo(f"✅ {r.id}: {len(m1['graph'].nodes)} nodes, {len(m1['graph'].edges)} edges")
 
@@ -1024,16 +1028,27 @@ def eval_skill(run_id: str, split: str, config_path: str, benchmark: str | None)
         return
 
     from code_to_skill.skillopt_loop.envs import DEFAULTAdapter
+    from code_to_skill.skillopt_loop.separation import BackendManager, resolve_skillopt_backend_ids
     from code_to_skill.skillopt_loop.test_eval import test_evaluate
 
     eval_dir = Path("runs") / run_id / "eval"
-    adapter = DEFAULTAdapter(use_llm=True)
+    skillopt = cfg.settings.skillopt.model_dump() if hasattr(cfg.settings.skillopt, "model_dump") else dict(cfg.settings.skillopt or {})
+    mp_dump = cfg.settings.model_provider.model_dump() if hasattr(cfg.settings.model_provider, "model_dump") else dict(cfg.settings.model_provider or {})
+    rollout_id, optimizer_id = resolve_skillopt_backend_ids(skillopt, mp_dump)
+    backend_mgr = BackendManager.from_skillopt(
+        use_llm_rollout=_skillopt_get(skillopt, "use_llm_rollout", default=True),
+        rollout_backend_id=rollout_id,
+        optimizer_backend_id=optimizer_id,
+        model_provider=mp_dump,
+    )
+    adapter = DEFAULTAdapter(use_llm=_skillopt_get(skillopt, "use_llm_rollout", default=True))
     adapter.setup()
 
     report = test_evaluate(
         skill,
         items,
         adapter=adapter,
+        target_backend=backend_mgr.target,
         output_dir=str(eval_dir),
     )
     report_path = eval_dir / "test_report.json"
@@ -1093,7 +1108,7 @@ def publish(run_id: str, target: str | None):
             click.echo(f"   门禁: score={last.get('selection_score',0):.3f}, action={last.get('gate_action','?')}")
 
     if gate_ok:
-        target_dir = Path(target) if target else Path("skills/fineract-agent")
+        target_dir = Path(target) if target else Path("skills/agent")
         target_dir.mkdir(parents=True, exist_ok=True)
 
         import shutil

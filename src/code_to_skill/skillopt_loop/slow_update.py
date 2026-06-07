@@ -27,6 +27,7 @@ def run_slow_update(
     curr_skill: str,
     sampled_items: list[dict],
     adapter: Any = None,
+    target_backend: Any = None,
     optimizer_backend: Any = None,
     evaluate_fn: Any = None,
 ) -> dict:
@@ -37,6 +38,7 @@ def run_slow_update(
         curr_skill: 当前 epoch 最后的 Skill（S_e）
         sampled_items: 从 train split 抽样的任务列表（默认 20 条）
         adapter: EnvAdapter 实例（用于 rollout）
+        target_backend: rollout 后端（与主训练 target 一致，如 deepseek-flash）
         optimizer_backend: optimizer 后端
         evaluate_fn: 评分函数 (skill, items) → float
 
@@ -57,8 +59,12 @@ def run_slow_update(
 
     # Step 1: Double rollout — 同一批任务分别用两个 Skill
     logger.info("[SlowUpdate] Evaluating %d items with prev_skill and curr_skill", len(sampled_items))
-    prev_results = adapter.rollout(prev_skill, sampled_items)
-    curr_results = adapter.rollout(curr_skill, sampled_items)
+    prev_results = adapter.rollout(
+        prev_skill, sampled_items, target_backend=target_backend,
+    )
+    curr_results = adapter.rollout(
+        curr_skill, sampled_items, target_backend=target_backend,
+    )
 
     # Step 2: Build comparison pairs
     pairs = _build_comparison_pairs(prev_results, curr_results)

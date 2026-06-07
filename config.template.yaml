@@ -170,13 +170,91 @@ project:
   benchmark: ""
   # benchmark: test-data/benchmarks/fineract
 
+  # ── 代码图谱扩展（目标项目专用，非框架内置）────────────────
+  # Spring / MyBatis 由框架自动识别，无需在此配置。
+  # custom_patterns 用于补充「项目约定命名」：扫描 .java 全文，命中子串则打标签节点。
+  #
+  # 结构：
+  #   custom_patterns:
+  #     <框架名>:           # 任意标签，写入节点 metadata.framework
+  #       <源码子串>: <角色> # 子串匹配（区分大小写），角色写入 metadata.role
+  #
+  # 合并规则：project.code_graph.custom_patterns 为全局默认；
+  # repos[].framework_patterns 可追加或覆盖同名 framework 下的 pattern。
+  #
+  # ── 什么时候要配置 ────────────────────────────────────────
+  # 需要配置（建议填写 custom_patterns）：
+  #   - 目标项目有稳定的「架构命名约定」，例如 Fineract 的 CommandHandler、
+  #     AccountingProcessor、ApiResource，或自研的 *Handler / *Processor / *Gateway
+  #   - 希望代码图谱（M1）按角色分层打标签，便于 CodeGraph 检索和人工排查
+  #   - 多仓库且不同 repo 需要不同的 pattern 集合（用 repos[].framework_patterns）
+  #
+  # 不需要配置（保持 custom_patterns: {} 即可）：
+  #   - 普通 Spring Boot + MyBatis 项目，内置识别已覆盖 @Service、@Mapper 等
+  #   - 主要依赖 benchmark items.json 里的 context_refs 指向具体类/方法
+  #   - 只跑 SkillOpt、且已有 graph.db，不重建代码图谱
+  #
+  # 配置后的作用（M1 建图阶段）：
+  #   - 命中子串的 .java 文件会多出带 framework/role 的标签节点
+  #   - 日志可能出现：[M1] 自定义框架节点: N
+  #
+  # 不直接影响：
+  #   - benchmark 的 expected_checks / rollout 评分
+  #   - reflect 补丁内容、gate 门禁、skill 正文
+  #   - 不会自动连调用边；精确定位仍靠 AST 解析节点 + benchmark context_refs
+  #
+  # 修改 custom_patterns 后需重新建图：
+  #   skill-lab run code-graph --config-path config.yaml
+  #   或完整流水线 skill-lab run --config-path config.yaml
+  code_graph:
+    custom_patterns: {}
+
+    # ── 示例 A：Fineract（取消下行注释并删掉上面的 `{}` 即可启用）────
+    # custom_patterns:
+    #   fineract:
+    #     CommandHandler: command_handler
+    #     ReadPlatformService: read_service
+    #     WritePlatformService: write_service
+    #     AccountingProcessor: accounting_processor
+    #     ApiResource: api_resource
+
+    # ── 示例 B：通用业务项目（支付网关命名约定）────────────────
+    # custom_patterns:
+    #   payment:
+    #     PaymentGateway: payment_gateway
+    #     RefundHandler: refund_handler
+    #     SettlementBatch: settlement_batch
+
   sources:
     repos:
+      # ── 示例：单仓库 + 全局 custom_patterns ─────────────────
       # - id: fineract
       #   path: /path/to/fineract
+      #   ref: develop
+      #   include:
+      #     - "fineract-provider/src/main/java/org/apache/fineract/accounting/**"
+      #     - "fineract-provider/src/main/java/org/apache/fineract/portfolio/**"
+      #   exclude:
+      #     - "**/test/**"
+      #     - "**/target/**"
+
+      # ── 示例：多仓库时按 repo 追加/覆盖 framework_patterns ──
+      # - id: fineract-core
+      #   path: /path/to/fineract
+      #   ref: develop
+      #   include: ["fineract-provider/**"]
+      #   exclude: ["**/test/**"]
+      #   framework_patterns:
+      #     fineract:
+      #       AccountingProcessor: accounting_processor
+      #
+      # - id: other-module
+      #   path: /path/to/other-module
       #   ref: main
-      #   include: ["src/", "fineract-provider/"]
-      #   exclude: ["**/test/**", "**/*.spec.*"]
+      #   include: ["src/main/java/**"]
+      #   framework_patterns:
+      #     fineract:
+      #       ApiResource: rest_api_resource   # 覆盖 project 级同名 pattern
     docs:
       # - id: fin-technical
       #   path: docs/fineract/technical.md

@@ -1,6 +1,7 @@
 """证据对齐：跨代码/文档来源匹配同一概念的 atom。"""
 from __future__ import annotations
 
+from .keywords import extract_alignment_tokens
 from .types import SkillAtom, SourceRef
 
 
@@ -22,50 +23,38 @@ def align_atoms(atoms: list[SkillAtom]) -> list[SkillAtom]:
         group = [a]
         used.add(i)
 
-        # 寻找相同 kind + 高关键词重叠的姐妹 atom
-        a_keywords = _extract_keywords(a.claim)
+        a_keywords = _atom_keywords(a)
         for j, b in enumerate(atoms):
             if j in used or j == i:
                 continue
             if a.kind != b.kind:
                 continue
 
-            b_keywords = _extract_keywords(b.claim)
-            overlap = a_keywords & b_keywords
-            if len(overlap) >= 2:  # 至少2个共同关键词
+            overlap = a_keywords & _atom_keywords(b)
+            if len(overlap) >= 2:
                 group.append(b)
                 used.add(j)
 
         if len(group) == 1:
             aligned.append(a)
         else:
-            # 合并 group
-            merged = _merge_group(group)
-            aligned.append(merged)
+            aligned.append(_merge_group(group))
 
     return aligned
 
 
-def _extract_keywords(text: str) -> set[str]:
-    """从文本提取关键术语。"""
-    keywords = {
-        "审计", "audit", "journal", "利率", "interest", "accrual", "计提",
-        "摊销", "amortization", "费用", "charge", "fee", "penalty", "罚金",
-        "重试", "retry", "幂等", "idempotency", "transaction", "事务",
-        "定时", "scheduled", "cron", "job", "调度",
-        "loan", "贷款", "savings", "储蓄", "deposit", "存款",
-        "transfer", "转账", "interop", "互操作",
-        "command", "handler", "validator", "validate",
-    }
-    lower = text.lower()
-    return {kw for kw in keywords if kw.lower() in lower}
+def _atom_keywords(atom: SkillAtom) -> set[str]:
+    parts = [atom.claim, atom.action, atom.negative_rule, *atom.checks]
+    tokens: set[str] = set()
+    for part in parts:
+        tokens.update(extract_alignment_tokens(part or ""))
+    return tokens
 
 
 def _merge_group(group: list[SkillAtom]) -> SkillAtom:
     """合并一组同概念原子。"""
     base = group[0]
 
-    # 合并 source_refs
     seen_sources: set[tuple[str, str]] = set()
     for s in base.source_refs:
         seen_sources.add((s.type, s.id))
@@ -76,7 +65,6 @@ def _merge_group(group: list[SkillAtom]) -> SkillAtom:
                 base.source_refs.append(s)
                 seen_sources.add(key)
 
-    # 合并 checks
     seen_checks = set(base.checks)
     for a in group[1:]:
         for c in a.checks:
@@ -84,12 +72,10 @@ def _merge_group(group: list[SkillAtom]) -> SkillAtom:
                 base.checks.append(c)
                 seen_checks.add(c)
 
-    # 提升置信度（跨文件证据）
     n_files = len({s.id for s in base.source_refs})
     bonus = min(0.15, (n_files - 1) * 0.05)
     base.confidence = min(1.0, base.confidence + bonus)
 
-    # 如果有代码+文档双重证据，进一步提升
     has_code = any(s.type == "code" for s in base.source_refs)
     has_doc = any(s.type == "doc" for s in base.source_refs)
     if has_code and has_doc:

@@ -74,44 +74,6 @@ def extract_from_code(
                     extractor_confidence=0.6,
                 ))
 
-            # 规则 4：利率/计提 → procedure
-            if _has_interest_pattern(text):
-                counter += 1
-                atoms.append(RawAtom(
-                    raw_id=f"raw-{counter:04d}",
-                    atom=SkillAtom(
-                        atom_id=f"{leaf_id}.interest-{counter}",
-                        kind="procedure",
-                        claim=f"利率/计提计算逻辑在 {file_path} 中实现",
-                        action="修改利率计算前确认计息方式（declining balance/flat/等额本息）和精度要求",
-                        negative_rule="不得随意修改利率精度或计息公式而不更新相关摊销逻辑",
-                        checks=["确认计息方式未变", "验证还款计划重新计算"],
-                        source_refs=[SourceRef(type="code", id=node_id)],
-                        confidence=0.72,
-                        risk="high",
-                    ),
-                    extractor_confidence=0.8,
-                ))
-
-            # 规则 5：费用/扣款 → constraint
-            if _has_charge_pattern(text):
-                counter += 1
-                atoms.append(RawAtom(
-                    raw_id=f"raw-{counter:04d}",
-                    atom=SkillAtom(
-                        atom_id=f"{leaf_id}.charge-{counter}",
-                        kind="constraint",
-                        claim=f"费用/罚金计算逻辑在 {file_path} 中定义",
-                        action="修改费用计算前确认费用类型、计算基数和上限",
-                        negative_rule="不得新增未授权的费用类型或修改罚金上限而不经审批",
-                        checks=["确认费用类型在允许列表中", "验证罚金上限未突破"],
-                        source_refs=[SourceRef(type="code", id=node_id)],
-                        confidence=0.7,
-                        risk="high",
-                    ),
-                    extractor_confidence=0.75,
-                ))
-
     return atoms
 
 
@@ -169,8 +131,9 @@ def _has_retry_pattern(text: str) -> bool:
 
 def _has_transaction_pattern(text: str) -> bool:
     lower = text.lower()
-    return any(kw in lower for kw in ["transaction", "事务", "audit", "审计", "journalentry", "accountingentry",
-                                       "log", "@auditable", "audittrail"])
+    return any(kw in lower for kw in [
+        "transaction", "事务", "audit", "审计", "@auditable", "audittrail",
+    ])
 
 
 def _has_job_pattern(text: str) -> bool:
@@ -186,20 +149,3 @@ def _has_constraint_pattern(text: str) -> bool:
     return any(kw in text for kw in ["不得", "禁止", "严禁", "必须", "must not", "must", "@validate"])
 
 
-def _has_interest_pattern(text: str) -> bool:
-    """检测利率/费用计算模式。"""
-    lower = text.lower()
-    return any(kw in lower for kw in [
-        "interest", "利率", "accrual", "计提", "amortization", "摊销",
-        "calculateinterest", "interestcalculation", "repaymentschedule",
-        "decliningbalance", "flatrate", "principal", "本金",
-    ])
-
-
-def _has_charge_pattern(text: str) -> bool:
-    """检测费用/扣款模式。"""
-    lower = text.lower()
-    return any(kw in lower for kw in [
-        "charge", "费用", "fee", "penalty", "罚款", "deduction", "扣款",
-        "overdue", "逾期", "latepayment",
-    ])

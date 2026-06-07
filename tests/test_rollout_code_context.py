@@ -45,5 +45,5 @@ def test_rollout_context_from_context_ref(tmp_path):
         "context_refs": [rel + "#disburse"],
     }
     ctx = build_rollout_item_context(item, handler)
-    assert "项目代码参考" in ctx
+    assert "Project code reference" in ctx
     assert "disburse" in ctx.lower() or "LoanProc" in ctx

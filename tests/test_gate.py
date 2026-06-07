@@ -1,5 +1,6 @@
 """Gate 门禁测试。"""
 from code_to_skill.skillopt_loop.gate import GateManager
+from code_to_skill.skillopt_loop.reflect_helpers import split_failure_groups
 
 
 class TestGateTrainAware:
@@ -28,14 +29,12 @@ class TestGateTrainAware:
 
 class TestReflectSplit:
     def test_split_failure_groups(self):
-        from code_to_skill.skillopt_loop.llm_components import _split_failure_groups
-
-        journal, boundary = _split_failure_groups([
-            {"id": "jv_purchase_001", "missed_checks": ["库存", "银行"]},
-            {"id": "jv_incomplete_001", "missed_checks": ["待确认", "缺少"]},
-            {"id": "jv_constraint_001", "missed_checks": ["不平", "isBalanced"]},
+        primary, boundary = split_failure_groups([
+            {"id": "task_a", "response_mode": "answer", "missed_checks": ["token_a", "token_b"]},
+            {"id": "task_b", "response_mode": "clarify", "missed_checks": ["clarify", "missing"]},
+            {"id": "task_c", "response_mode": "reject", "missed_checks": ["reject", "invalid"]},
         ])
-        assert len(journal) == 1
-        assert journal[0]["id"] == "jv_purchase_001"
+        assert len(primary) == 1
+        assert primary[0]["id"] == "task_a"
         assert len(boundary) == 2
-        assert {r["id"] for r in boundary} == {"jv_incomplete_001", "jv_constraint_001"}
+        assert {r["id"] for r in boundary} == {"task_b", "task_c"}

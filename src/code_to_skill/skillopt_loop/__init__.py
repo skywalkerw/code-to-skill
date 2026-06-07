@@ -254,7 +254,11 @@ def run_skillopt_loop(
     if resume:
         cache.load()
     from .meta_skill import MetaSkill
+    from .training_curve import TrainingCurveRecorder
     meta_skill = MetaSkill()
+    curve = TrainingCurveRecorder(
+        output_dir, gate_metric=effective_gate_metric, resume=resume,
+    )
     acc = Accumulator(accumulate=accumulation)
 
     # ── Initial evaluation ──────────────────────────────────
@@ -272,6 +276,11 @@ def run_skillopt_loop(
         logger.info("[M4] 初始评分: hard=%.3f soft=%.3f acc=%.3f f1=%.3f (gate=%.3f [%s])",
                      current_hard, current_soft, eval_result["accuracy"], eval_result["f1"],
                      best_score, gate.metric)
+        curve.record_init(
+            selection_hard=current_hard,
+            selection_soft=current_soft,
+            selection_gate=best_score,
+        )
     elif resume:
         logger.info("[M4] 跳过初始 eval（断点续训）")
 
@@ -353,6 +362,13 @@ def run_skillopt_loop(
                         )
                 if not valid_edits:
                     logger.info("[M4] validate: 无有效编辑，跳过本 step")
+                    curve.record_skip(
+                        step=step_counter,
+                        epoch=epoch + 1,
+                        reason="no_valid_edits",
+                        rollout_results=all_results,
+                        patch_count=len(patches),
+                    )
                     from .edit_traceability import edit_to_dict
 
                     _save_step_artifacts(
@@ -462,6 +478,20 @@ def run_skillopt_loop(
                 "edit_count": len(ranked),
             }
             history.append(record)
+            curve.record_gate(
+                step=step_counter,
+                epoch=epoch + 1,
+                rollout_results=all_results,
+                selection_hard=candidate_hard,
+                selection_soft=candidate_soft,
+                selection_gate=candidate_gate,
+                best_score=best_score,
+                current_score=current_score,
+                gate_action=action,
+                gate_reason=decision.reason,
+                edit_count=len(ranked),
+                patch_count=len(patches),
+            )
 
             # ── Step artifacts ─────────────────────────────
             _save_step_artifacts(
@@ -502,6 +532,10 @@ def run_skillopt_loop(
         if remaining:
             logger.info("[M4] Flushed %d remaining accumulated results at epoch end", len(remaining))
 
+        epoch_slow_gate: str | None = None
+        epoch_slow_reason: str | None = None
+        epoch_comparison: dict | None = None
+
         # Slow Update（epoch >= 2 时启用）
         if enable_slow_update and epoch >= 1:
             logger.info("[M4] === Slow Update epoch %d ===", epoch + 1)
@@ -512,6 +546,7 @@ def run_skillopt_loop(
             slow_result = run_slow_update(
                 prev_epoch_skill, current_skill, samples,
                 adapter=adapter,
+                target_backend=backend_mgr.target,
                 optimizer_backend=backend_mgr.optimizer,
             )
             if slow_result["slow_update_content"]:
@@ -542,6 +577,8 @@ def run_skillopt_loop(
                     )
                     slow_action = slow_decision.action
                     apply_slow = slow_action != "reject"
+                    epoch_slow_gate = slow_action
+                    epoch_slow_reason = slow_decision.reason
                     logger.info(
                         "[M4] slow update gate: %s (%s)",
                         _gate_icon(slow_action), slow_decision.reason,
@@ -585,6 +622,18 @@ def run_skillopt_loop(
                     optimizer_backend=backend_mgr.optimizer,
                 )
                 _save_meta_skill_artifacts(output_dir, epoch + 1, meta_skill)
+            if slow_result.get("comparison_pairs"):
+                epoch_comparison = slow_result["comparison_pairs"]
+
+        curve.record_epoch_end(
+            step=step_counter,
+            epoch=epoch + 1,
+            best_score=best_score,
+            current_score=current_score,
+            slow_update_gate=epoch_slow_gate,
+            slow_update_reason=epoch_slow_reason,
+            comparison_pairs=epoch_comparison,
+        )
 
         # Save prev_epoch_skill for next epoch's slow update
         prev_epoch_skill = current_skill
@@ -644,10 +693,23 @@ def run_skillopt_loop(
     test_report = {}
     if test_items:
         from .test_eval import test_evaluate
-        test_report = test_evaluate(best_skill, test_items, adapter=adapter,
-                                    output_dir=os.path.join(output_dir, "final_eval"))
+        test_report = test_evaluate(
+            best_skill,
+            test_items,
+            adapter=adapter,
+            target_backend=backend_mgr.target,
+            output_dir=os.path.join(output_dir, "final_eval"),
+        )
         logger.info("[M4] Test eval: score=%.3f hard=%.3f n=%d",
                      test_report["test_score"], test_report["test_hard"], test_report["n_items"])
+        curve.record_test(
+            test_score=test_report["test_score"],
+            test_hard=test_report["test_hard"],
+            n_items=test_report["n_items"],
+            best_score=best_score,
+        )
+
+    curve.finalize(best_step=best_step, test_report=test_report or None)
 
     final = {
         "best_skill": best_skill,

@@ -11,7 +11,7 @@ from pathlib import Path
 
 from .scanner import scan_repo
 from .parser import parse_files
-from .framework import extract_spring_metadata
+from .framework import extract_framework_metadata, extract_spring_metadata, merge_custom_patterns
 from .resolver import resolve_references
 from .callback_synthesis import synthesize_interface_dispatch
 from .mybatis_xml import extract_mybatis_xml
@@ -44,6 +44,7 @@ def run_code_graph_pipeline(
     use_cache: bool = False,
     repo_id: str = "",
     snapshot_ref: str = "HEAD",
+    custom_patterns: dict[str, dict[str, str]] | None = None,
 ) -> dict:
     """运行完整的代码图谱构建流水线。
 
@@ -113,12 +114,18 @@ def run_code_graph_pipeline(
     results["graph"] = graph
     results["errors"] = parse_errors
 
-    # Step 2.5: 框架提取（Spring/Fineract 注解）
+    # Step 2.5: 框架提取（Spring/MyBatis + project 自定义模式）
     java_files = [f for f in source_files if f.endswith(".java")]
     if java_files:
-        fw_nodes, fw_edges = extract_spring_metadata(java_files, repo_root, graph)
+        fw_nodes, fw_edges = extract_framework_metadata(
+            java_files, repo_root, graph, custom_patterns=custom_patterns,
+        )
         graph.nodes.extend(fw_nodes)
         graph.edges.extend(fw_edges)
+        if custom_patterns and fw_nodes:
+            custom_count = sum(1 for n in fw_nodes if n.metadata.get("custom"))
+            if custom_count:
+                print(f"[M1] 自定义框架节点: {custom_count}")
 
     xml_files = [f.path for f in inventory.files if f.path.endswith(".xml")]
     if xml_files:

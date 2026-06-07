@@ -13,12 +13,18 @@ import yaml
 from pydantic import BaseModel, Field
 
 
+class ProjectCodeGraphConfig(BaseModel):
+    """目标项目代码图谱扩展（自定义框架模式等）。"""
+    custom_patterns: dict[str, dict[str, str]] = Field(default_factory=dict)
+
+
 class RepoSource(BaseModel):
     id: str
     path: str
     ref: str = "HEAD"
     include: list[str] = Field(default_factory=list)
     exclude: list[str] = Field(default_factory=list)
+    framework_patterns: dict[str, dict[str, str]] = Field(default_factory=dict)
 
 
 class DocSource(BaseModel):
@@ -39,6 +45,7 @@ class ProjectConfig(BaseModel):
     description: str = ""
     initial_skill_path: str = ""
     benchmark_path: str = ""
+    code_graph: ProjectCodeGraphConfig = Field(default_factory=ProjectCodeGraphConfig)
     repos: list[RepoSource] = Field(default_factory=list)
     docs: list[DocSource] = Field(default_factory=list)
 
@@ -121,14 +128,31 @@ def _parse_project(raw: dict) -> ProjectConfig:
     if not raw:
         return ProjectConfig()
 
+    from code_to_skill.code_graph.framework import parse_custom_patterns
+
     sources = raw.get("sources", {})
+    code_graph_raw = raw.get("code_graph", {}) or {}
+    repos_raw = sources.get("repos") or []
+    repos: list[RepoSource] = []
+    for item in repos_raw:
+        repo_data = dict(item)
+        repo_data["framework_patterns"] = parse_custom_patterns(
+            repo_data.pop("framework_patterns", None)
+        )
+        repos.append(RepoSource(**repo_data))
+
     return ProjectConfig(
         name=raw.get("name", ""),
         domain=raw.get("domain", ""),
         description=raw.get("description", ""),
         initial_skill_path=raw.get("initial_skill", ""),
         benchmark_path=raw.get("benchmark", ""),
-        repos=[RepoSource(**r) for r in (sources.get("repos") or [])],
+        code_graph=ProjectCodeGraphConfig(
+            custom_patterns=parse_custom_patterns(
+                code_graph_raw.get("custom_patterns"),
+            ),
+        ),
+        repos=repos,
         docs=[DocSource(**d) for d in (sources.get("docs") or [])],
     )
 

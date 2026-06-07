@@ -8,18 +8,6 @@ from code_to_skill.code_graph import run_code_graph_pipeline
 from code_to_skill.code_graph.react_renders import synthesize_react_renders
 from code_to_skill.code_graph.registry import GraphRegistry
 from code_to_skill.code_graph.types import CodeGraph, GraphNode, NodeKind
-from code_to_skill.skillopt_loop.accounting_linker import graph_queries_for_failure
-
-
-def test_accounting_linker_queries():
-    qs = graph_queries_for_failure({
-        "id": "jv_loan_disburse_001",
-        "question": "发放贷款",
-        "missed_checks": ["贷款", "发放"],
-    })
-    assert any("disburse" in q.lower() or "loan" in q.lower() for q in qs)
-
-
 def test_react_renders_synthesis():
     graph = CodeGraph(nodes=[
         GraphNode(id="App.tsx", kind=NodeKind.file, name="App.tsx", file_path="App.tsx", language="typescript"),

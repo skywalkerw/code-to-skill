@@ -9,7 +9,7 @@ from code_to_skill.skillopt_loop.rollout_helpers import (
     build_rollout_user_message,
     extract_rollout_answer,
     fallback_predicted_from_tools,
-    fallback_skill_voucher,
+    fallback_skill_answer,
     sanitize_skill_for_rollout,
 )
 
@@ -88,8 +88,8 @@ def test_extract_rollout_answer_strips_skill_echo():
     assert "Project Skill Title" not in cleaned
 
 
-def test_fallback_skill_voucher_uses_checks_and_skill():
-    predicted = fallback_skill_voucher(
+def test_fallback_skill_answer_uses_checks_and_skill():
+    predicted = fallback_skill_answer(
         "run job J-42",
         ["job", "status"],
         "# skill\nJob status must be reported.",

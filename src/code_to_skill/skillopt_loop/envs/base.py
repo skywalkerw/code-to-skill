@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 # ── 默认 Reflect prompt 路径（按 env 名自动解析）─────────
 _DEFAULT_ERROR_PROMPT = """## Task
-Analyze the failure cases and propose specific edits to improve the Skill document.
+Analyze rollout failures and propose specific edits to improve the Skill document.
 
 ## Current Skill
 {current_skill}
@@ -33,8 +33,8 @@ Analyze the failure cases and propose specific edits to improve the Skill docume
 
 ## Instructions
 1. Identify the ROOT CAUSE pattern in the failures (not individual edge cases).
-2. Propose 1-3 specific edits to the Skill (append new rules, clarify constraints, add verification steps).
-3. Each edit must have: op (append/replace/insert_after/delete), content (the new text to add).
+2. Propose 1-3 specific edits (append/insert_after/replace) with actionable rules.
+3. Cover missed verification checks semantically — not keyword dumps.
 4. Do NOT propose edits that have been previously rejected (see Step Buffer above).
 
 CRITICAL: Do NOT remove existing rules unless they are contradictory. Prefer appending new rules.
@@ -222,7 +222,7 @@ class DEFAULTAdapter(EnvAdapter):
                     build_rollout_user_message,
                     extract_rollout_answer,
                     fallback_predicted_from_tools,
-                    fallback_skill_voucher,
+                    fallback_skill_answer,
                 )
                 try:
                     from ..code_evidence import build_rollout_item_context
@@ -272,15 +272,15 @@ class DEFAULTAdapter(EnvAdapter):
                                 tool_snippets, question, checks, skill,
                             )
                         else:
-                            predicted = fallback_skill_voucher(question, checks, skill)
+                            predicted = fallback_skill_answer(question, checks, skill)
                     fail_reason = ""
                 except Exception as e:
                     predicted = f"[LLM error: {e}]"
                     fail_reason = str(e)[:100]
             else:
-                from ..rollout_helpers import fallback_skill_voucher
+                from ..rollout_helpers import fallback_skill_answer
 
-                predicted = fallback_skill_voucher(question, checks, skill)
+                predicted = fallback_skill_answer(question, checks, skill)
                 fail_reason = ""
 
             scores = score_rollout_result(predicted, checks)
@@ -293,6 +293,9 @@ class DEFAULTAdapter(EnvAdapter):
             results.append({
                 "id": item.get("id", ""),
                 "question": item.get("question", item.get("task_template", "")),
+                "response_mode": item.get("response_mode", "answer"),
+                "reflect_focus": item.get("reflect_focus", ""),
+                "context_refs": list(item.get("context_refs") or []),
                 "expected_checks": checks,
                 "passed_checks": scores.get("passed_checks", []),
                 "missed_checks": missed,

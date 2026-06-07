@@ -28,6 +28,7 @@ def rollout_failure_records(results: list[dict]) -> list[dict]:
             "id": r.get("id", ""),
             "task_type": r.get("task_type", ""),
             "question": (r.get("question") or r.get("task_template") or "")[:300],
+            "context_refs": list(r.get("context_refs") or []),
             "missed_checks": list(r.get("missed_checks", [])),
             "passed_checks": list(r.get("passed_checks", [])),
             "fail_reason": r.get("fail_reason", ""),
@@ -49,7 +50,7 @@ def annotate_rule_edit(
 
 def infer_edit_traceability(edit: dict, failed_results: list[dict]) -> dict:
     """根据 edit content 与 failed rollout 推断关联 task / missed checks。"""
-    from .llm_components import _semantic_rule_for_check
+    from .reflect_helpers import semantic_rule_for_check
 
     content = (edit.get("content") or "").lower()
     task_ids: set[str] = set()
@@ -61,7 +62,7 @@ def infer_edit_traceability(edit: dict, failed_results: list[dict]) -> dict:
         matched = False
         for check in r_missed:
             check_l = check.lower()
-            rule = _semantic_rule_for_check(check)
+            rule = semantic_rule_for_check(check)
             if (
                 check_l in content
                 or rule.lower() in content

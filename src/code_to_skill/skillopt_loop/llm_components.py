@@ -14,48 +14,30 @@ from code_to_skill.model_provider.types import InteractionRequest
 from code_to_skill.model_provider.structured_output import invoke_with_structured_output
 
 from .json_utils import safe_json_parse
+from .reflect_helpers import (
+    BOUNDARY_FOCUS,
+    CODE_TOOLS_REFLECT_HINT,
+    PRIMARY_FOCUS,
+    REFLECT_SUCCESS_PROMPT,
+    REFLECT_SYNTHESIS_HINT,
+    REFLECT_SYSTEM_PROMPT,
+    REFLECT_USER_PROMPT,
+    SELECT_PROMPT,
+    build_reflect_focus_hint,
+    find_insert_target,
+    is_numeric_check,
+    reflect_stage_for_focus,
+    resolve_reflect_focus,
+    rule_section_heading,
+    semantic_rule_for_check,
+    skill_compact_for_reflect,
+    skill_section_index,
+    split_failure_groups,
+)
 from .token_budgets import get_token_budgets
 from .types import EditOp
 
 logger = logging.getLogger(__name__)
-
-# missed check → 语义化规则（避免纯关键词堆砌）
-_CHECK_SEMANTIC_RULES: dict[str, str] = {
-    "会计凭证": "输出必须以「## 会计凭证」为标题",
-    "借": "分录表格须包含借方行，「借贷」列标注「借」",
-    "贷": "分录表格须包含贷方行，「借贷」列标注「贷」",
-    "借贷校验": "凭证末尾须输出「借贷校验」行（借方合计 = 贷方合计 ✓）",
-    "库存": "购入/存货交易：借方科目名称须含「库存」",
-    "银行": "付款类交易：贷方科目名称须含「银行」",
-    "现金": "收款/付款交易：涉及现金的科目名称须含「现金」",
-    "贷款": "贷款发放：借方科目须含「贷款」",
-    "发放": "贷款发放交易：交易摘要须含「发放」",
-    "还款": "还款交易：交易摘要须含「还款」",
-    "利息": "利息相关：须区分利息科目与本金科目",
-    "收入": "利息/费用收入：贷方须含「收入」类科目",
-    "费用": "费用扣款：须含「费用」科目",
-    "Charge": "逾期/手续费交易：科目或摘要须含 Charge 或「费用收入」",
-    "Portfolio": "Charge-Off 交易：贷方科目须含「贷款组合」，正文可出现 Portfolio",
-    "penalty": "储蓄罚息：科目或摘要须含 penalty 或「罚息」",
-    "损失": "贷款核销：借方科目须含「损失」或 LOSSES_WRITTEN_OFF",
-    "计提": "计提交易：交易类型标注「计提」",
-    "应收利息": "利息计提：借方须含「应收利息」",
-    "销售": "销售交易：交易摘要须含「销售」",
-    "资产": "资产购入：借方须含「资产」类科目",
-    "储蓄": "储蓄账户：须含「储蓄」科目",
-    "待确认": "信息不足时：输出澄清说明（含 待确认、缺少、金额），禁止输出完整凭证表",
-    "缺少": "信息不足时：明确列出缺少的字段（金额/客户/拆分等）",
-    "补充": "信息不足时：列出缺失项并请用户补充",
-    "会计口径": "还款未拆分本金/利息时：须追问会计口径（CashBased/AccrualBased）及本金/利息拆分",
-    "产品": "缺少产品 ID 时：须追问关联产品或 GL Account 配置",
-    "拆分": "还款未说明本金/利息拆分时：须要求用户补充拆分",
-    "关账": "关账期间：须说明 GLClosure/关账 约束，不得过账",
-    "GLClosure": "须引用关账检查逻辑，说明不得过账",
-    "closure": "关账约束：不得输出正常过账凭证",
-    "借贷平衡": "不得输出借贷不平的凭证",
-    "不平": "借贷金额不等时：拒绝输出并说明须满足 isBalanced()",
-    "isBalanced": "须确保 isBalanced() 为 true 方可输出",
-}
 
 _MAX_RULE_CHECKS = 5
 
@@ -130,14 +112,6 @@ def _reflect_response_usable(response) -> bool:
         return False
     parsed = _parse_reflect_response(response)
     return bool(parsed and parsed.get("edits"))
-
-
-REFLECT_SYNTHESIS_HINT = (
-    "Stop using tools. Output JSON only with schema: "
-    '{"reasoning": "one sentence", "edits": [{"op": "append|replace|prepend", '
-    '"target": "section or empty", "content": "concrete skill rule"}]}. '
-    "At least one edit must address the rollout failure checks."
-)
 
 
 def _invoke_reflect_with_retry(
@@ -216,45 +190,6 @@ def _invoke_reflect_with_retry(
     return last_response
 
 
-_CODE_TOOLS_REFLECT_HINT = """
-## Code Reading Tools
-File tools: search_code, read_code_file, list_code_files.
-Graph tools (if available): explore_symbol, get_symbol_source, get_symbol_node, find_callers,
-find_callees, list_graph_files, search_symbol, get_code_context, trace_symbol, impact_symbol,
-graph_status.
-Prefer explore_symbol on benchmark context_refs (e.g. AccountingProcessor#createJournalEntries).
-Use trace_symbol with to_symbol to verify call chains (returns paths_to.summary like A → B → C).
-Use from_entry=rest when tracing from API entry to a business handler.
-Ground skill edits in real code: cite file paths + method names from graph results.
-After research, respond with JSON only (no more tool calls).
-"""
-
-
-_BOUNDARY_MISSED = frozenset({
-    "待确认", "缺少", "补充", "金额", "本金", "利息", "拆分", "会计口径", "产品", "客户",
-    "关账", "GLClosure", "closure", "借贷平衡", "不平", "isBalanced", "不得",
-})
-
-
-def _split_failure_groups(failed: list[dict]) -> tuple[list[dict], list[dict]]:
-    """将失败 case 分为凭证生成 vs 边界/澄清场景。"""
-    journal: list[dict] = []
-    boundary: list[dict] = []
-    for r in failed:
-        rid = r.get("id") or ""
-        missed = set(r.get("missed_checks") or [])
-        if (
-            rid.startswith("jv_incomplete")
-            or rid.startswith("jv_closure")
-            or rid.startswith("jv_constraint")
-            or (missed & _BOUNDARY_MISSED and not (missed - _BOUNDARY_MISSED))
-        ):
-            boundary.append(r)
-        else:
-            journal.append(r)
-    return journal, boundary
-
-
 def _reflect_failure_group(
     failed_group: list[dict],
     *,
@@ -266,36 +201,32 @@ def _reflect_failure_group(
     max_tool_rounds: int,
     focus: str,
 ) -> dict | None:
-    """对单类失败（journal / boundary）调用 reflect。"""
+    """对单类失败（primary / boundary）调用 reflect。"""
     if not failed_group:
         return None
 
-    extra_hint = (
-        _REFLECT_JOURNAL_FOCUS
-        if focus == "journal"
-        else _REFLECT_BOUNDARY_FOCUS
-    )
-    system_content = _REFLECT_SYSTEM_PROMPT.format(
-        section_index=_skill_section_index(current_skill),
+    extra_hint = build_reflect_focus_hint(focus)
+    system_content = REFLECT_SYSTEM_PROMPT.format(
+        section_index=skill_section_index(current_skill),
         step_buffer_summary=buffer_summary,
     ) + extra_hint
     if meta_skill_context.strip():
         system_content = meta_skill_context + "\n---\n" + system_content
     if code_tools is not None and getattr(code_tools, "enabled", False):
-        system_content += _CODE_TOOLS_REFLECT_HINT
+        system_content += CODE_TOOLS_REFLECT_HINT
 
     from .code_evidence import build_reflect_code_evidence
 
     code_evidence = build_reflect_code_evidence(failed_group, code_tools)
     failure_text = _format_failure_cases(failed_group[:8])
-    user_content = _REFLECT_USER_PROMPT.format(
-        current_skill=_skill_compact_for_reflect(current_skill),
+    user_content = REFLECT_USER_PROMPT.format(
+        current_skill=skill_compact_for_reflect(current_skill),
         failure_text=failure_text[:3000],
     )
     if code_evidence:
         user_content += "\n\n" + code_evidence[:4500]
 
-    stage = "reflect_failure_journal" if focus == "journal" else "reflect_failure_boundary"
+    stage = reflect_stage_for_focus(focus)
     request = InteractionRequest(
         role="optimizer",
         stage=stage,
@@ -359,12 +290,12 @@ def reflect_llm(
     patches: list[dict] = []
 
     if failed:
-        journal_failed, boundary_failed = _split_failure_groups(failed)
+        primary_failed, boundary_failed = split_failure_groups(failed)
         logger.info(
-            "[reflect] failure split: journal=%d boundary=%d",
-            len(journal_failed), len(boundary_failed),
+            "[reflect] failure split: primary=%d boundary=%d",
+            len(primary_failed), len(boundary_failed),
         )
-        for focus, group in (("journal", journal_failed), ("boundary", boundary_failed)):
+        for focus, group in ((PRIMARY_FOCUS, primary_failed), (BOUNDARY_FOCUS, boundary_failed)):
             patch = _reflect_failure_group(
                 group,
                 current_skill=current_skill,
@@ -384,7 +315,7 @@ def reflect_llm(
             role="optimizer",
             stage="reflect_success",
             messages=[
-                {"role": "system", "content": _REFLECT_SUCCESS_PROMPT},
+                {"role": "system", "content": REFLECT_SUCCESS_PROMPT},
                 {"role": "user", "content": success_text[:1500]},
             ],
             max_output_tokens=get_token_budgets().reflect_success,
@@ -446,7 +377,7 @@ def select_edits_llm(
         stage="select_edits",
         messages=[{
             "role": "system",
-            "content": _SELECT_PROMPT.format(
+            "content": SELECT_PROMPT.format(
                 current_skill=current_skill[:1500],
                 edits=edit_text[:2000],
                 budget=budget,
@@ -488,73 +419,6 @@ def _format_failure_cases(failed: list[dict]) -> str:
         parts.append(f"Fail reason: {r.get('fail_reason', 'unknown')}")
         parts.append(f"Answer excerpt: {r.get('predicted_answer', '')[:400]}")
     return "\n".join(parts)
-
-
-def _skill_section_index(skill: str) -> str:
-    """提取 skill 章节标题，供 insert_after/replace 定位。"""
-    headers = re.findall(r"^#{1,3}\s+.+", skill, re.M)
-    if not headers:
-        return "(no section headers found)"
-    return "\n".join(f"- {h.strip()}" for h in headers[:20])
-
-
-def _skill_compact_for_reflect(skill: str, max_chars: int = 1500) -> str:
-    """Reflect 用精简 skill 摘要，避免 prompt 过长导致输出 token 耗尽。"""
-    markers = (
-        "### 2.3 生成会计凭证",
-        "## 三、必须遵守的约束",
-        "## 四、禁止行为",
-        "## 五、信息不足时的处理",
-        "## 六、验证检查清单",
-    )
-    chunks: list[str] = []
-    for marker in markers:
-        idx = skill.find(marker)
-        if idx < 0:
-            continue
-        end = len(skill)
-        for other in markers:
-            if other == marker:
-                continue
-            nxt = skill.find(other, idx + len(marker))
-            if 0 <= nxt < end:
-                end = nxt
-        chunk = skill[idx:end].strip()
-        if chunk:
-            chunks.append(chunk[:500])
-
-    if chunks:
-        compact = "\n\n---\n\n".join(chunks)
-    else:
-        compact = skill[:max_chars]
-
-    return compact[:max_chars]
-
-
-def _find_insert_target(current_skill: str, missed_checks: list[str]) -> str:
-    """根据 missed checks 选择最佳插入位置。"""
-    if "### 2.3 生成会计凭证" in current_skill:
-        return "### 2.3 生成会计凭证"
-    if "## 三、必须遵守的约束" in current_skill:
-        return "## 三、必须遵守的约束"
-    if "## 六、验证检查清单" in current_skill:
-        return "## 六、验证检查清单"
-    headers = re.findall(r"^#{1,3}\s+.+", current_skill, re.M)
-    return headers[-1].strip() if headers else ""
-
-
-def _is_amount_check(check: str) -> bool:
-    """纯数字金额不作为关键词规则。"""
-    return bool(re.fullmatch(r"[\d.]+", check.strip()))
-
-
-def _semantic_rule_for_check(check: str) -> str:
-    """将 missed check 转为语义化规则。"""
-    if check in _CHECK_SEMANTIC_RULES:
-        return _CHECK_SEMANTIC_RULES[check]
-    if _is_amount_check(check):
-        return "金额列须填写交易中的具体金额数值"
-    return f"输出须包含「{check}」"
 
 
 def _group_failures_by_task_type(failed: list[dict]) -> dict[str, list[dict]]:
@@ -599,9 +463,10 @@ def _rule_based_patches(results: list[dict], current_skill: str = "") -> list[di
 
     for task_type, group in groups.items():
         missed_counts: dict[str, int] = {}
+        group_focus = resolve_reflect_focus(group[0]) if group else PRIMARY_FOCUS
         for r in group:
             for check in r.get("missed_checks", []):
-                if _is_amount_check(check):
+                if is_numeric_check(check):
                     missed_counts["_amount_"] = missed_counts.get("_amount_", 0) + 1
                 else:
                     missed_counts[check] = missed_counts.get(check, 0) + 1
@@ -617,35 +482,39 @@ def _rule_based_patches(results: list[dict], current_skill: str = "") -> list[di
         rules: list[str] = []
         seen_rules: set[str] = set()
         for check, _count in top_checks:
-            rule = _semantic_rule_for_check(check)
+            rule = semantic_rule_for_check(check)
             if rule not in seen_rules:
                 rules.append(f"- {rule}")
                 seen_rules.add(rule)
         if "_amount_" in missed_counts:
-            rules.append("- 金额列须填写交易中的具体金额数值")
+            numeric_checks: list[str] = []
+            for r in group:
+                for check in r.get("missed_checks", []):
+                    if is_numeric_check(check) and check not in numeric_checks:
+                        numeric_checks.append(check)
+            for check in numeric_checks[:2]:
+                rule = semantic_rule_for_check(check)
+                if rule not in seen_rules:
+                    rules.append(f"- {rule}")
+                    seen_rules.add(rule)
 
         new_rules = [r for r in rules if not _rule_bullet_in_skill(r, current_skill)]
 
         if not new_rules and group:
             r0 = group[0]
             missed = r0.get("missed_checks", [])[:4]
-            hint = f"- 针对{task_type}场景：须覆盖 {', '.join(missed)} 等检查点"
+            hint = (
+                f"- For task_type={task_type}: cover verification checks "
+                f"{', '.join(missed)}"
+            )
             if not _rule_bullet_in_skill(hint, current_skill):
                 new_rules = [hint]
 
         if not new_rules:
             continue
 
-        if task_type == "journal_entry":
-            target = "### 2.3 生成会计凭证"
-            if target not in current_skill:
-                target = _find_insert_target(current_skill, [c for c, _ in top_checks])
-            heading = "### 分录输出要求（自动生成）"
-        else:
-            target = "## 五、信息不足时的处理"
-            if target not in current_skill:
-                target = _find_insert_target(current_skill, [c for c, _ in top_checks])
-            heading = "### 边界场景规则（自动生成）"
+        target = find_insert_target(current_skill, group_focus)
+        heading = rule_section_heading(group_focus)
 
         if heading in current_skill:
             anchor = _last_line_in_section(current_skill, heading)
@@ -758,70 +627,3 @@ def _build_buffer_summary(
         return "(no prior buffer information — this is the first step)"
 
     return "\n".join(parts)
-
-
-# ── Prompt 模板 ─────────────────────────────────────────────
-
-_REFLECT_SYSTEM_PROMPT = """You are a Skill document optimizer for an accounting voucher generation agent.
-
-## Available Sections (use as insert_after target)
-{section_index}
-
-## Step Buffer (DO NOT repeat rejected edits)
-{step_buffer_summary}
-
-## Instructions
-1. Analyze Missed checks — identify ROOT CAUSE per task type (journal_entry vs incomplete info).
-2. Propose 1-3 edits with op="insert_after", targeting the most relevant section.
-3. Each edit content: bullet rules using 必须/不得, >= 50 chars, covering missed checks semantically.
-4. For journal_entry failures: add rules about voucher table format, debit/credit rows, account names.
-5. For incomplete-info failures (missed 待确认/缺少/金额): add rules to §五 — clarify first, NO voucher table.
-6. For journal_entry placeholder failures (（借方科目）): add concrete account-name rules in §2.2.1 / §2.3.
-
-FORBIDDEN: "# Verify", "need improvement", "TODO", keyword-only lists without actionable rules.
-
-## Output
-Return JSON only. Keep "reasoning" to ONE sentence (≤ 80 chars).
-{{"reasoning": "...", "edits": [{{"op": "insert_after", "target": "### section", "content": "- 必须...", "source_type": "failure"}}]}}"""
-
-_REFLECT_USER_PROMPT = """## Current Skill
-{current_skill}
-
-## Failure Cases
-{failure_text}"""
-
-_REFLECT_JOURNAL_FOCUS = """
-
-## Focus: journal_entry failures
-Target §2.2 / §2.3 / §三. Add concrete debit/credit account-name rules.
-Preserve user wording in account names when checks expect English tokens:
-Charge, Portfolio, penalty, Write-Off → include them in 科目 or 业务摘要.
-"""
-
-_REFLECT_BOUNDARY_FOCUS = """
-
-## Focus: boundary / incomplete-info failures
-Target §五 and §三 only. Require 待确认/缺少/金额/关账/不得 — do NOT add voucher-table rules.
-When user omits amount or principal/interest split, clarify instead of inventing entries.
-"""
-
-_REFLECT_SUCCESS_PROMPT = """Based on successful cases, propose edits to preserve effective patterns.
-Return JSON: {{"reasoning": "...", "edits": []}} If no changes needed, return empty edits array."""
-
-_SELECT_PROMPT = """## Task
-Rank the following candidate edits by their likely impact on Skill quality.
-Select the top {budget} most important edits.
-
-## Current Skill
-{current_skill}
-
-## Candidate Edits
-{edits}
-
-## Instructions
-1. Prioritize edits that address specific failure patterns over vague improvements.
-2. Avoid duplicate edits.
-3. Consider whether the edit contradicts existing rules.
-
-## Output
-Return a JSON array of the selected edits with their original index, support count, and importance score (0-1): [{{"index": 1, "support": 3, "score": 0.9}}]"""

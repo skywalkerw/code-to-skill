@@ -3,13 +3,19 @@ from __future__ import annotations
 
 import re
 
+from .reflect_helpers import (
+    SCENARIO_SECTION_HEADING,
+    find_insert_target,
+    is_numeric_check,
+    PRIMARY_FOCUS,
+)
 from .types import EditOp
 
-_AMOUNT_RE = re.compile(r"^[\d.]+$")
+_AMOUNT_RE = re.compile(r"^[\d.,]+$")
 
 
 def _is_amount_check(check: str) -> bool:
-    return bool(_AMOUNT_RE.fullmatch(check.strip()))
+    return bool(_AMOUNT_RE.fullmatch(check.strip())) or is_numeric_check(check)
 
 
 def _scenario_rule_line(failure: dict) -> str:
@@ -17,13 +23,15 @@ def _scenario_rule_line(failure: dict) -> str:
     rid = failure.get("id") or "unknown"
     question = (failure.get("question") or failure.get("task_template") or "").strip()
     missed = [c for c in failure.get("missed_checks", []) if not _is_amount_check(c)][:6]
-    checks_hint = "、".join(missed) if missed else "会计凭证、借、贷、借贷校验"
+    checks_hint = ", ".join(missed) if missed else "(see expected_checks)"
     refs = failure.get("context_refs") or failure.get("context", {}).get("refs") or []
-    ref_hint = f"；代码参考 {refs[0]}" if refs else ""
+    ref_hint = f"; code ref {refs[0]}" if refs else ""
+    hint = str(failure.get("reflect_hint") or failure.get("rollout_hint") or "").strip()
+    hint_suffix = f" {hint}" if hint else ""
     q_short = question[:48] + ("…" if len(question) > 48 else "")
     return (
-        f"- **{rid}**（{q_short}）：必须输出「## 会计凭证」及借/贷分录表，"
-        f"覆盖检查点：{checks_hint}{ref_hint}"
+        f"- **{rid}** ({q_short}): must satisfy verification checks "
+        f"[{checks_hint}]{ref_hint}{hint_suffix}"
     )
 
 
@@ -62,8 +70,8 @@ def build_scenario_edits(
     failed = [r for r in rollout_results if r.get("hard", 0) == 0]
     failed.sort(key=lambda r: -len(r.get("missed_checks", [])))
 
-    heading = "### 场景分录规则（按 benchmark case）"
-    section_target = "### 2.3 生成会计凭证"
+    heading = SCENARIO_SECTION_HEADING
+    section_target = find_insert_target(current_skill, PRIMARY_FOCUS)
     lines: list[str] = []
     task_ids: list[str] = []
     missed_all: list[str] = []
@@ -87,7 +95,7 @@ def build_scenario_edits(
         anchor = _anchor_in_section(current_skill, heading)
         content = body
         target = anchor
-    elif section_target in current_skill:
+    elif section_target:
         content = f"{heading}\n\n{body}"
         target = section_target
     else:

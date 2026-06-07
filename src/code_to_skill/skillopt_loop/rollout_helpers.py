@@ -126,10 +126,6 @@ def extract_rollout_answer(predicted: str) -> str:
     return text.strip()
 
 
-# 兼容旧名
-extract_voucher_text = extract_rollout_answer
-
-
 def build_rollout_system_prompt(skill: str, *, code_tools_enabled: bool) -> str:
     parts = [
         "You are a domain expert agent. Follow the skill document to complete the user task.",
@@ -146,7 +142,7 @@ def build_rollout_system_prompt(skill: str, *, code_tools_enabled: bool) -> str:
     return "\n".join(parts)
 
 
-def fallback_skill_voucher(question: str, checks: list[str], skill: str) -> str:
+def fallback_skill_answer(question: str, checks: list[str], skill: str) -> str:
     """无 LLM 输出时，从 skill 与 checks 拼最小可评分骨架（不注入领域模板）。"""
     checks = checks or []
     relevant_lines = [

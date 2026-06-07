@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
+from .keywords import extract_seed_check_tokens
 from .types import SkillAtom
 
 
@@ -56,22 +57,12 @@ def generate_benchmark_seeds(atoms: list[SkillAtom]) -> list[dict]:
         if atom.confidence < 0.6:
             continue
 
-        # 从 atom 内容提取可测试的关键词
-        checks = list(atom.checks)  # 保留原始 checks
-
-        # 从 claim 提取关键术语作为额外检查
-        claim_lower = atom.claim.lower()
-        for kw in ["审计", "audit", "journal", "利率", "interest", "accrual", "计提",
-                    "摊销", "amortization", "费用", "charge", "fee", "penalty", "罚金",
-                    "重试", "retry", "idempotency", "幂等", "transaction", "事务"]:
-            if kw.lower() in claim_lower and kw not in " ".join(checks).lower():
-                checks.append(kw)
-
-        # 从 action 提取
-        action_lower = atom.action.lower()
-        for kw in ["确认", "check", "验证", "validate", "修改前", "before"]:
-            if kw.lower() in action_lower and kw not in " ".join(checks).lower():
-                checks.append(kw)
+        checks = list(atom.checks)
+        existing = {c.lower() for c in checks}
+        for token in extract_seed_check_tokens(atom.claim, atom.action, limit=5):
+            if token.lower() not in existing:
+                checks.append(token)
+                existing.add(token.lower())
 
         seeds.append({
             "seed_id": f"seed-{atom.atom_id}",
