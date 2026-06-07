@@ -14,7 +14,7 @@ echo ""
 # 确保 CLI 已安装
 python -m pip install -e . -q 2>/dev/null || true
 
-python -m code_to_skill.cli.main run all --config-path "config.test.yaml"
+python -m code_to_skill.cli.main run all --config-path "config.yaml"
 
 echo ""
 echo "========================================"

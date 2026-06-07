@@ -15,7 +15,7 @@ _EPILOG = """
 \b
 示例:
   # 查看索引状态
-  skill-lab codegraph status --config-path config.test.yaml
+  skill-lab codegraph status --config-path config.yaml
 
   # 搜索符号（支持 kind:/file: 前缀）
   skill-lab codegraph search "JournalEntry" --limit 10
@@ -32,7 +32,7 @@ _EPILOG = """
   skill-lab codegraph trace from --to to_symbol
 
   # 指定 run 目录下的 graph.db
-  skill-lab codegraph status --run-id 20260606-152241 --config-path config.test.yaml
+  skill-lab codegraph status --run-id 20260606-152241 --config-path config.yaml
 
   # 直接指定 db（不读 config）
   skill-lab codegraph search Hello --db /path/to/graph.db --repo-root /path/to/repo

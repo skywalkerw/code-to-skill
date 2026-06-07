@@ -1,6 +1,6 @@
 # Fineract 金融核心系统 Skill 优化项目（稳定版配置，对齐论文推荐）
-# 使用方法: skill-lab run all --config-path config.test.yaml
-# 续训:     skill-lab resume --config-path config.test.yaml --run-id <run_id>
+# 使用方法: skill-lab run all --config-path config.yaml
+# 续训:     skill-lab resume --config-path config.yaml --run-id <run_id>
 
 settings:
   code_graph:

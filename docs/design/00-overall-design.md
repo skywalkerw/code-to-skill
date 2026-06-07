@@ -393,7 +393,7 @@ code-to-skill/
 │       └── logs/run.log
 ├── skills/
 │   └── <skill_name>/
-├── config.yaml                      # 项目配置（可用 config.test.yaml 等）
+├── config.yaml                      # 项目配置（由 config.template.yaml 复制）
 └── src/
     ├── code_graph/
     ├── document_normalizer/
@@ -575,7 +575,7 @@ code-to-skill/
     - "**/target/**"
   ```
 - 固定一个知识库目录（目标仓库的官方文档 Markdown 导出）和一组相关 PDF。
-- 建立 `config.yaml`（或 `config.test.yaml`）、运行目录规范和 `model_provider.routes`。
+- 建立 `config.yaml`、运行目录规范和 `model_provider.routes`。
 - 准备 benchmark 三份 split：train（驱动 rollout）、selection（≥20 条推荐，用于 hard gate）、test（held-out）；任务来自 Issues、PR review、故障工单等真实场景。
 - 配置 `use_llm_rollout: true`，并按需分离 `routes.target`（flash）与 `routes.optimizer`（pro）。
 

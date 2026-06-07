@@ -60,9 +60,9 @@ public class LoanCommandHandler implements CommandHandler {
 
 
 def test_config_test_yaml_loads_fineract_patterns():
-    cfg_path = Path("config.test.yaml")
+    cfg_path = Path("config.yaml")
     if not cfg_path.is_file():
-        pytest.skip("config.test.yaml missing")
+        pytest.skip("config.yaml missing")
     cfg = load_config(str(cfg_path))
     patterns = resolve_framework_patterns(cfg.project, cfg.project.repos[0])
     assert "fineract" in patterns

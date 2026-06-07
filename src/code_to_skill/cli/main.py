@@ -30,6 +30,17 @@ from code_to_skill.time_utils import local_timestamp, local_timestamp_compact
 from .types import RunManifest, RunState, RunStatus, ModuleEvent
 from .config_loader import load_config, AppConfig, SettingsConfig, ProjectConfig
 from .codegraph_cmds import codegraph_group
+from .help_text import (
+    MAIN_EPILOG,
+    RUN_ALL_DOC,
+    RUN_CODE_GRAPH_DAEMON_DOC,
+    RUN_CODE_GRAPH_DOC,
+    RUN_CODE_GRAPH_WATCH_DOC,
+    RUN_EPILOG,
+    RUN_EXTRACT_ATOMS_DOC,
+    RUN_NORMALIZE_DOCS_DOC,
+    RUN_OPTIMIZE_SKILL_DOC,
+)
 
 
 def _new_run_id() -> str:
@@ -252,6 +263,7 @@ project:
 
 @click.group(
     context_settings={"max_content_width": 100, "help_option_names": ["-h", "--help"]},
+    epilog=MAIN_EPILOG,
 )
 @click.version_option(version="0.1.0", prog_name="skill-lab")
 def main():
@@ -259,22 +271,24 @@ def main():
     skill-lab — 从知识库和代码提取并优化 Agent Skill。
 
     \b
-    常用命令:
-      init              初始化项目目录与 config.yaml
-      config validate   校验配置与数据源路径
-      doctor            环境诊断（tree-sitter / 图谱 / 配置）
-      codegraph         终端查询代码图谱（与 MCP 工具对齐）
-      run all           完整流水线 M1→M4
-      run code-graph    仅构建 graph.db 索引
-      resume <run_id>   M4 断点续训
-      status [run_id]   查看运行状态
-      eval              在 test split 上评测 Skill
+    顶层命令:
+      init          初始化项目目录与 config.yaml 模板
+      doctor        环境诊断（tree-sitter / 配置 / 数据源路径）
+      config        校验 config.yaml（别名：历史上亦称 config validate）
+      run           运行模块或完整流水线（见 ``skill-lab run -h``）
+      codegraph     查询代码图谱（见 ``skill-lab codegraph -h``）
+      status        查看 run 状态（无参数时列出最近 5 次）
+      inspect       查看产物文件摘要（json / jsonl / md）
+      eval          对指定 run 的 best_skill 做 held-out 评测
+      approve       审批高风险动作（approvals.jsonl）
+      publish       将 best_skill.md 发布到目标目录
+      resume        从 runtime_state.json 续训 M4
+      version       显示版本号
 
     \b
-    示例:
-      skill-lab codegraph -h
-      skill-lab codegraph search "JournalEntry" --config-path config.test.yaml
-      skill-lab run all --config-path config.test.yaml
+    配置文件 config.yaml 两段:
+      settings    框架运行参数（skillopt / model_provider / output 等）
+      project     目标项目（repos / docs / benchmark / initial_skill）
     """
     pass
 
@@ -289,7 +303,11 @@ main.add_command(codegraph_group)
 @click.option("--domain", default="", help="业务领域")
 @click.option("--name", default="code-to-skill", help="项目名称")
 def init(workspace: str, domain: str, name: str):
-    """初始化项目目录和配置模板。"""
+    """\b
+    初始化项目目录骨架与 config.yaml 模板。
+
+    创建 sources/、runs/、benchmarks/ 等目录；不写入 API Key。
+    """
     ws = Path(workspace)
 
     # 目录
@@ -314,7 +332,11 @@ def init(workspace: str, domain: str, name: str):
 @main.command()
 @click.option("--config-path", default="config.yaml")
 def doctor(config_path: str):
-    """环境诊断：tree-sitter、图谱、配置、数据源。"""
+    """\b
+    环境诊断：tree-sitter 语法、config.yaml 加载、repos/docs 路径可达性。
+
+    建议在首次 ``run all`` 前执行。
+    """
     from code_to_skill.code_graph.ts_backend import backend_status
 
     click.echo("🩺 skill-lab doctor")
@@ -352,7 +374,11 @@ def doctor(config_path: str):
               type=click.Choice(["config-only", "static-analysis", "full-simulate"]),
               help="校验深度")
 def config_validate(config_path: str, dry_run_level: str):
-    """校验 config.yaml 配置。"""
+    """\b
+    校验 config.yaml：解析、数据源路径、benchmark 目录（L1 config-only）。
+
+    ``--dry-run-level`` 更高层级（static-analysis / full-simulate）尚未实现。
+    """
     click.echo(f"🔍 校验配置: {config_path} (dry-run level: {dry_run_level})")
 
     try:
@@ -526,18 +552,41 @@ def _m4_graph_context(
 
 # ── run ──────────────────────────────────────────────────────
 
-@main.group()
+@main.group(
+    context_settings={"max_content_width": 100, "help_option_names": ["-h", "--help"]},
+    epilog=RUN_EPILOG,
+)
 def run():
-    """运行模块或全流程。"""
+    """\b
+    运行各模块或完整流水线（M1→M4）。
+
+    \b
+    子命令:
+      all               完整流水线（推荐入口）
+      code-graph        仅 M1：构建 graph.db
+      code-graph-daemon CodeGraph MCP daemon（Cursor 接入）
+      code-graph-watch  监听仓库增量更新 graph.db
+      normalize-docs    仅 M2：文档规范化
+      extract-atoms     仅 M3：SkillAtom 抽取
+      optimize-skill    仅 M4：SkillOpt 训练
+
+    使用 ``skill-lab run -h`` 查看列表；``skill-lab run <子命令> -h`` 查看参数。
+    """
     pass
 
 
-@run.command(name="all")
+@run.command(name="all", help=RUN_ALL_DOC, short_help="完整流水线 M1→M4")
 @click.option("--config-path", default="config.yaml", help="配置文件路径")
-@click.option("--from-step", "from_step", default=None, help="从指定模块恢复运行")
-@click.option("--to-step", "to_step", default=None, help="运行到指定模块停止")
-@click.option("--resume-run-id", "resume_run_id", default=None, help="复用已有 run 目录并续训 M4")
-@click.option("--dry-run", is_flag=True, help="仅校验不执行")
+@click.option(
+    "--from-step", "from_step", default=None,
+    help="从指定模块开始（code-graph|normalize-docs|extract-atoms|optimize-skill 或 m1–m4）。",
+)
+@click.option("--to-step", "to_step", default=None, help="运行到指定模块停止（同上命名）。")
+@click.option(
+    "--resume-run-id", "resume_run_id", default=None,
+    help="复用已有 <output.root>/<run_id> 目录；有 graph.db 时跳过 M1–M3。",
+)
+@click.option("--dry-run", is_flag=True, help="仅执行 config 校验，不跑流水线。")
 @click.pass_context
 def run_all(
     ctx,
@@ -547,7 +596,6 @@ def run_all(
     resume_run_id: str | None,
     dry_run: bool,
 ):
-    """运行完整流水线：code-graph → normalize-docs → extract-atoms → optimize-skill。"""
     if dry_run:
         ctx.invoke(config_validate, config_path=config_path)
         return
@@ -688,11 +736,11 @@ def run_all(
     click.echo(f"\n✅ 流水线完成！产物: {output_root}")
 
 
-@run.command(name="code-graph")
-@click.option("--repo", default=None, help="代码仓库路径")
-@click.option("--config-path", default="config.yaml")
+@run.command(name="code-graph", help=RUN_CODE_GRAPH_DOC, short_help="M1：构建 graph.db 代码图谱")
+@click.option("--repo", default=None, help="仓库 id 或 path（默认 config 中全部 repos）")
+@click.option("--config-path", default="config.yaml", help="配置文件路径")
 def run_code_graph(repo: str | None, config_path: str):
-    """运行模块 1：代码图谱与模块树。"""
+    """运行 M1 代码图谱流水线。"""
     cfg = load_config(config_path)
     s = cfg.settings
     p = cfg.project
@@ -719,7 +767,11 @@ def run_code_graph(repo: str | None, config_path: str):
         click.echo(f"✅ {r.id}: {len(m1['graph'].nodes)} nodes, {len(m1['graph'].edges)} edges")
 
 
-@run.command(name="code-graph-daemon")
+@run.command(
+    name="code-graph-daemon",
+    help=RUN_CODE_GRAPH_DAEMON_DOC,
+    short_help="启动 CodeGraph MCP daemon",
+)
 @click.option("--repo", default=None, help="仓库 id 或路径（默认取配置第一项）")
 @click.option("--output", "output_root", default=None, help="图谱产物目录（含 graph.db）")
 @click.option("--config-path", default="config.yaml")
@@ -760,7 +812,11 @@ def run_code_graph_daemon(
     daemon_main(argv)
 
 
-@run.command(name="code-graph-watch")
+@run.command(
+    name="code-graph-watch",
+    help=RUN_CODE_GRAPH_WATCH_DOC,
+    short_help="监听仓库并增量更新 graph.db",
+)
 @click.option("--repo", default=None, help="仓库 id 或路径（默认取配置第一项）")
 @click.option("--output", "output_root", default=None, help="图谱产物目录（含 graph.db）")
 @click.option("--config-path", default="config.yaml")
@@ -793,11 +849,15 @@ def run_code_graph_watch(repo: str | None, output_root: str | None, config_path:
     )
 
 
-@run.command(name="normalize-docs")
-@click.option("--docs", default=None, help="文档路径")
-@click.option("--config-path", default="config.yaml")
+@run.command(
+    name="normalize-docs",
+    help=RUN_NORMALIZE_DOCS_DOC,
+    short_help="M2：文档规范化",
+)
+@click.option("--docs", default=None, help="文档 path（默认 config 中全部 docs）")
+@click.option("--config-path", default="config.yaml", help="配置文件路径")
 def run_normalize_docs(docs: str | None, config_path: str):
-    """运行模块 2：文档规范化。"""
+    """运行 M2 文档规范化。"""
     cfg = load_config(config_path)
     s = cfg.settings
     p = cfg.project
@@ -816,11 +876,15 @@ def run_normalize_docs(docs: str | None, config_path: str):
         click.echo(f"✅ {doc.id}: {len(result['chunks'])} chunks")
 
 
-@run.command(name="extract-atoms")
-@click.option("--from", "from_dir", default=None, help="输入产物目录")
-@click.option("--config-path", default="config.yaml")
+@run.command(
+    name="extract-atoms",
+    help=RUN_EXTRACT_ATOMS_DOC,
+    short_help="M3：SkillAtom 抽取",
+)
+@click.option("--from", "from_dir", default=None, help="输入 run 目录（含 M1/M2 产物）")
+@click.option("--config-path", default="config.yaml", help="配置文件路径")
 def run_extract_atoms(from_dir: str | None, config_path: str):
-    """运行模块 3：SkillAtom 抽取。"""
+    """运行 M3 SkillAtom 抽取。"""
     from code_to_skill.atom_extractor import run_atom_extraction
     cfg = load_config(config_path)
     out_root = from_dir or "runs/latest"
@@ -834,16 +898,16 @@ def run_extract_atoms(from_dir: str | None, config_path: str):
     click.echo(f"✅ {len(result['raw_atoms'])} raw → {len(result['merged_atoms'])} merged ({accepted} accepted)")
 
 
-@run.command(name="optimize-skill")
+@run.command(name="optimize-skill", help=RUN_OPTIMIZE_SKILL_DOC, short_help="M4：SkillOpt 训练优化")
 @click.option("--benchmark", default=None, help="Benchmark 目录（覆盖 config.project.benchmark）")
-@click.option("--output", "-o", default=None, help="训练输出目录")
-@click.option("--config-path", default="config.yaml")
-@click.option("--epochs", default=3, type=int, help="训练 epoch 数")
-@click.option("--batch-size", default=20, type=int, help="每 epoch batch 大小")
-@click.option("--accumulation", default=1, type=int, help="梯度累积步数")
-@click.option("--slow-update", is_flag=True, help="启用 slow update")
-@click.option("--meta-skill", is_flag=True, help="启用 meta skill")
-@click.option("--resume", is_flag=True, help="从 output 目录的 runtime_state.json 断点续训")
+@click.option("-o", "--output", default=None, help="optimization 输出目录（默认 runs/latest/optimization）")
+@click.option("--config-path", default="config.yaml", help="配置文件路径")
+@click.option("--epochs", default=3, type=int, show_default=True, help="训练 epoch 数")
+@click.option("--batch-size", default=20, type=int, show_default=True, help="每 epoch 的 train batch 条数")
+@click.option("--accumulation", default=1, type=int, show_default=True, help="梯度累积步数")
+@click.option("--slow-update", is_flag=True, help="启用 epoch 级 slow update（默认读 config）")
+@click.option("--meta-skill", is_flag=True, help="启用 meta skill 重写（默认读 config）")
+@click.option("--resume", is_flag=True, help="从 --output 目录 runtime_state.json 断点续训")
 def run_optimize_skill(
     benchmark: str | None,
     output: str | None,
@@ -855,7 +919,6 @@ def run_optimize_skill(
     meta_skill: bool,
     resume: bool,
 ):
-    """运行模块 4：SkillOpt 优化。"""
     from code_to_skill.skillopt_loop import run_skillopt_loop
     from code_to_skill.skillopt_loop.token_budgets import configure_token_budgets
 
@@ -919,7 +982,11 @@ def run_optimize_skill(
 @main.command()
 @click.argument("run_id", required=False)
 def status(run_id: str | None):
-    """查看运行状态。"""
+    """\b
+    查看 SkillOpt run 状态。
+
+    无 RUN_ID 时列出 runs/ 下最近 5 次；有 RUN_ID 时读取 optimization/runtime_state.json。
+    """
     if not run_id:
         runs_dir = Path("runs")
         if runs_dir.exists():
@@ -958,7 +1025,11 @@ def status(run_id: str | None):
 @main.command()
 @click.argument("artifact")
 def inspect(artifact: str):
-    """查看产物摘要。"""
+    """\b
+    查看产物文件摘要（前若干行 / 字段）。
+
+    支持 .json、.jsonl、.md；用于快速查看 history.json、best_skill.md 等。
+    """
     path = Path(artifact)
     if not path.exists():
         click.echo(f"❌ 文件不存在: {artifact}")
@@ -1004,7 +1075,11 @@ def inspect(artifact: str):
 @click.option("--config-path", default="config.yaml")
 @click.option("--benchmark", default=None, help="Benchmark 目录（覆盖 config）")
 def eval_skill(run_id: str, split: str, config_path: str, benchmark: str | None):
-    """对指定 run 的 best_skill 在 held-out split 上评测（不训练）。"""
+    """\b
+    对 runs/<run_id>/optimization/best_skill.md 做独立评测（不训练）。
+
+    ``--split`` 可选 train / selection / test（默认 test）。
+    """
     best_skill_path = Path("runs") / run_id / "optimization" / "best_skill.md"
     if not best_skill_path.exists():
         click.echo(f"❌ 未找到 Skill: {best_skill_path}")
@@ -1068,7 +1143,11 @@ def eval_skill(run_id: str, split: str, config_path: str, benchmark: str | None)
 @click.argument("approval_id")
 @click.option("--deny", is_flag=True, help="拒绝")
 def approve(approval_id: str, deny: bool):
-    """审批等待中的高风险动作。"""
+    """\b
+    审批等待中的高风险动作（写入 runs/approvals.jsonl）。
+
+    默认批准；``--deny`` 拒绝。
+    """
     action = "拒绝" if deny else "批准"
     approvals_file = Path("runs") / "approvals.jsonl"
     if approvals_file.exists():
@@ -1091,7 +1170,11 @@ def approve(approval_id: str, deny: bool):
 @click.argument("run_id")
 @click.option("--target", default=None, help="发布目标目录")
 def publish(run_id: str, target: str | None):
-    """发布通过门禁的 Skill。"""
+    """\b
+    将 runs/<run_id>/optimization/best_skill.md 复制为 SKILL.md。
+
+    默认目标目录 skills/agent；可用 ``--target`` 或 config.settings.output.publish_target 覆盖。
+    """
     run_dir = Path("runs") / run_id
     best_skill = run_dir / "optimization" / "best_skill.md"
     if not best_skill.exists():
@@ -1123,7 +1206,11 @@ def publish(run_id: str, target: str | None):
 @click.option("--config-path", default="config.yaml", help="配置文件路径")
 @click.option("--from-step", "from_step", default=None, help="仅 optimize-skill 时生效（默认续训 M4）")
 def resume(run_id: str, config_path: str, from_step: str | None):
-    """从 runtime_state.json 恢复 M4 SkillOpt 训练。"""
+    """\b
+    从 runs/<run_id>/optimization/runtime_state.json 续训 M4。
+
+    等价于 ``run optimize-skill --resume -o runs/<run_id>/optimization``。
+    """
     cfg = load_config(config_path)
     s, p = cfg.settings, cfg.project
     os.environ["SKILL_LAB_CONFIG_PATH"] = os.path.abspath(config_path)
