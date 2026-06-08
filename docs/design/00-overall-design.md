@@ -1,6 +1,7 @@
 # 从知识库和代码提取并优化 Agent Skill 的总体设计文档
 
-> 本文是项目级总体设计文档，定义从知识库、PDF/Wiki、代码仓库与历史执行轨迹中提取、生成、评测并持续优化 Agent Skill 的整体架构。分模块输入、输出、存储内容与执行细节见本目录下的模块设计文档。
+> 本文是项目级总体设计文档，定义从知识库、PDF/Wiki、代码仓库与历史执行轨迹中提取、生成、评测并持续优化 Agent Skill 的整体架构。分模块输入、输出、存储内容与执行细节见本目录下的模块设计文档。  
+> **流水线整合与代码利用率优化**（M1–M4 产物贯通、配置接线、成本与可观测性）见 [`07-pipeline-integration-optimization.md`](07-pipeline-integration-optimization.md)。
 
 ## 1. 背景与目标
 
@@ -664,7 +665,13 @@ code-to-skill/
 | Rollout 未用真实 LLM | 分数虚高、reflect 无效 | 强制 `use_llm_rollout: true`；见 §3.1 |
 | Target/Optimizer 未分离 | 成本高或反思质量差 | `routes` 或 `rollout_backend` / `optimizer_backend` 分设 |
 
-## 16. 成功标准
+## 16. 流水线整合（待实施）
+
+当前各模块（M1 图谱、M3 Atom、M4 SkillOpt、CodeGraph 工具）**实现面大于贯通面**：典型 `run all` 路径下 M3 产物与 M1 的 `entrypoints`/`role` 标签、M3 的 `evidence_index` 未进入 reflect；`config.yaml` 部分 `settings.*` 未传入模块。  
+
+优化分阶段方案、配置扩展与验收指标见 **[07-pipeline-integration-optimization.md](07-pipeline-integration-optimization.md)**（P0 编排修复 → P1 M1→M4 → P2 M3↔benchmark → P3 配置贯通）。
+
+## 17. 成功标准
 
 系统达到可用状态时，应满足以下标准：
 
