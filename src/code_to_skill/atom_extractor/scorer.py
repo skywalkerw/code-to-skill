@@ -7,13 +7,36 @@ from __future__ import annotations
 from .types import SkillAtom, RawAtom
 
 
-def score_atoms(raw_atoms: list[RawAtom]) -> list[SkillAtom]:
+def _settings_float(settings: dict | None, key: str, default: float) -> float:
+    if not settings:
+        return default
+    try:
+        return float(settings.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def score_atoms(
+    raw_atoms: list[RawAtom],
+    settings: dict | None = None,
+) -> list[SkillAtom]:
     """对候选 atom 进行三层评分，返回通过门槛的 atom。
 
     第一层：资格门槛
     第二层：证据质量分层（Tier 1-5）
-    第三层：LLM 细化（预留）
+    第三层：LLM 细化（预留；``llm_adjustment`` 来自 settings.atom_extractor）
+
+    ``settings`` 键（可选，来自 ``config.settings.atom_extractor``）：
+    - ``confidence_tier_1_max``: Tier 1 置信度上限
+    - ``llm_adjustment``: 有 checks/action 时的额外加分
+    - ``accepted_min`` / ``candidate_min`` / ``needs_review_min``: 状态分档阈值
     """
+    tier_1_max = _settings_float(settings, "confidence_tier_1_max", 0.95)
+    llm_adjustment = _settings_float(settings, "llm_adjustment", 0.05)
+    accepted_min = _settings_float(settings, "accepted_min", 0.80)
+    candidate_min = _settings_float(settings, "candidate_min", 0.60)
+    needs_review_min = _settings_float(settings, "needs_review_min", 0.40)
+
     scored: list[SkillAtom] = []
     for raw in raw_atoms:
         atom = raw.atom
@@ -46,23 +69,21 @@ def score_atoms(raw_atoms: list[RawAtom]) -> list[SkillAtom]:
         else:
             tier_base = 0.45  # Tier 5
 
-        # 简单基于规则的调整
         adjustment = 0.0
         if atom.checks:
-            adjustment += 0.05
+            adjustment += llm_adjustment
         if atom.negative_rule:
-            adjustment += 0.03
+            adjustment += llm_adjustment * 0.6
         if atom.action:
-            adjustment += 0.02
+            adjustment += llm_adjustment * 0.4
 
-        atom.confidence = min(1.0, max(0.0, tier_base + adjustment))
+        atom.confidence = min(tier_1_max, max(0.0, tier_base + adjustment))
 
-        # 状态判定
-        if atom.confidence >= 0.80:
+        if atom.confidence >= accepted_min:
             atom.status = "accepted"
-        elif atom.confidence >= 0.60:
+        elif atom.confidence >= candidate_min:
             atom.status = "candidate"
-        elif atom.confidence >= 0.40:
+        elif atom.confidence >= needs_review_min:
             atom.status = "needs_review"
         else:
             atom.status = "rejected"

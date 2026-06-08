@@ -21,6 +21,7 @@ def run_atom_extraction(
     output_root: str | None = None,
     graph_db_path: str = "",
     repo_root: str = "",
+    atom_extractor_settings: dict | None = None,
 ) -> dict:
     """运行 SkillAtom 抽取流水线。
 
@@ -53,7 +54,7 @@ def run_atom_extraction(
     raw_atoms = code_atoms + doc_atoms + code_llm_atoms + doc_llm_atoms
 
     # Step 2: 评分
-    scored = score_atoms(raw_atoms)
+    scored = score_atoms(raw_atoms, settings=atom_extractor_settings)
 
     # Step 3: 合并
     merged = merge_atoms(scored)

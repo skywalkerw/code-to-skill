@@ -17,11 +17,15 @@ settings:
   code_graph:
     max_leaf_tokens: 8000
     max_module_depth: 3
+    max_components_per_group: 200
+    split_strategy: top_dir   # top_dir | package_path
+    llm_clustering_enabled: false
     tokenizer: cl100k_base
     use_cache: true   # 增量解析 graph.db，二次运行跳过未变更文件
 
   # ── 模块 2：文档规范化 ────────────────────────────────────
   document_normalizer:
+    max_chunk_tokens: 2000
     ocr_engine: tesseract
     ocr_languages: chi_sim+eng
     ocr_confidence_threshold: 0.6
@@ -141,6 +145,20 @@ settings:
       max_timeout_seconds: 900
       structured_output_fallback: true
 
+  # ── 流水线编排（M1–M4 产物契约与 skip 策略）────────────────
+  pipeline:
+    write_artifact_contract: true
+    validate_context_refs: true
+    run_atoms_when_benchmark_present: false
+    run_docs_when_atoms_skipped: false
+    merge_atom_seeds_into_benchmark: false
+    append_atom_rules_to_skill: false
+    bootstrap_min_confidence: 0.8
+    use_evidence_index: true
+    use_entrypoints: true
+    use_role_index: true
+    auto_plot_training_curve: true
+
   # ── 输出与发布 ────────────────────────────────────────────
   output:
     root: runs/
@@ -169,6 +187,25 @@ project:
   # 目录结构: train/items.json, selection/items.json, test/items.json
   benchmark: ""
   # benchmark: test-data/benchmarks/fineract
+
+  # ── benchmark task_type → 图谱 role 映射（可选，项目专用）──
+  # M4 reflect/rollout 按 role_index 限定检索；benchmark item 也可直接设 graph_role。
+  # graph_role_hints:
+  #   journal_entry:
+  #     framework: fineract
+  #     roles: [accounting_processor, api_resource]
+
+  # ── 可选：覆盖 M4 reflect prompt（写入 trace system 消息）────
+  # reflect_prompts:
+  #   error: |
+  #     ## Task
+  #     Analyze failures and propose skill edits.
+  #     ## Current Skill
+  #     {current_skill}
+  #     ## Failures
+  #     {failure_text}
+  #     ## Step Buffer
+  #     {step_buffer_summary}
 
   # ── 代码图谱扩展（目标项目专用，非框架内置）────────────────
   # Spring / MyBatis 由框架自动识别，无需在此配置。

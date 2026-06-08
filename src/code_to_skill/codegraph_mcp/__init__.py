@@ -116,6 +116,42 @@ def _create_mcp():
         """返回 graph.db 索引统计（节点/边/文件数）。"""
         return _mcp_json("codegraph_status", {})
 
+    @mcp.tool()
+    def search_code(query: str, max_results: int = 10) -> str:
+        """在 CODEGRAPH_REPO_ROOT 仓库内按关键词搜索文件名或内容（与 SkillOpt Handler 对齐）。"""
+        from .handler_holder import get_code_tools_handler
+
+        handler = get_code_tools_handler()
+        if not handler.file_enabled:
+            return json.dumps(
+                {"error": "file tools unavailable: set CODEGRAPH_REPO_ROOT to a repo directory"},
+                ensure_ascii=False,
+            )
+        return handler.execute({
+            "function": {
+                "name": "search_code",
+                "arguments": json.dumps({"query": query, "max_results": max_results}),
+            },
+        })
+
+    @mcp.tool()
+    def read_code_file(path: str, start_line: int = 1, end_line: int = 0) -> str:
+        """读取仓库内源码指定行范围（路径相对 CODEGRAPH_REPO_ROOT）。"""
+        from .handler_holder import get_code_tools_handler
+
+        handler = get_code_tools_handler()
+        if not handler.file_enabled:
+            return json.dumps(
+                {"error": "file tools unavailable: set CODEGRAPH_REPO_ROOT to a repo directory"},
+                ensure_ascii=False,
+            )
+        args: dict = {"path": path, "start_line": start_line}
+        if end_line > 0:
+            args["end_line"] = end_line
+        return handler.execute({
+            "function": {"name": "read_code_file", "arguments": json.dumps(args)},
+        })
+
     return mcp
 
 

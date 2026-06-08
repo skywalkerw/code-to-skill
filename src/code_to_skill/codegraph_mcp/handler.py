@@ -280,3 +280,20 @@ class CodeToolsHandler:
         max_results = min(max(max_results, 1), 30)
         matches = [p for p in self._iter_indexed_files() if fnmatch.fnmatch(p, pattern)][:max_results]
         return {"pattern": pattern, "files": matches, "count": len(matches)}
+
+
+def build_code_tools_handler(
+    code_repos: list[CodeRepoConfig] | list[dict] | None = None,
+    *,
+    enable_code_tools: bool = True,
+    graph_db_path: str = "",
+    repo_root: str = "",
+    graph_sources: list[dict] | None = None,
+) -> CodeToolsHandler:
+    """统一构造 CodeToolsHandler（M4 rollout / daemon / 测试共用）。"""
+    return CodeToolsHandler(
+        code_repos if enable_code_tools else None,
+        graph_db_path=graph_db_path,
+        repo_root=repo_root,
+        graph_sources=graph_sources,
+    )

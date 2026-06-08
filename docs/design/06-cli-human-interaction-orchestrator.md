@@ -137,6 +137,20 @@ skillopt:
   use_meta_skill: false
   safety_mode: sandboxed  # rollout 阶段隔离模式
 
+# === 流水线编排（M1–M4 契约，见 07 文档）===
+pipeline:
+  write_artifact_contract: true
+  validate_context_refs: true
+  run_atoms_when_benchmark_present: false
+  run_docs_when_atoms_skipped: false
+  merge_atom_seeds_into_benchmark: false
+  append_atom_rules_to_skill: false
+  bootstrap_min_confidence: 0.8
+  use_evidence_index: true
+  use_entrypoints: true
+  use_role_index: true
+  auto_plot_training_curve: true
+
 # === 模块 5：模型交互 ===
 model_layer:
   interaction_config: interaction_config.yaml
@@ -184,7 +198,9 @@ runs/<run_id>/
     └── module_errors.log
 ```
 
-### 3.1 `run_manifest.json`
+### 3.1 `run_manifest.json`（✅ Phase 4）
+
+由 `PipelineRunRecorder` 写入，记录 M1–M4 各阶段 `status` / `skip_reason` / `duration_sec` / `artifacts` / `metrics`。M4 失败时仍写入 `status: failed`。`inspect run` 直接消费。
 
 ```json
 {
@@ -192,9 +208,15 @@ runs/<run_id>/
   "run_id": "fineract-finance-20260603-001",
   "domain": "fintech",
   "created_at": "2026-06-03T00:00:00Z",
-  "workspace": "/abs/path/agent-skill-lab",
-  "commands": ["run all"],
-  "modules": [
+  "status": "completed",
+  "duration_sec": 842.5,
+  "effective_settings": {},
+  "phases": [
+    {"phase": "m1_code_graph", "status": "skipped", "skip_reason": "..."},
+    {"phase": "m4_skillopt", "status": "completed", "metrics": {"best_score": 0.72}}
+  ],
+  "summary": {"best_score": 0.72, "train_items": 7},
+  "modules_legacy": [
     "code_graph_module_tree",
     "document_normalization",
     "skillatom_extraction",
@@ -294,14 +316,15 @@ skill-lab init --workspace ./agent-skill-lab --domain fintech
 
 校验配置，不执行模块。
 
-检查内容：
+检查内容（L1 `config-only`）：
 
 - 数据源路径存在。
-- include/exclude 配置合法。
-- 模型路由可解析。
+- 模型路由与 **生效配置表**（`build_effective_settings_report`：M1/M2/M3/M4 已接线项）。
 - 必需密钥通过环境变量存在，但不打印明文。
-- 输出目录可写。
-- 高风险权限是否需要审批。
+
+L2 `static-analysis`：在 L1 基础上对每个 repo 做文件扫描 + 符号解析（无 LLM 聚类），对 `local_file` 文档做格式解析（无 OCR）。实现：`cli/static_analysis.py`。
+
+L3 `full-simulate`：L2 + M1–M4 全流程，全部 LLM 走 `MockReplayBackend` + 内置 fixture（`cli/full_simulate.py`）。
 
 **`--dry-run` 三级模式**：
 
@@ -320,30 +343,52 @@ skill-lab run all --dry-run-level full-simulate   # Level 3
 | L2 `static-analysis` | 静态分析 | L1 + 运行模块 1 的文件清单和符号抽取（不调用 LLM 聚类）、模块 2 的格式解析（不调用 OCR） | LLM 聚类、OCR、模块 3-4 全部内容 |
 | L3 `full-simulate` | 完整模拟 | L2 + 按正常流程走完所有模块，但所有模型调用使用 `MockReplayBackend`（返回固定 mock 响应） | 真实 LLM/Agent 调用 |
 
-默认 dry-run 为 L1。L3 需要预先准备 mock response fixture。
+默认 dry-run 为 L1。L3 使用内置 fixture：`cli/fixtures/full_simulate/mock-backend/responses.json`（✅ 已实现 `cli/full_simulate.py`）。
+
+```bash
+skill-lab config --dry-run-level full-simulate
+skill-lab run all --dry-run --dry-run-level full-simulate
+```
 
 ### 4.4 `run`
 
 运行单个模块或全流程。
 
 ```bash
-skill-lab run all --config project.yaml
-skill-lab run code-graph --repo ../fineract
-skill-lab run normalize-docs --docs ./kb --domain fintech
-skill-lab run extract-atoms --from sources/
-skill-lab run optimize-skill --benchmark runs/fineract-finance-20260603-001/benchmarks
+skill-lab run all --config-path config.yaml
+skill-lab run all --dry-run --dry-run-level full-simulate
+skill-lab run code-graph --repo fineract
+skill-lab run normalize-docs --docs ./kb/fineract/user-manual.md
+skill-lab run extract-atoms --from runs/<run_id>
+skill-lab run bootstrap-benchmark --from-run runs/<run_id> [--merge]
+skill-lab run optimize-skill --benchmark benchmarks/fineract -o runs/<id>/optimization
+skill-lab run training-curve plot <run_id>
 ```
 
 支持范围：
 
-| 名称 | 调用模块 |
-|---|---|
-| `code-graph` | 模块 1 |
-| `normalize-docs` | 模块 2 |
-| `extract-atoms` | 模块 3 |
-| `optimize-skill` | 模块 4 |
-| `model-check` | 模块 5 |
-| `all` | 按依赖顺序运行 1→2→3→4，期间经由模块 5 调用模型/Agent |
+| 名称 | 调用模块 | 说明 |
+|---|---|---|
+| `code-graph` | M1 | 构建 `graph.db` |
+| `normalize-docs` | M2 | 文档规范化 |
+| `extract-atoms` | M3 | 必须 `--from <run_dir>`（含 M1/M2 产物） |
+| `bootstrap-benchmark` | M3→benchmark | 高置信种子写入 `train/items.json` |
+| `optimize-skill` | M4 | SkillOpt；`--resume` 续训 |
+| `training-curve` | M4 可观测 | 子命令 `plot` / `backfill` |
+| `all` | M1→M4 | 见下方编排 flag |
+| `model-check` | M5 | 模型连通性（预留） |
+
+**`run all` 编排 flag**（`settings.pipeline` 可设默认值）：
+
+| Flag | 作用 |
+|------|------|
+| `--with-atoms` | 有 benchmark 时仍跑 M3 |
+| `--with-docs` | 跳过 M3 时仍跑 M2 |
+| `--bootstrap-benchmark` | M3 高置信种子填充/合并 train |
+| `--merge-benchmark` | 与 bootstrap 同用：追加而非覆盖 train |
+| `--suggest-skill-rules` | 高置信 atom 追加 `### Auto-suggested rules` |
+| `--resume-run-id` | 复用 run 目录，跳过 M1–M3（有 graph.db） |
+| `--dry-run` + `--dry-run-level` | L1 配置 / L2 静态分析 / L3 mock 全流程 |
 
 ### 4.5 `status`
 
@@ -367,10 +412,15 @@ skill-lab status fineract-finance-20260603-001
 查看产物摘要。
 
 ```bash
-skill-lab inspect graph runs/fineract-finance-20260603-001/sources/code/fineract/develop/graph.json
-skill-lab inspect atoms runs/fineract-finance-20260603-001/atoms/fintech/merged_atoms.jsonl
-skill-lab inspect skill runs/fineract-finance-20260603-001/optimization/best_skill.md
+# Run 级汇总（推荐）
+skill-lab inspect run <run_id>
+
+# 单文件（向后兼容）
+skill-lab inspect runs/<run_id>/optimization/best_skill.md
+skill-lab inspect runs/<run_id>/atoms/merged_atoms.jsonl
 ```
+
+**`inspect run`** 输出：`run_manifest.json` 各阶段 skip/耗时、`history.json` gate 历史（近 5 步）、`test_report`、`context_ref_report` 解析率、`artifact_contract` sidecar、`training_curve` 路径、最近 step `metrics.json`（证据命中 / custom reflect / scenario_rules）。
 
 ### 4.7 `approve`
 

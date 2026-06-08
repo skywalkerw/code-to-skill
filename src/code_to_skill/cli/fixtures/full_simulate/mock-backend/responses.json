@@ -1,0 +1,402 @@
+[
+  {
+    "content": "[{\"atom_id\":\"sim-code-1\",\"kind\":\"constraint\",\"claim\":\"Always verify idempotency before retry.\",\"source_refs\":[{\"type\":\"code\",\"id\":\"sim::handler\"}],\"checks\":[\"idempotency\"],\"confidence\":0.85,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-doc-1\",\"kind\":\"procedure\",\"claim\":\"Record failures in the audit log.\",\"source_refs\":[{\"type\":\"doc\",\"id\":\"sim-doc\"}],\"checks\":[\"audit\"],\"confidence\":0.82,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "FINAL: idempotency key required. audit log enabled. retry with backoff.",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "{\"reasoning\":\"simulate reflect\",\"edits\":[{\"op\":\"append\",\"content\":\"- Verify idempotency keys before any retry.\",\"source_type\":\"failure\"}]}",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"index\":1,\"score\":0.9,\"support\":1}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-code-1\",\"kind\":\"constraint\",\"claim\":\"Always verify idempotency before retry.\",\"source_refs\":[{\"type\":\"code\",\"id\":\"sim::handler\"}],\"checks\":[\"idempotency\"],\"confidence\":0.85,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-doc-1\",\"kind\":\"procedure\",\"claim\":\"Record failures in the audit log.\",\"source_refs\":[{\"type\":\"doc\",\"id\":\"sim-doc\"}],\"checks\":[\"audit\"],\"confidence\":0.82,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "FINAL: idempotency key required. audit log enabled. retry with backoff.",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "{\"reasoning\":\"simulate reflect\",\"edits\":[{\"op\":\"append\",\"content\":\"- Verify idempotency keys before any retry.\",\"source_type\":\"failure\"}]}",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"index\":1,\"score\":0.9,\"support\":1}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-code-1\",\"kind\":\"constraint\",\"claim\":\"Always verify idempotency before retry.\",\"source_refs\":[{\"type\":\"code\",\"id\":\"sim::handler\"}],\"checks\":[\"idempotency\"],\"confidence\":0.85,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-doc-1\",\"kind\":\"procedure\",\"claim\":\"Record failures in the audit log.\",\"source_refs\":[{\"type\":\"doc\",\"id\":\"sim-doc\"}],\"checks\":[\"audit\"],\"confidence\":0.82,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "FINAL: idempotency key required. audit log enabled. retry with backoff.",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "{\"reasoning\":\"simulate reflect\",\"edits\":[{\"op\":\"append\",\"content\":\"- Verify idempotency keys before any retry.\",\"source_type\":\"failure\"}]}",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"index\":1,\"score\":0.9,\"support\":1}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-code-1\",\"kind\":\"constraint\",\"claim\":\"Always verify idempotency before retry.\",\"source_refs\":[{\"type\":\"code\",\"id\":\"sim::handler\"}],\"checks\":[\"idempotency\"],\"confidence\":0.85,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-doc-1\",\"kind\":\"procedure\",\"claim\":\"Record failures in the audit log.\",\"source_refs\":[{\"type\":\"doc\",\"id\":\"sim-doc\"}],\"checks\":[\"audit\"],\"confidence\":0.82,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "FINAL: idempotency key required. audit log enabled. retry with backoff.",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "{\"reasoning\":\"simulate reflect\",\"edits\":[{\"op\":\"append\",\"content\":\"- Verify idempotency keys before any retry.\",\"source_type\":\"failure\"}]}",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"index\":1,\"score\":0.9,\"support\":1}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-code-1\",\"kind\":\"constraint\",\"claim\":\"Always verify idempotency before retry.\",\"source_refs\":[{\"type\":\"code\",\"id\":\"sim::handler\"}],\"checks\":[\"idempotency\"],\"confidence\":0.85,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-doc-1\",\"kind\":\"procedure\",\"claim\":\"Record failures in the audit log.\",\"source_refs\":[{\"type\":\"doc\",\"id\":\"sim-doc\"}],\"checks\":[\"audit\"],\"confidence\":0.82,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "FINAL: idempotency key required. audit log enabled. retry with backoff.",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "{\"reasoning\":\"simulate reflect\",\"edits\":[{\"op\":\"append\",\"content\":\"- Verify idempotency keys before any retry.\",\"source_type\":\"failure\"}]}",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"index\":1,\"score\":0.9,\"support\":1}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-code-1\",\"kind\":\"constraint\",\"claim\":\"Always verify idempotency before retry.\",\"source_refs\":[{\"type\":\"code\",\"id\":\"sim::handler\"}],\"checks\":[\"idempotency\"],\"confidence\":0.85,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-doc-1\",\"kind\":\"procedure\",\"claim\":\"Record failures in the audit log.\",\"source_refs\":[{\"type\":\"doc\",\"id\":\"sim-doc\"}],\"checks\":[\"audit\"],\"confidence\":0.82,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "FINAL: idempotency key required. audit log enabled. retry with backoff.",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "{\"reasoning\":\"simulate reflect\",\"edits\":[{\"op\":\"append\",\"content\":\"- Verify idempotency keys before any retry.\",\"source_type\":\"failure\"}]}",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"index\":1,\"score\":0.9,\"support\":1}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-code-1\",\"kind\":\"constraint\",\"claim\":\"Always verify idempotency before retry.\",\"source_refs\":[{\"type\":\"code\",\"id\":\"sim::handler\"}],\"checks\":[\"idempotency\"],\"confidence\":0.85,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-doc-1\",\"kind\":\"procedure\",\"claim\":\"Record failures in the audit log.\",\"source_refs\":[{\"type\":\"doc\",\"id\":\"sim-doc\"}],\"checks\":[\"audit\"],\"confidence\":0.82,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "FINAL: idempotency key required. audit log enabled. retry with backoff.",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "{\"reasoning\":\"simulate reflect\",\"edits\":[{\"op\":\"append\",\"content\":\"- Verify idempotency keys before any retry.\",\"source_type\":\"failure\"}]}",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"index\":1,\"score\":0.9,\"support\":1}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-code-1\",\"kind\":\"constraint\",\"claim\":\"Always verify idempotency before retry.\",\"source_refs\":[{\"type\":\"code\",\"id\":\"sim::handler\"}],\"checks\":[\"idempotency\"],\"confidence\":0.85,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-doc-1\",\"kind\":\"procedure\",\"claim\":\"Record failures in the audit log.\",\"source_refs\":[{\"type\":\"doc\",\"id\":\"sim-doc\"}],\"checks\":[\"audit\"],\"confidence\":0.82,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "FINAL: idempotency key required. audit log enabled. retry with backoff.",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "{\"reasoning\":\"simulate reflect\",\"edits\":[{\"op\":\"append\",\"content\":\"- Verify idempotency keys before any retry.\",\"source_type\":\"failure\"}]}",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"index\":1,\"score\":0.9,\"support\":1}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-code-1\",\"kind\":\"constraint\",\"claim\":\"Always verify idempotency before retry.\",\"source_refs\":[{\"type\":\"code\",\"id\":\"sim::handler\"}],\"checks\":[\"idempotency\"],\"confidence\":0.85,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-doc-1\",\"kind\":\"procedure\",\"claim\":\"Record failures in the audit log.\",\"source_refs\":[{\"type\":\"doc\",\"id\":\"sim-doc\"}],\"checks\":[\"audit\"],\"confidence\":0.82,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "FINAL: idempotency key required. audit log enabled. retry with backoff.",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "{\"reasoning\":\"simulate reflect\",\"edits\":[{\"op\":\"append\",\"content\":\"- Verify idempotency keys before any retry.\",\"source_type\":\"failure\"}]}",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"index\":1,\"score\":0.9,\"support\":1}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-code-1\",\"kind\":\"constraint\",\"claim\":\"Always verify idempotency before retry.\",\"source_refs\":[{\"type\":\"code\",\"id\":\"sim::handler\"}],\"checks\":[\"idempotency\"],\"confidence\":0.85,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-doc-1\",\"kind\":\"procedure\",\"claim\":\"Record failures in the audit log.\",\"source_refs\":[{\"type\":\"doc\",\"id\":\"sim-doc\"}],\"checks\":[\"audit\"],\"confidence\":0.82,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "FINAL: idempotency key required. audit log enabled. retry with backoff.",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "{\"reasoning\":\"simulate reflect\",\"edits\":[{\"op\":\"append\",\"content\":\"- Verify idempotency keys before any retry.\",\"source_type\":\"failure\"}]}",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"index\":1,\"score\":0.9,\"support\":1}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-code-1\",\"kind\":\"constraint\",\"claim\":\"Always verify idempotency before retry.\",\"source_refs\":[{\"type\":\"code\",\"id\":\"sim::handler\"}],\"checks\":[\"idempotency\"],\"confidence\":0.85,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-doc-1\",\"kind\":\"procedure\",\"claim\":\"Record failures in the audit log.\",\"source_refs\":[{\"type\":\"doc\",\"id\":\"sim-doc\"}],\"checks\":[\"audit\"],\"confidence\":0.82,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "FINAL: idempotency key required. audit log enabled. retry with backoff.",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "{\"reasoning\":\"simulate reflect\",\"edits\":[{\"op\":\"append\",\"content\":\"- Verify idempotency keys before any retry.\",\"source_type\":\"failure\"}]}",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"index\":1,\"score\":0.9,\"support\":1}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-code-1\",\"kind\":\"constraint\",\"claim\":\"Always verify idempotency before retry.\",\"source_refs\":[{\"type\":\"code\",\"id\":\"sim::handler\"}],\"checks\":[\"idempotency\"],\"confidence\":0.85,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-doc-1\",\"kind\":\"procedure\",\"claim\":\"Record failures in the audit log.\",\"source_refs\":[{\"type\":\"doc\",\"id\":\"sim-doc\"}],\"checks\":[\"audit\"],\"confidence\":0.82,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "FINAL: idempotency key required. audit log enabled. retry with backoff.",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "{\"reasoning\":\"simulate reflect\",\"edits\":[{\"op\":\"append\",\"content\":\"- Verify idempotency keys before any retry.\",\"source_type\":\"failure\"}]}",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"index\":1,\"score\":0.9,\"support\":1}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-code-1\",\"kind\":\"constraint\",\"claim\":\"Always verify idempotency before retry.\",\"source_refs\":[{\"type\":\"code\",\"id\":\"sim::handler\"}],\"checks\":[\"idempotency\"],\"confidence\":0.85,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-doc-1\",\"kind\":\"procedure\",\"claim\":\"Record failures in the audit log.\",\"source_refs\":[{\"type\":\"doc\",\"id\":\"sim-doc\"}],\"checks\":[\"audit\"],\"confidence\":0.82,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "FINAL: idempotency key required. audit log enabled. retry with backoff.",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "{\"reasoning\":\"simulate reflect\",\"edits\":[{\"op\":\"append\",\"content\":\"- Verify idempotency keys before any retry.\",\"source_type\":\"failure\"}]}",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"index\":1,\"score\":0.9,\"support\":1}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-code-1\",\"kind\":\"constraint\",\"claim\":\"Always verify idempotency before retry.\",\"source_refs\":[{\"type\":\"code\",\"id\":\"sim::handler\"}],\"checks\":[\"idempotency\"],\"confidence\":0.85,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-doc-1\",\"kind\":\"procedure\",\"claim\":\"Record failures in the audit log.\",\"source_refs\":[{\"type\":\"doc\",\"id\":\"sim-doc\"}],\"checks\":[\"audit\"],\"confidence\":0.82,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "FINAL: idempotency key required. audit log enabled. retry with backoff.",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "{\"reasoning\":\"simulate reflect\",\"edits\":[{\"op\":\"append\",\"content\":\"- Verify idempotency keys before any retry.\",\"source_type\":\"failure\"}]}",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"index\":1,\"score\":0.9,\"support\":1}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-code-1\",\"kind\":\"constraint\",\"claim\":\"Always verify idempotency before retry.\",\"source_refs\":[{\"type\":\"code\",\"id\":\"sim::handler\"}],\"checks\":[\"idempotency\"],\"confidence\":0.85,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-doc-1\",\"kind\":\"procedure\",\"claim\":\"Record failures in the audit log.\",\"source_refs\":[{\"type\":\"doc\",\"id\":\"sim-doc\"}],\"checks\":[\"audit\"],\"confidence\":0.82,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "FINAL: idempotency key required. audit log enabled. retry with backoff.",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "{\"reasoning\":\"simulate reflect\",\"edits\":[{\"op\":\"append\",\"content\":\"- Verify idempotency keys before any retry.\",\"source_type\":\"failure\"}]}",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"index\":1,\"score\":0.9,\"support\":1}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-code-1\",\"kind\":\"constraint\",\"claim\":\"Always verify idempotency before retry.\",\"source_refs\":[{\"type\":\"code\",\"id\":\"sim::handler\"}],\"checks\":[\"idempotency\"],\"confidence\":0.85,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-doc-1\",\"kind\":\"procedure\",\"claim\":\"Record failures in the audit log.\",\"source_refs\":[{\"type\":\"doc\",\"id\":\"sim-doc\"}],\"checks\":[\"audit\"],\"confidence\":0.82,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "FINAL: idempotency key required. audit log enabled. retry with backoff.",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "{\"reasoning\":\"simulate reflect\",\"edits\":[{\"op\":\"append\",\"content\":\"- Verify idempotency keys before any retry.\",\"source_type\":\"failure\"}]}",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"index\":1,\"score\":0.9,\"support\":1}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-code-1\",\"kind\":\"constraint\",\"claim\":\"Always verify idempotency before retry.\",\"source_refs\":[{\"type\":\"code\",\"id\":\"sim::handler\"}],\"checks\":[\"idempotency\"],\"confidence\":0.85,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-doc-1\",\"kind\":\"procedure\",\"claim\":\"Record failures in the audit log.\",\"source_refs\":[{\"type\":\"doc\",\"id\":\"sim-doc\"}],\"checks\":[\"audit\"],\"confidence\":0.82,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "FINAL: idempotency key required. audit log enabled. retry with backoff.",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "{\"reasoning\":\"simulate reflect\",\"edits\":[{\"op\":\"append\",\"content\":\"- Verify idempotency keys before any retry.\",\"source_type\":\"failure\"}]}",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"index\":1,\"score\":0.9,\"support\":1}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-code-1\",\"kind\":\"constraint\",\"claim\":\"Always verify idempotency before retry.\",\"source_refs\":[{\"type\":\"code\",\"id\":\"sim::handler\"}],\"checks\":[\"idempotency\"],\"confidence\":0.85,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-doc-1\",\"kind\":\"procedure\",\"claim\":\"Record failures in the audit log.\",\"source_refs\":[{\"type\":\"doc\",\"id\":\"sim-doc\"}],\"checks\":[\"audit\"],\"confidence\":0.82,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "FINAL: idempotency key required. audit log enabled. retry with backoff.",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "{\"reasoning\":\"simulate reflect\",\"edits\":[{\"op\":\"append\",\"content\":\"- Verify idempotency keys before any retry.\",\"source_type\":\"failure\"}]}",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"index\":1,\"score\":0.9,\"support\":1}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-code-1\",\"kind\":\"constraint\",\"claim\":\"Always verify idempotency before retry.\",\"source_refs\":[{\"type\":\"code\",\"id\":\"sim::handler\"}],\"checks\":[\"idempotency\"],\"confidence\":0.85,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-doc-1\",\"kind\":\"procedure\",\"claim\":\"Record failures in the audit log.\",\"source_refs\":[{\"type\":\"doc\",\"id\":\"sim-doc\"}],\"checks\":[\"audit\"],\"confidence\":0.82,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "FINAL: idempotency key required. audit log enabled. retry with backoff.",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "{\"reasoning\":\"simulate reflect\",\"edits\":[{\"op\":\"append\",\"content\":\"- Verify idempotency keys before any retry.\",\"source_type\":\"failure\"}]}",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"index\":1,\"score\":0.9,\"support\":1}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-code-1\",\"kind\":\"constraint\",\"claim\":\"Always verify idempotency before retry.\",\"source_refs\":[{\"type\":\"code\",\"id\":\"sim::handler\"}],\"checks\":[\"idempotency\"],\"confidence\":0.85,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"atom_id\":\"sim-doc-1\",\"kind\":\"procedure\",\"claim\":\"Record failures in the audit log.\",\"source_refs\":[{\"type\":\"doc\",\"id\":\"sim-doc\"}],\"checks\":[\"audit\"],\"confidence\":0.82,\"risk\":\"low\"}]",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "FINAL: idempotency key required. audit log enabled. retry with backoff.",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "{\"reasoning\":\"simulate reflect\",\"edits\":[{\"op\":\"append\",\"content\":\"- Verify idempotency keys before any retry.\",\"source_type\":\"failure\"}]}",
+    "finish_reason": "stop"
+  },
+  {
+    "content": "[{\"index\":1,\"score\":0.9,\"support\":1}]",
+    "finish_reason": "stop"
+  }
+]

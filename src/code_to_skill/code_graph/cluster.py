@@ -11,20 +11,46 @@ from .types import CodeGraph, ModuleTree, ModuleTreeNode, GraphNode, NodeKind, L
 from .leaf_context import estimate_tokens
 
 
-def build_module_tree(graph: CodeGraph, repo_root: str,
-                      max_module_depth: int = 3,
-                      max_components_per_group: int = 200) -> ModuleTree:
-    """从 CodeGraph 构建模块树。按包路径层级自动分组。"""
+def _group_key_for_node(node: GraphNode, split_strategy: str) -> str:
+    parts = Path(node.file_path).parts
+    if not parts:
+        return "root"
+    if split_strategy == "package_path":
+        depth = min(4, max(1, len(parts) - 1))
+        return "/".join(parts[:depth])
+    return parts[0]
+
+
+def build_module_tree(
+    graph: CodeGraph,
+    repo_root: str,
+    max_module_depth: int = 3,
+    max_components_per_group: int = 200,
+    *,
+    split_strategy: str = "top_dir",
+    llm_clustering_enabled: bool = False,
+) -> ModuleTree:
+    """从 CodeGraph 构建模块树。按包路径层级自动分组。
+
+    ``split_strategy``:
+    - ``top_dir``: 按顶层目录分组（默认）
+    - ``package_path``: 按文件路径前 3–4 段分组（更接近包路径）
+    """
+    if llm_clustering_enabled:
+        import logging
+        logging.getLogger(__name__).info(
+            "[M1] llm_clustering_enabled=true（预留；当前使用规则聚类 split_strategy=%s）",
+            split_strategy,
+        )
+
     tree = ModuleTree()
     non_file_nodes = [n for n in graph.nodes if n.kind != NodeKind.file]
     if not non_file_nodes:
         return tree
 
-    # 按 depth 0 的目录分组
     groups: dict[str, list[GraphNode]] = defaultdict(list)
     for node in non_file_nodes:
-        parts = Path(node.file_path).parts
-        key = parts[0] if parts else "root"
+        key = _group_key_for_node(node, split_strategy)
         groups[key].append(node)
 
     for name, nodes in groups.items():

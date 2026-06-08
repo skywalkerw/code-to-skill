@@ -68,6 +68,14 @@ _ENV_MAP = {
 }
 
 
+def _simulate_fixture_dir() -> str:
+    from pathlib import Path
+    return str(
+        Path(__file__).resolve().parent.parent
+        / "cli" / "fixtures" / "full_simulate" / "mock-backend"
+    )
+
+
 def create_llm_backend(backend_id: str | None = None) -> InteractionBackend:
     """自动发现并创建 LLM backend。
 
@@ -80,6 +88,14 @@ def create_llm_backend(backend_id: str | None = None) -> InteractionBackend:
     Returns:
         InteractionBackend 实例（真实 LLM 或 Mock）
     """
+    if os.environ.get("SKILL_LAB_SIMULATE"):
+        logger.info("Using simulate MockReplayBackend (SKILL_LAB_SIMULATE=1)")
+        return MockReplayBackend(
+            backend_id="mock-backend",
+            fixture_dir=_simulate_fixture_dir(),
+            model="mock-simulate",
+        )
+
     if backend_id is None:
         backend_id = os.environ.get("SKILL_LAB_LLM_BACKEND", "deepseek")
 
@@ -158,6 +174,9 @@ def _create_mock(backend_id: str) -> MockReplayBackend:
 
 def is_llm_available(backend_id: str | None = None) -> bool:
     """检查 LLM backend 是否可用。"""
+    if os.environ.get("SKILL_LAB_SIMULATE"):
+        return True
+
     if backend_id is None:
         backend_id = os.environ.get("SKILL_LAB_LLM_BACKEND", "deepseek")
 

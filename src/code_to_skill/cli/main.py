@@ -37,6 +37,7 @@ from .help_text import (
     RUN_CODE_GRAPH_DOC,
     RUN_CODE_GRAPH_WATCH_DOC,
     RUN_EPILOG,
+    RUN_BOOTSTRAP_BENCHMARK_DOC,
     RUN_EXTRACT_ATOMS_DOC,
     RUN_NORMALIZE_DOCS_DOC,
     RUN_OPTIMIZE_SKILL_DOC,
@@ -377,7 +378,8 @@ def config_validate(config_path: str, dry_run_level: str):
     """\b
     校验 config.yaml：解析、数据源路径、benchmark 目录（L1 config-only）。
 
-    ``--dry-run-level`` 更高层级（static-analysis / full-simulate）尚未实现。
+    L2 ``static-analysis``：M1 文件扫描+符号解析、M2 格式解析（无 LLM/OCR）。
+    L3 ``full-simulate``：L2 + M1–M4 全流程（MockReplayBackend，无真实 LLM）。
     """
     click.echo(f"🔍 校验配置: {config_path} (dry-run level: {dry_run_level})")
 
@@ -407,14 +409,34 @@ def config_validate(config_path: str, dry_run_level: str):
     else:
         click.echo("   ✅ 所有数据源路径可达")
 
+    from .pipeline_config import build_effective_settings_report, format_effective_settings_lines
+
+    report = build_effective_settings_report(cfg.settings, cfg.project)
+    click.echo("")
+    for line in format_effective_settings_lines(report):
+        click.echo(line)
+
     if dry_run_level == "config-only":
         click.echo("\n✅ 配置校验通过 (L1: config-only)")
         return
 
     if dry_run_level == "static-analysis":
-        click.echo("\n⚠️  L2 static-analysis 尚未实现，仅执行 L1 校验")
-    elif dry_run_level == "full-simulate":
-        click.echo("\n⚠️  L3 full-simulate 尚未实现，仅执行 L1 校验")
+        from .static_analysis import run_static_analysis
+
+        sa = run_static_analysis(cfg)
+        for line in sa.format_lines():
+            click.echo(line)
+        return
+
+    if dry_run_level == "full-simulate":
+        from .full_simulate import run_full_simulate
+
+        try:
+            run_full_simulate(cfg, echo=click.echo)
+        except Exception as exc:
+            click.echo(f"\n❌ L3 full-simulate 失败: {exc}", err=True)
+            sys.exit(1)
+        return
 
 
 def _validate_project_sources(project: ProjectConfig) -> list[str]:
@@ -587,6 +609,31 @@ def run():
     help="复用已有 <output.root>/<run_id> 目录；有 graph.db 时跳过 M1–M3。",
 )
 @click.option("--dry-run", is_flag=True, help="仅执行 config 校验，不跑流水线。")
+@click.option(
+    "--dry-run-level", "dry_run_level", default="config-only",
+    type=click.Choice(["config-only", "static-analysis", "full-simulate"]),
+    help="dry-run 深度：L1 配置 / L2 静态分析 / L3 mock 全流程。",
+)
+@click.option(
+    "--with-atoms", "with_atoms", is_flag=True,
+    help="有 benchmark 时仍运行 M3（默认有 initial_skill+benchmark 时跳过）。",
+)
+@click.option(
+    "--with-docs", "with_docs", is_flag=True,
+    help="跳过 M3 时仍运行 M2 文档规范化。",
+)
+@click.option(
+    "--bootstrap-benchmark", "bootstrap_benchmark", is_flag=True,
+    help="用 M3 高置信种子填充或扩充 benchmark train。",
+)
+@click.option(
+    "--merge-benchmark", "merge_benchmark", is_flag=True,
+    help="将种子追加到已有 train（需与 --bootstrap-benchmark 同用）。",
+)
+@click.option(
+    "--suggest-skill-rules", "suggest_skill_rules", is_flag=True,
+    help="将高置信 atom 追加到 initial_skill 的 Auto-suggested rules 节。",
+)
 @click.pass_context
 def run_all(
     ctx,
@@ -595,15 +642,44 @@ def run_all(
     to_step: str | None,
     resume_run_id: str | None,
     dry_run: bool,
+    dry_run_level: str,
+    with_atoms: bool,
+    with_docs: bool,
+    bootstrap_benchmark: bool,
+    merge_benchmark: bool,
+    suggest_skill_rules: bool,
 ):
     if dry_run:
-        ctx.invoke(config_validate, config_path=config_path)
+        ctx.invoke(
+            config_validate,
+            config_path=config_path,
+            dry_run_level=dry_run_level,
+        )
         return
 
     cfg = load_config(config_path)
     s = cfg.settings
     p = cfg.project
     os.environ["SKILL_LAB_CONFIG_PATH"] = os.path.abspath(config_path)
+
+    from .benchmark_bootstrap import (
+        append_atom_rules_to_skill,
+        apply_benchmark_bootstrap,
+        load_m3_from_run,
+    )
+    from .pipeline_config import (
+        ModuleRunSettings,
+        parse_pipeline_settings,
+        should_skip_m2,
+        should_skip_m3,
+    )
+    module_settings = ModuleRunSettings.from_settings(s)
+    from .run_manifest import PipelineRunRecorder
+
+    pipeline = parse_pipeline_settings(s.pipeline)
+    do_bootstrap = bootstrap_benchmark or pipeline.merge_atom_seeds_into_benchmark
+    do_merge = merge_benchmark or pipeline.merge_atom_seeds_into_benchmark
+    do_suggest_rules = suggest_skill_rules or pipeline.append_atom_rules_to_skill
 
     m4_resume = False
     if resume_run_id:
@@ -625,10 +701,41 @@ def run_all(
     configure_token_budgets(s.skillopt.get("token_budgets"))
     _init_run_outputs(s, output_root)
 
+    from .pipeline_config import build_effective_settings_report
+
+    effective_settings = build_effective_settings_report(s, p)
+    recorder = PipelineRunRecorder(
+        run_id,
+        output_root,
+        domain=p.domain,
+        effective_settings=effective_settings,
+        flags={
+            "with_atoms": with_atoms,
+            "with_docs": with_docs,
+            "bootstrap_benchmark": do_bootstrap,
+            "merge_benchmark": do_merge,
+            "suggest_skill_rules": do_suggest_rules,
+            "resume": m4_resume,
+        },
+    )
+
     skip_prefix = m4_resume or (from_step in ("optimize-skill", "m4", "4"))
     graph_ready = bool(p.repos) and os.path.isfile(
         os.path.join(output_root, "sources", "code", p.repos[0].id, p.repos[0].ref, "graph.db"),
     )
+
+    skip_m3 = (
+        not skip_prefix
+        and should_skip_m3(p, pipeline, with_atoms=with_atoms)
+    )
+    skip_m2 = (
+        not skip_prefix
+        and should_skip_m2(p, pipeline, skip_m3=skip_m3, with_docs=with_docs, with_atoms=with_atoms)
+    )
+    if skip_m3:
+        click.echo("⏭️  跳过 M3（已有 initial_skill + benchmark train；使用 --with-atoms 强制运行）")
+    if skip_m2 and p.docs:
+        click.echo("⏭️  跳过 M2（M3 已跳过且文档仅服务 atom 抽取；使用 --with-docs 强制运行）")
 
     all_leaf_ctxs: list = []
     total_nodes = 0
@@ -638,102 +745,207 @@ def run_all(
 
     if skip_prefix and graph_ready:
         click.echo("⏭️  跳过 M1–M3（复用已有产物）")
+        recorder.skip_phase("m1_code_graph", "resume: reuse existing graph.db")
+        recorder.skip_phase("m2_docs", "resume: reuse existing artifacts")
+        recorder.skip_phase("m3_atoms", "resume: reuse existing artifacts")
     else:
-        # M1: 代码图谱（支持多仓库）
-        click.echo("📊 [1/4] 构建代码图谱...")
-        if p.repos:
-            from code_to_skill.code_graph import run_code_graph_pipeline
-            from .graph_config import resolve_framework_patterns
-            for repo in p.repos:
-                m1 = run_code_graph_pipeline(
-                    repo_root=repo.path,
-                    include=repo.include,
-                    exclude=repo.exclude,
-                    max_leaf_tokens=s.code_graph.get("max_leaf_tokens", 8000),
-                    max_module_depth=s.code_graph.get("max_module_depth", 3),
-                    output_root=os.path.join(output_root, "sources", "code", repo.id, repo.ref),
-                    use_cache=s.code_graph.get("use_cache", True),
-                    repo_id=repo.id,
-                    snapshot_ref=repo.ref,
-                    custom_patterns=resolve_framework_patterns(p, repo),
+        if not skip_prefix or not graph_ready:
+            recorder.start_phase("m1_code_graph")
+            click.echo("📊 [1/4] 构建代码图谱...")
+            if p.repos:
+                from code_to_skill.code_graph import run_code_graph_pipeline
+                from .graph_config import resolve_framework_patterns
+                cg_kwargs = module_settings.code_graph_pipeline_kwargs()
+                for repo in p.repos:
+                    m1 = run_code_graph_pipeline(
+                        repo_root=repo.path,
+                        include=repo.include,
+                        exclude=repo.exclude,
+                        output_root=os.path.join(output_root, "sources", "code", repo.id, repo.ref),
+                        repo_id=repo.id,
+                        snapshot_ref=repo.ref,
+                        custom_patterns=resolve_framework_patterns(p, repo),
+                        **cg_kwargs,
+                    )
+                    total_nodes += len(m1['graph'].nodes)
+                    total_edges += len(m1['graph'].edges)
+                    all_leaf_ctxs.extend([ctx.model_dump() for ctx in m1.get("leaf_contexts", [])])
+                click.echo(f"   图谱: {total_nodes} nodes, {total_edges} edges ({len(p.repos)} repos)")
+            if p.repos:
+                recorder.end_phase(
+                    "m1_code_graph",
+                    artifacts={
+                        "graph_db": os.path.join(
+                            output_root, "sources", "code",
+                            p.repos[0].id, p.repos[0].ref, "graph.db",
+                        ),
+                    },
+                    metrics={"nodes": total_nodes, "edges": total_edges},
                 )
-                total_nodes += len(m1['graph'].nodes)
-                total_edges += len(m1['graph'].edges)
-                all_leaf_ctxs.extend([ctx.model_dump() for ctx in m1.get("leaf_contexts", [])])
-            click.echo(f"   图谱: {total_nodes} nodes, {total_edges} edges ({len(p.repos)} repos)")
+            else:
+                recorder.skip_phase("m1_code_graph", "no repos configured")
 
-        # M2: 文档规范化
-        click.echo("📄 [2/4] 规范化文档...")
-        for doc in p.docs:
-            from code_to_skill.document_normalizer import normalize_document
-            result = normalize_document(
-                source_uri=doc.path,
-                source_id=doc.id,
-                source_provider=doc.provider,
-                output_root=os.path.join(output_root, "sources", "docs", doc.id, doc.version),
+        if not skip_m2 and p.docs:
+            recorder.start_phase("m2_docs")
+            click.echo("📄 [2/4] 规范化文档...")
+            for doc in p.docs:
+                from code_to_skill.document_normalizer import normalize_document
+                result = normalize_document(
+                    source_uri=doc.path,
+                    source_id=doc.id,
+                    source_provider=doc.provider,
+                    output_root=os.path.join(output_root, "sources", "docs", doc.id, doc.version),
+                    **module_settings.normalize_document_kwargs(),
+                )
+                doc_chunks.extend([c.model_dump() for c in result["chunks"]])
+            click.echo(f"   文档块: {len(doc_chunks)}")
+            recorder.end_phase(
+                "m2_docs",
+                metrics={"chunks": len(doc_chunks)},
+                artifacts={"docs_root": os.path.join(output_root, "sources", "docs")},
             )
-            doc_chunks.extend([c.model_dump() for c in result["chunks"]])
-        click.echo(f"   文档块: {len(doc_chunks)}")
+        elif skip_m2 and p.docs:
+            recorder.skip_phase("m2_docs", "M3 skipped; docs only serve atom extraction")
+        elif not p.docs:
+            click.echo("📄 [2/4] 无文档配置，跳过 M2")
+            recorder.skip_phase("m2_docs", "no docs configured")
 
-        # M3: Atom 抽取
-        click.echo("🧩 [3/4] 抽取 SkillAtom...")
-        from code_to_skill.atom_extractor import run_atom_extraction
-        graph_db_path, repo_root, _ = _m4_graph_context(p, output_root, s)
-        m3 = run_atom_extraction(
-            leaf_contexts=all_leaf_ctxs,
-            document_chunks=doc_chunks,
-            output_root=os.path.join(output_root, "atoms"),
-            graph_db_path=graph_db_path,
-            repo_root=repo_root,
-        )
-        accepted = sum(1 for a in m3["merged_atoms"] if a.status in ("accepted", "candidate"))
-        click.echo(f"   Atom: {len(m3['raw_atoms'])} raw → {len(m3['merged_atoms'])} merged ({accepted} accepted)")
+        if not skip_m3:
+            recorder.start_phase("m3_atoms")
+            click.echo("🧩 [3/4] 抽取 SkillAtom...")
+            from code_to_skill.atom_extractor import run_atom_extraction
+            graph_db_path, repo_root, _ = _m4_graph_context(p, output_root, s)
+            m3 = run_atom_extraction(
+                leaf_contexts=all_leaf_ctxs,
+                document_chunks=doc_chunks,
+                output_root=os.path.join(output_root, "atoms"),
+                graph_db_path=graph_db_path,
+                repo_root=repo_root,
+                atom_extractor_settings=s.atom_extractor,
+            )
+            accepted = sum(1 for a in m3["merged_atoms"] if a.status in ("accepted", "candidate"))
+            click.echo(
+                f"   Atom: {len(m3['raw_atoms'])} raw → {len(m3['merged_atoms'])} merged "
+                f"({accepted} accepted)"
+            )
+            recorder.end_phase(
+                "m3_atoms",
+                metrics={
+                    "raw": len(m3["raw_atoms"]),
+                    "merged": len(m3["merged_atoms"]),
+                    "accepted": accepted,
+                    "seeds": len(m3["benchmark_seeds"]),
+                },
+                artifacts={"atoms_dir": os.path.join(output_root, "atoms")},
+            )
+        elif not skip_prefix:
+            click.echo("🧩 [3/4] 跳过 M3")
+            recorder.skip_phase(
+                "m3_atoms",
+                "initial_skill + benchmark present (use --with-atoms to force)",
+            )
 
     graph_db_path, repo_root, graph_sources = _m4_graph_context(p, output_root, s)
 
     # M4: Skill 优化
-    click.echo("🔄 [4/4] 优化 Skill...")
-    from code_to_skill.skillopt_loop import run_skillopt_loop
+    recorder.start_phase("m4_skillopt")
+    pipeline_status = "completed"
+    try:
+        click.echo("🔄 [4/4] 优化 Skill...")
+        from code_to_skill.skillopt_loop import run_skillopt_loop
 
-    # 优先使用配置文件指定的 initial_skill
-    initial_skill = _load_initial_skill(p)
-    if not initial_skill and m3:
-        initial_skill = "# Generated Skill\n" + "\n".join(
-            [f"- {a.claim}" for a in m3["merged_atoms"] if a.status in ("accepted", "candidate")]
+        if m3 is None and (do_bootstrap or do_suggest_rules):
+            m3 = load_m3_from_run(output_root)
+
+        initial_skill = _load_initial_skill(p)
+        if not initial_skill and m3:
+            initial_skill = "# Generated Skill\n" + "\n".join(
+                [f"- {a.claim}" for a in m3["merged_atoms"] if a.status in ("accepted", "candidate")]
+            )
+        if not initial_skill:
+            initial_skill = "# Initial Skill\n- Default rule"
+
+        if do_suggest_rules and m3:
+            initial_skill = append_atom_rules_to_skill(
+                initial_skill,
+                m3,
+                min_confidence=pipeline.bootstrap_min_confidence,
+            )
+            click.echo("   📝 已追加 Auto-suggested rules 到 initial_skill")
+
+        splits = _load_benchmark_splits(p)
+        had_train = bool(splits.train)
+        if not splits.train and m3:
+            from code_to_skill.skillopt_loop.benchmark_splits import BenchmarkSplits
+            splits = BenchmarkSplits(
+                train=m3["benchmark_seeds"],
+                selection=splits.selection,
+                test=splits.test,
+            )
+        elif do_bootstrap and m3:
+            splits = apply_benchmark_bootstrap(
+                splits,
+                m3,
+                merge=do_merge,
+                min_confidence=pipeline.bootstrap_min_confidence,
+            )
+            if do_merge and had_train:
+                click.echo(f"   📊 Benchmark 已合并 M3 种子: train={len(splits.train)}")
+            elif splits.train and not had_train:
+                click.echo(f"   📊 使用 M3 种子作为 train: {len(splits.train)} items")
+
+        code_repos = [
+            {"path": r.path, "include": r.include, "exclude": r.exclude}
+            for r in p.repos
+        ]
+        m4 = run_skillopt_loop(
+            initial_skill=initial_skill,
+            benchmark_items=splits.train,
+            selection_items=splits.selection,
+            test_items=splits.test,
+            output_dir=os.path.join(output_root, "optimization"),
+            code_repos=code_repos,
+            graph_db_path=graph_db_path,
+            repo_root=repo_root,
+            graph_sources=graph_sources or None,
+            resume=m4_resume,
+            pipeline_settings=pipeline,
+            run_root=output_root,
+            graph_role_hints=p.graph_role_hints,
+            reflect_prompts=p.reflect_prompts,
+            skillopt_settings=s.skillopt,
+            **_skillopt_run_kwargs(s.skillopt, s.model_provider),
         )
-    if not initial_skill:
-        initial_skill = "# Initial Skill\n- Default rule"
+        click.echo(f"   最优分数: {m4['best_score']:.3f}")
 
-    # 优先使用配置文件指定的 benchmark（train/selection/test 独立文件）
-    splits = _load_benchmark_splits(p)
-    if not splits.train and m3:
-        from code_to_skill.skillopt_loop.benchmark_splits import BenchmarkSplits
-        splits = BenchmarkSplits(
-            train=m3["benchmark_seeds"],
-            selection=splits.selection,
-            test=splits.test,
+        recorder.end_phase(
+            "m4_skillopt",
+            artifacts={"optimization": os.path.join(output_root, "optimization")},
+            metrics={"best_score": m4.get("best_score")},
         )
+        recorder.set_summary(
+            best_score=m4.get("best_score"),
+            test_hard=(m4.get("test_report") or {}).get("test_hard"),
+            train_items=len(splits.train),
+            effective_settings=effective_settings,
+        )
+    except Exception as exc:
+        pipeline_status = "failed"
+        if "m4_skillopt" in recorder._phase_started:
+            recorder.end_phase(
+                "m4_skillopt",
+                status="failed",
+                metrics={"error": str(exc)[:300]},
+            )
+        recorder.set_summary(error=str(exc)[:300])
+        click.echo(f"\n❌ 流水线失败: {exc}", err=True)
+        recorder.finalize(pipeline_status).write()
+        click.echo(f"   📋 run_manifest: {os.path.join(output_root, 'run_manifest.json')}")
+        raise
 
-    code_repos = [
-        {"path": r.path, "include": r.include, "exclude": r.exclude}
-        for r in p.repos
-    ]
-    m4 = run_skillopt_loop(
-        initial_skill=initial_skill,
-        benchmark_items=splits.train,
-        selection_items=splits.selection,
-        test_items=splits.test,
-        output_dir=os.path.join(output_root, "optimization"),
-        code_repos=code_repos,
-        graph_db_path=graph_db_path,
-        repo_root=repo_root,
-        graph_sources=graph_sources or None,
-        resume=m4_resume,
-        **_skillopt_run_kwargs(s.skillopt, s.model_provider),
-    )
-    click.echo(f"   最优分数: {m4['best_score']:.3f}")
-
+    manifest_path = recorder.finalize(pipeline_status).write()
     click.echo(f"\n✅ 流水线完成！产物: {output_root}")
+    click.echo(f"   📋 run_manifest: {manifest_path}")
 
 
 @run.command(name="code-graph", help=RUN_CODE_GRAPH_DOC, short_help="M1：构建 graph.db 代码图谱")
@@ -753,16 +965,18 @@ def run_code_graph(repo: str | None, config_path: str):
         return
     from code_to_skill.code_graph import run_code_graph_pipeline
     from .graph_config import resolve_framework_patterns
+    from .pipeline_config import ModuleRunSettings
+    cg_kwargs = ModuleRunSettings.from_settings(s).code_graph_pipeline_kwargs()
     for r in targets:
         m1 = run_code_graph_pipeline(
             repo_root=r.path,
             include=r.include if r.include else None,
             exclude=r.exclude if r.exclude else None,
             output_root=os.path.join(s.output_root, "sources", "code", r.id, r.ref),
-            use_cache=s.code_graph.get("use_cache", True),
             repo_id=r.id,
             snapshot_ref=r.ref,
             custom_patterns=resolve_framework_patterns(p, r),
+            **cg_kwargs,
         )
         click.echo(f"✅ {r.id}: {len(m1['graph'].nodes)} nodes, {len(m1['graph'].edges)} edges")
 
@@ -863,6 +1077,8 @@ def run_normalize_docs(docs: str | None, config_path: str):
     p = cfg.project
     os.environ["SKILL_LAB_CONFIG_PATH"] = os.path.abspath(config_path)
     from code_to_skill.document_normalizer import normalize_document
+    from .pipeline_config import ModuleRunSettings
+    m2_kwargs = ModuleRunSettings.from_settings(s).normalize_document_kwargs()
     targets = p.docs
     if docs:
         targets = [d for d in p.docs if d.path == docs] or p.docs
@@ -872,6 +1088,7 @@ def run_normalize_docs(docs: str | None, config_path: str):
             source_id=doc.id,
             source_provider=doc.provider,
             output_root=os.path.join(s.output_root, "sources", "docs", doc.id, "latest"),
+            **m2_kwargs,
         )
         click.echo(f"✅ {doc.id}: {len(result['chunks'])} chunks")
 
@@ -886,16 +1103,101 @@ def run_normalize_docs(docs: str | None, config_path: str):
 def run_extract_atoms(from_dir: str | None, config_path: str):
     """运行 M3 SkillAtom 抽取。"""
     from code_to_skill.atom_extractor import run_atom_extraction
+    from .pipeline_config import load_document_chunks_from_run, load_leaf_contexts_from_run
+
     cfg = load_config(config_path)
-    out_root = from_dir or "runs/latest"
+    p = cfg.project
+    out_root = from_dir
+    if not out_root:
+        click.echo("❌ 请指定 --from <run_dir>（需含 M1/M2 产物）")
+        return
     _init_run_outputs(cfg.settings, out_root)
+    leaf_contexts = load_leaf_contexts_from_run(out_root)
+    doc_chunks = load_document_chunks_from_run(out_root)
+    if not leaf_contexts and not doc_chunks:
+        click.echo(f"⚠️  {out_root} 中未找到 leaf_contexts 或 doc chunks", err=True)
+    graph_db_path, repo_root, _ = _m4_graph_context(p, out_root, cfg.settings)
     result = run_atom_extraction(
-        leaf_contexts=[],
-        document_chunks=[],
+        leaf_contexts=leaf_contexts,
+        document_chunks=doc_chunks,
         output_root=os.path.join(out_root, "atoms"),
+        graph_db_path=graph_db_path,
+        repo_root=repo_root,
+        atom_extractor_settings=cfg.settings.atom_extractor,
     )
     accepted = sum(1 for a in result["merged_atoms"] if a.status in ("accepted", "candidate"))
-    click.echo(f"✅ {len(result['raw_atoms'])} raw → {len(result['merged_atoms'])} merged ({accepted} accepted)")
+    click.echo(
+        f"✅ {len(result['raw_atoms'])} raw → {len(result['merged_atoms'])} merged "
+        f"({accepted} accepted) | leaf={len(leaf_contexts)} docs={len(doc_chunks)}"
+    )
+
+
+@run.command(
+    name="bootstrap-benchmark",
+    help=RUN_BOOTSTRAP_BENCHMARK_DOC,
+    short_help="M3 种子 → benchmark train",
+)
+@click.option("--from-run", "from_run", required=True, help="含 M3 产物的 run 目录")
+@click.option("--merge", "merge_items", is_flag=True, help="追加到已有 train items")
+@click.option("--benchmark", default=None, help="Benchmark 目录（覆盖 config）")
+@click.option("--config-path", default="config.yaml", help="配置文件路径")
+@click.option("--dry-run", is_flag=True, help="预览不写文件")
+def run_bootstrap_benchmark(
+    from_run: str,
+    merge_items: bool,
+    benchmark: str | None,
+    config_path: str,
+    dry_run: bool,
+):
+    """将 M3 高置信种子写入 benchmark/train/items.json。"""
+    from .benchmark_bootstrap import (
+        apply_benchmark_bootstrap,
+        load_m3_from_run,
+        write_train_items,
+    )
+    from .pipeline_config import parse_pipeline_settings
+
+    cfg = load_config(config_path)
+    p = cfg.project
+    pipeline = parse_pipeline_settings(cfg.settings.pipeline)
+    bench_dir = benchmark or p.benchmark_path
+    if not bench_dir:
+        click.echo("❌ 未配置 benchmark 目录（config.project.benchmark 或 --benchmark）")
+        return
+
+    m3 = load_m3_from_run(from_run)
+    if not m3:
+        click.echo(f"❌ 未在 {from_run} 找到 atoms/merged_atoms.jsonl")
+        return
+
+    splits = _load_benchmark_splits(p, benchmark_dir=bench_dir)
+    had_train = bool(splits.train)
+    out = apply_benchmark_bootstrap(
+        splits,
+        m3,
+        merge=merge_items,
+        min_confidence=pipeline.bootstrap_min_confidence,
+    )
+    if not out.train:
+        click.echo("⚠️  无满足置信度阈值的种子可写入")
+        return
+    if out.train == splits.train and had_train and not merge_items:
+        click.echo("⚠️  已有 train items；使用 --merge 追加或清空 train 后再运行")
+        return
+
+    added = len(out.train) - len(splits.train) if merge_items and had_train else len(out.train)
+    click.echo(
+        f"📊 bootstrap: train {len(splits.train)} → {len(out.train)} "
+        f"(+{added}, min_confidence={pipeline.bootstrap_min_confidence})"
+    )
+    if dry_run:
+        click.echo("   (dry-run，未写入)")
+        return
+
+    path = write_train_items(bench_dir, out.train)
+    for msg in out.validate_splits():
+        click.echo(f"   ⚠️  {msg}", err=True)
+    click.echo(f"✅ 已写入 {path}")
 
 
 @run.command(name="optimize-skill", help=RUN_OPTIMIZE_SKILL_DOC, short_help="M4：SkillOpt 训练优化")
@@ -947,6 +1249,10 @@ def run_optimize_skill(
             f"   🧠 Optimizer backend: {skillopt_kwargs['optimizer_backend_id']}"
         )
 
+    from .pipeline_config import parse_pipeline_settings
+    pipeline = parse_pipeline_settings(s.pipeline)
+    run_root_dir = os.path.dirname(out_dir.rstrip("/"))
+
     result = run_skillopt_loop(
         initial_skill=initial_skill,
         benchmark_items=splits.train,
@@ -958,6 +1264,11 @@ def run_optimize_skill(
         repo_root=repo_root,
         graph_sources=graph_sources or None,
         resume=resume,
+        pipeline_settings=pipeline,
+        run_root=run_root_dir,
+        graph_role_hints=p.graph_role_hints,
+        reflect_prompts=p.reflect_prompts,
+        skillopt_settings=s.skillopt,
         **{
             **skillopt_kwargs,
             "num_epochs": epochs,
@@ -975,6 +1286,47 @@ def run_optimize_skill(
     if result.get("test_report"):
         tr = result["test_report"]
         click.echo(f"   test_score={tr.get('test_score', 0):.3f} n={tr.get('n_items', 0)}")
+
+
+@run.group(name="training-curve", help="训练曲线：从 run 产物绘图或回填。")
+def run_training_curve():
+    """训练曲线子命令（plot / backfill）。"""
+    pass
+
+
+@run_training_curve.command(name="plot")
+@click.argument("run_id")
+@click.option("--config-path", default="config.yaml", help="配置文件路径")
+@click.option("-o", "--output", default=None, help="输出 SVG 路径")
+def training_curve_plot(run_id: str, config_path: str, output: str | None):
+    """从 optimization/training_curve.json 生成 SVG。"""
+    from code_to_skill.skillopt_loop.training_curve import plot_training_curve
+
+    cfg = load_config(config_path)
+    run_dir = _resolve_run_dir(run_id, cfg.settings.output_root) or Path("runs") / run_id
+    opt_dir = run_dir / "optimization"
+    try:
+        out = plot_training_curve(str(opt_dir), output_path=output)
+        click.echo(f"✅ 曲线已写入: {out}")
+    except FileNotFoundError as exc:
+        click.echo(f"❌ {exc}")
+
+
+@run_training_curve.command(name="backfill")
+@click.argument("run_id")
+@click.option("--config-path", default="config.yaml", help="配置文件路径")
+def training_curve_backfill(run_id: str, config_path: str):
+    """从历史 run 日志/steps 回填 training_curve.json。"""
+    from code_to_skill.skillopt_loop.training_curve import backfill_training_curve_from_run
+
+    cfg = load_config(config_path)
+    run_dir = _resolve_run_dir(run_id, cfg.settings.output_root) or Path("runs") / run_id
+    opt_dir = run_dir / "optimization"
+    try:
+        result = backfill_training_curve_from_run(str(opt_dir))
+        click.echo(f"✅ 回填 {result.get('points', 0)} 点 → {opt_dir}/training_curve.json")
+    except (FileNotFoundError, OSError, json.JSONDecodeError) as exc:
+        click.echo(f"❌ 回填失败: {exc}")
 
 
 # ── status ───────────────────────────────────────────────────
@@ -1022,14 +1374,8 @@ def status(run_id: str | None):
 
 # ── inspect ──────────────────────────────────────────────────
 
-@main.command()
-@click.argument("artifact")
-def inspect(artifact: str):
-    """\b
-    查看产物文件摘要（前若干行 / 字段）。
-
-    支持 .json、.jsonl、.md；用于快速查看 history.json、best_skill.md 等。
-    """
+def _inspect_artifact_file(artifact: str) -> None:
+    """查看单个产物文件摘要。"""
     path = Path(artifact)
     if not path.exists():
         click.echo(f"❌ 文件不存在: {artifact}")
@@ -1065,6 +1411,38 @@ def inspect(artifact: str):
                 click.echo(f"  {line[:100]}")
     else:
         click.echo(f"🔍 {artifact}: {path.stat().st_size} bytes")
+
+
+@main.group(invoke_without_command=True)
+@click.argument("artifact", required=False)
+@click.pass_context
+def inspect(ctx, artifact: str | None):
+    """\b
+    查看产物：``inspect run <run_id>`` 或 ``inspect <文件路径>``。
+    """
+    if ctx.invoked_subcommand is None:
+        if not artifact:
+            click.echo(ctx.get_help())
+            return
+        _inspect_artifact_file(artifact)
+
+
+@inspect.command(name="run")
+@click.argument("run_id")
+@click.option("--config-path", default="config.yaml", help="配置文件路径")
+def inspect_run(run_id: str, config_path: str):
+    """汇总 run 目录：manifest、gate、test、context refs、训练曲线。"""
+    from .inspect_run import summarize_run
+
+    cfg = load_config(config_path)
+    run_dir = _resolve_run_dir(run_id, cfg.settings.output_root)
+    if run_dir is None:
+        run_dir = Path(cfg.settings.output_root) / run_id
+    if not run_dir.is_dir():
+        click.echo(f"❌ 未找到 run: {run_id}")
+        return
+    for line in summarize_run(run_dir):
+        click.echo(line)
 
 
 # ── eval ─────────────────────────────────────────────────────
@@ -1104,7 +1482,7 @@ def eval_skill(run_id: str, split: str, config_path: str, benchmark: str | None)
 
     from code_to_skill.skillopt_loop.envs import DEFAULTAdapter
     from code_to_skill.skillopt_loop.separation import BackendManager, resolve_skillopt_backend_ids
-    from code_to_skill.skillopt_loop.test_eval import test_evaluate
+    from code_to_skill.skillopt_loop.test_eval import evaluate_test_split
 
     eval_dir = Path("runs") / run_id / "eval"
     skillopt = cfg.settings.skillopt.model_dump() if hasattr(cfg.settings.skillopt, "model_dump") else dict(cfg.settings.skillopt or {})
@@ -1119,7 +1497,7 @@ def eval_skill(run_id: str, split: str, config_path: str, benchmark: str | None)
     adapter = DEFAULTAdapter(use_llm=_skillopt_get(skillopt, "use_llm_rollout", default=True))
     adapter.setup()
 
-    report = test_evaluate(
+    report = evaluate_test_split(
         skill,
         items,
         adapter=adapter,
@@ -1169,34 +1547,47 @@ def approve(approval_id: str, deny: bool):
 @main.command()
 @click.argument("run_id")
 @click.option("--target", default=None, help="发布目标目录")
-def publish(run_id: str, target: str | None):
+@click.option("--config-path", default="config.yaml", help="配置文件路径（读取 publish_target）")
+@click.option("--force", is_flag=True, help="门禁未 accept 时仍发布")
+def publish(run_id: str, target: str | None, config_path: str, force: bool):
     """\b
     将 runs/<run_id>/optimization/best_skill.md 复制为 SKILL.md。
 
     默认目标目录 skills/agent；可用 ``--target`` 或 config.settings.output.publish_target 覆盖。
     """
-    run_dir = Path("runs") / run_id
+    cfg = load_config(config_path)
+    run_dir = _resolve_run_dir(run_id, cfg.settings.output_root) or Path("runs") / run_id
     best_skill = run_dir / "optimization" / "best_skill.md"
     if not best_skill.exists():
         click.echo(f"❌ 未找到 Skill: {best_skill}")
         return
 
     gate_ok = True
+    last_action = "?"
     history_file = run_dir / "optimization" / "history.json"
     if history_file.exists():
         with open(history_file) as f:
             history = json.load(f)
         if history:
             last = history[-1]
-            click.echo(f"   门禁: score={last.get('selection_score',0):.3f}, action={last.get('gate_action','?')}")
+            last_action = last.get("gate_action", "?")
+            click.echo(
+                f"   门禁: score={last.get('selection_score', 0):.3f}, action={last_action}"
+            )
+            if last_action == "reject":
+                gate_ok = False
 
-    if gate_ok:
-        target_dir = Path(target) if target else Path("skills/agent")
-        target_dir.mkdir(parents=True, exist_ok=True)
+    if not gate_ok and not force:
+        click.echo("❌ 最近一步门禁为 reject；使用 --force 强制发布")
+        return
 
-        import shutil
-        shutil.copy2(best_skill, target_dir / "SKILL.md")
-        click.echo(f"📦 已发布: {target_dir}/SKILL.md")
+    publish_target = target or cfg.settings.publish_target or "skills/agent"
+    target_dir = Path(publish_target)
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    import shutil
+    shutil.copy2(best_skill, target_dir / "SKILL.md")
+    click.echo(f"📦 已发布: {target_dir}/SKILL.md")
 
 
 # ── resume ───────────────────────────────────────────────────
@@ -1256,6 +1647,8 @@ def resume(run_id: str, config_path: str, from_step: str | None):
     initial_skill = _load_initial_skill(p) or "# Initial Skill\n- Default rule"
     code_repos = [{"path": r.path, "include": r.include, "exclude": r.exclude} for r in p.repos]
     graph_db_path, repo_root, graph_sources = _m4_graph_context(p, str(run_dir), s)
+    from .pipeline_config import parse_pipeline_settings
+    pipeline = parse_pipeline_settings(s.pipeline)
 
     result = run_skillopt_loop(
         initial_skill=initial_skill,
@@ -1268,6 +1661,11 @@ def resume(run_id: str, config_path: str, from_step: str | None):
         repo_root=repo_root,
         graph_sources=graph_sources or None,
         resume=True,
+        pipeline_settings=pipeline,
+        run_root=str(run_dir),
+        graph_role_hints=p.graph_role_hints,
+        reflect_prompts=p.reflect_prompts,
+        skillopt_settings=s.skillopt,
         **_skillopt_run_kwargs(s.skillopt, s.model_provider),
     )
     click.echo(f"✅ 续训完成: best_score={result['best_score']:.3f}")

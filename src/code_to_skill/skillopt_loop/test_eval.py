@@ -3,7 +3,7 @@
 对齐 external/SkillOpt 的训练后最终报告流程。
 
 功能：
-1. test_evaluate: 训练结束后在 test split 上做最终评测
+1. evaluate_test_split: 训练结束后在 test split 上做最终评测
 2. StepCheckpoint: step 内部 minibatch 级别的恢复状态
 """
 from __future__ import annotations
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 # ── Test Split 最终评估 ────────────────────────────────────
 
-def test_evaluate(
+def evaluate_test_split(
     best_skill: str,
     test_items: list[dict],
     adapter: Any = None,

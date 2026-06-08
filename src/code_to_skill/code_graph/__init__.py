@@ -45,6 +45,7 @@ def run_code_graph_pipeline(
     repo_id: str = "",
     snapshot_ref: str = "HEAD",
     custom_patterns: dict[str, dict[str, str]] | None = None,
+    code_graph_settings: dict | None = None,
 ) -> dict:
     """运行完整的代码图谱构建流水线。
 
@@ -68,6 +69,18 @@ def run_code_graph_pipeline(
         }
     """
     results: dict = {}
+    cg_settings = code_graph_settings or {}
+    split_strategy = str(cg_settings.get("split_strategy", "top_dir"))
+    max_components = int(cg_settings.get("max_components_per_group", 200))
+    llm_clustering = bool(cg_settings.get("llm_clustering_enabled", False))
+
+    def _cluster_kwargs() -> dict:
+        return {
+            "max_module_depth": max_module_depth,
+            "max_components_per_group": max_components,
+            "split_strategy": split_strategy,
+            "llm_clustering_enabled": llm_clustering,
+        }
 
     db_path = os.path.join(output_root, "graph.db") if output_root else ""
     db = GraphDB(db_path) if (use_cache and output_root) else None
@@ -93,7 +106,7 @@ def run_code_graph_pipeline(
                 results["errors"] = []
                 results["unresolved_edges"] = []
                 results["entrypoints"] = entrypoints
-                module_tree = build_module_tree(cached_graph, repo_root, max_module_depth=max_module_depth)
+                module_tree = build_module_tree(cached_graph, repo_root, **_cluster_kwargs())
                 results["module_tree"] = module_tree
                 results["leaf_contexts"] = generate_leaf_contexts(cached_graph, module_tree, repo_root, max_leaf_tokens)
                 print(f"[M1] 从缓存加载: {len(cached_graph.nodes)} nodes")
@@ -157,7 +170,7 @@ def run_code_graph_pipeline(
     results["entrypoints"] = entrypoints
 
     # Step 5: 模块树
-    module_tree = build_module_tree(graph, repo_root, max_module_depth=max_module_depth)
+    module_tree = build_module_tree(graph, repo_root, **_cluster_kwargs())
     results["module_tree"] = module_tree
 
     # Step 6: 叶子上下文
@@ -245,6 +258,10 @@ def _write_outputs(
     with open(os.path.join(output_root, "entrypoints.json"), "w", encoding="utf-8") as f:
         eps = [ep.model_dump() for ep in results["entrypoints"]]
         json.dump(eps, f, indent=2, ensure_ascii=False)
+
+    from .role_index import build_role_index
+    with open(os.path.join(output_root, "role_index.json"), "w", encoding="utf-8") as f:
+        json.dump(build_role_index(graph), f, indent=2, ensure_ascii=False)
 
     # module_tree.json
     mt: ModuleTree = results["module_tree"]

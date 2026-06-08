@@ -112,12 +112,18 @@ class EnvAdapter(ABC):
     # ── Reflect 相关（子类可选覆盖 prompt）─────────────────
 
     def get_error_reflect_prompt(self) -> str:
-        """返回失败分析 prompt 模板（两层：env 覆盖 > 默认）。"""
-        return _DEFAULT_ERROR_PROMPT
+        """返回失败分析 prompt 模板（project.reflect_prompts > 默认）。"""
+        custom = getattr(self, "_reflect_prompt_error", "")
+        return custom or _DEFAULT_ERROR_PROMPT
 
     def get_success_reflect_prompt(self) -> str:
         """返回成功分析 prompt 模板。"""
-        return _DEFAULT_SUCCESS_PROMPT
+        custom = getattr(self, "_reflect_prompt_success", "")
+        return custom or _DEFAULT_SUCCESS_PROMPT
+
+    @property
+    def uses_custom_reflect_prompt(self) -> bool:
+        return bool(getattr(self, "_reflect_prompt_error", ""))
 
     def get_task_types(self) -> list[str]:
         """返回本 benchmark 的任务类型列表。"""
@@ -126,19 +132,28 @@ class EnvAdapter(ABC):
     # ── 辅助 ──────────────────────────────────────────────
 
     @staticmethod
-    def _build_context_from_item(item: dict, context_mode: str = "inline") -> str:
-        """根据 context_mode 从 item 中提取上下文。
+    def _item_context_mode(item: dict, default: str = "inline") -> str:
+        mode = str(item.get("context_mode") or default).strip().lower()
+        if mode in ("inline", "agent_read", "none"):
+            return mode
+        return default
 
-        当前仓库的 benchmark 格式是 item 自带 expected_checks 作为评分标准。
-        context_refs 是预留字段，供后续 adapter 实现 inline / agent_read 模式。
-        """
+    @staticmethod
+    def _build_context_from_item(item: dict, context_mode: str = "inline") -> str:
+        """根据 context_mode 从 item 中提取任务文本（不含 inline 代码片段）。"""
         question = item.get("task_template", item.get("question", ""))
         refs = item.get("context_refs", [])
-        mode = item.get("context_mode", context_mode)
+        mode = EnvAdapter._item_context_mode(item, context_mode)
 
         if mode == "inline" and refs:
             refs_str = "\n".join([f"- {r}" for r in refs])
             return f"Context references:\n{refs_str}\n\nTask:\n{question}"
+        if mode == "agent_read" and refs:
+            refs_str = "\n".join([f"- {r}" for r in refs])
+            return (
+                "Use code tools to read the following references before answering:\n"
+                f"{refs_str}\n\nTask:\n{question}"
+            )
         return question
 
 
@@ -164,17 +179,26 @@ class DEFAULTAdapter(EnvAdapter):
         super().__init__(env_name="DEFAULT")
         self.use_llm = use_llm
         self._backend = None
+        self._reflect_prompt_error = ""
+        self._reflect_prompt_success = ""
+        self._judge_backend = None
         self.enable_code_tools = enable_code_tools
         self.max_tool_rounds = max_tool_rounds
         self.rollout_max_tool_rounds = rollout_max_tool_rounds
-        from code_to_skill.codegraph_mcp.handler import CodeToolsHandler
-        self.code_tools = CodeToolsHandler(code_repos if enable_code_tools else None)
+        from code_to_skill.codegraph_mcp.handler import build_code_tools_handler
+        self.code_tools = build_code_tools_handler(
+            code_repos, enable_code_tools=enable_code_tools,
+        )
 
     def setup(self, cfg: dict | None = None) -> None:
+        self._reflect_prompt_error = ""
+        self._reflect_prompt_success = ""
+        self._judge_backend = None
         if cfg:
-            from code_to_skill.codegraph_mcp.handler import CodeToolsHandler
-            self.code_tools = CodeToolsHandler(
-                cfg.get("code_repos") if self.enable_code_tools else None,
+            from code_to_skill.codegraph_mcp.handler import build_code_tools_handler
+            self.code_tools = build_code_tools_handler(
+                cfg.get("code_repos"),
+                enable_code_tools=self.enable_code_tools,
                 graph_db_path=cfg.get("graph_db_path", ""),
                 repo_root=cfg.get("repo_root", ""),
                 graph_sources=cfg.get("graph_sources"),
@@ -184,6 +208,11 @@ class DEFAULTAdapter(EnvAdapter):
                 cfg.get("rollout_max_tool_rounds", self.rollout_max_tool_rounds)
             )
             self.enable_code_tools = bool(cfg.get("enable_code_tools", self.enable_code_tools))
+            self.graph_sidecars = cfg.get("graph_sidecars")
+            prompts = cfg.get("reflect_prompts") or {}
+            self._reflect_prompt_error = str(prompts.get("error") or "").strip()
+            self._reflect_prompt_success = str(prompts.get("success") or "").strip()
+            self._judge_backend = cfg.get("judge_backend")
         if self.use_llm:
             try:
                 from code_to_skill.model_provider.llm_backend import (
@@ -203,7 +232,7 @@ class DEFAULTAdapter(EnvAdapter):
         out_dir: str = "",
     ) -> list[dict]:
         """默认 rollout：LLM 优先，降级关键词规则。"""
-        from ..scoring import score_rollout_result  # local import to avoid circular
+        from ..scoring import score_benchmark_item  # local import to avoid circular
         from ..token_budgets import get_token_budgets
 
         backend = target_backend or self._backend
@@ -211,12 +240,14 @@ class DEFAULTAdapter(EnvAdapter):
 
         for item in items:
             checks = item.get("expected_checks", [])
+            context_mode = self._item_context_mode(item)
             question = self._build_context_from_item(item)
 
             if backend:
                 from code_to_skill.model_provider.types import InteractionRequest
                 from code_to_skill.model_provider.tool_loop import invoke_with_tool_loop
                 from ..rollout_helpers import (
+                    assemble_rollout_user_content,
                     build_rollout_synthesis_hint,
                     build_rollout_system_prompt,
                     build_rollout_user_message,
@@ -227,10 +258,19 @@ class DEFAULTAdapter(EnvAdapter):
                 try:
                     from ..code_evidence import build_rollout_item_context
 
-                    user_msg = build_rollout_user_message(question, checks, item=item)
-                    code_ctx = build_rollout_item_context(item, self.code_tools)
-                    if code_ctx:
-                        user_msg = user_msg + code_ctx
+                    task_msg = build_rollout_user_message(question, checks, item=item)
+                    sidecars = getattr(self, "graph_sidecars", None)
+                    code_ctx = ""
+                    if context_mode == "inline":
+                        code_ctx = build_rollout_item_context(
+                            item, self.code_tools, sidecars=sidecars,
+                        )
+                    user_msg = assemble_rollout_user_content(task_msg, code_ctx)
+                    code_tools_enabled = (
+                        context_mode != "none"
+                        and self.enable_code_tools
+                        and self.code_tools.enabled
+                    )
                     request = InteractionRequest(
                         role="target",
                         stage="rollout",
@@ -238,23 +278,22 @@ class DEFAULTAdapter(EnvAdapter):
                             {
                                 "role": "system",
                                 "content": build_rollout_system_prompt(
-                                    skill, code_tools_enabled=self.code_tools.enabled,
+                                    skill, code_tools_enabled=code_tools_enabled,
                                 ),
                             },
-                            {"role": "user", "content": user_msg[:3000]},
+                            {"role": "user", "content": user_msg},
                         ],
                         max_output_tokens=get_token_budgets().rollout,
                         temperature=0.3,
                         metadata={"synthesis_hint": build_rollout_synthesis_hint(checks)},
                     )
                     tool_rounds = (
-                        self.rollout_max_tool_rounds
-                        if self.code_tools.enabled
-                        else 0
+                        self.rollout_max_tool_rounds if code_tools_enabled else 0
                     )
                     logger.debug(
-                        "[rollout] item=%s tool_rounds=%d (max_reflect=%d)",
+                        "[rollout] item=%s context_mode=%s tool_rounds=%d (max_reflect=%d)",
                         item.get("id", "?"),
+                        context_mode,
                         tool_rounds,
                         self.max_tool_rounds,
                     )
@@ -283,7 +322,9 @@ class DEFAULTAdapter(EnvAdapter):
                 predicted = fallback_skill_answer(question, checks, skill)
                 fail_reason = ""
 
-            scores = score_rollout_result(predicted, checks)
+            scores = score_benchmark_item(
+                predicted, item, judge_backend=self._judge_backend,
+            )
             missed = scores.get("missed_checks", [])
             if not fail_reason and scores["hard"] == 0 and missed:
                 fail_reason = "missed: " + ", ".join(missed)

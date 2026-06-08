@@ -42,6 +42,32 @@ class RunManifest(BaseModel):
     operator: str = "local-user"
 
 
+class PipelinePhaseRecord(BaseModel):
+    """单次流水线阶段记录。"""
+    phase: str  # m1_code_graph | m2_docs | m3_atoms | m4_skillopt
+    status: str = "completed"  # completed | skipped | failed
+    skip_reason: str = ""
+    duration_sec: float = 0.0
+    artifacts: dict[str, str] = Field(default_factory=dict)
+    metrics: dict[str, Any] = Field(default_factory=dict)
+
+
+class PipelineRunManifest(BaseModel):
+    """``run all`` 流水线 manifest（skip 原因、耗时、产物路径）。"""
+    schema_version: str = "1.0"
+    run_id: str
+    domain: str = ""
+    output_root: str = ""
+    created_at: str = Field(default_factory=local_timestamp)
+    completed_at: str = ""
+    status: str = "running"
+    duration_sec: float = 0.0
+    flags: dict[str, Any] = Field(default_factory=dict)
+    phases: list[PipelinePhaseRecord] = Field(default_factory=list)
+    summary: dict[str, Any] = Field(default_factory=dict)
+    effective_settings: dict[str, Any] = Field(default_factory=dict)
+
+
 # ── Run State（断点恢复）────────────────────────────────────
 
 class StepInternal(BaseModel):

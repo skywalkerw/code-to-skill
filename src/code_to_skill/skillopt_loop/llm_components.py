@@ -7,7 +7,10 @@ from __future__ import annotations
 import json
 import logging
 import re
+from dataclasses import dataclass, field
 from typing import Any
+
+from .code_evidence import ReflectEvidenceMetrics
 
 from code_to_skill.model_provider.llm_backend import create_llm_backend, is_llm_available
 from code_to_skill.model_provider.types import InteractionRequest
@@ -38,6 +41,15 @@ from .token_budgets import get_token_budgets
 from .types import EditOp
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ReflectLLMResult:
+    patches: list[dict] = field(default_factory=list)
+    evidence_metrics: ReflectEvidenceMetrics = field(default_factory=ReflectEvidenceMetrics)
+    reflect_tool_rounds_max: int = 0
+    custom_reflect_prompt: bool = False
+    scenario_rules_triggered: int = 0
 
 _MAX_RULE_CHECKS = 5
 
@@ -200,16 +212,39 @@ def _reflect_failure_group(
     code_tools: Any,
     max_tool_rounds: int,
     focus: str,
-) -> dict | None:
+    graph_sidecars: Any = None,
+    adapter: Any = None,
+) -> tuple[dict | None, ReflectEvidenceMetrics]:
     """对单类失败（primary / boundary）调用 reflect。"""
+    empty_metrics = ReflectEvidenceMetrics()
     if not failed_group:
-        return None
+        return None, empty_metrics
 
     extra_hint = build_reflect_focus_hint(focus)
-    system_content = REFLECT_SYSTEM_PROMPT.format(
-        section_index=skill_section_index(current_skill),
-        step_buffer_summary=buffer_summary,
-    ) + extra_hint
+    failure_text = _format_failure_cases(failed_group[:8])
+    custom_error = (
+        adapter.get_error_reflect_prompt()
+        if adapter is not None and getattr(adapter, "uses_custom_reflect_prompt", False)
+        else ""
+    )
+    if custom_error:
+        logger.info("[reflect] using project reflect_prompts.error override")
+        system_content = custom_error.format(
+            current_skill=skill_compact_for_reflect(current_skill),
+            failure_text=failure_text[:3000],
+            step_buffer_summary=buffer_summary,
+            section_index=skill_section_index(current_skill),
+        ) + extra_hint
+        user_content = failure_text[:3000]
+    else:
+        system_content = REFLECT_SYSTEM_PROMPT.format(
+            section_index=skill_section_index(current_skill),
+            step_buffer_summary=buffer_summary,
+        ) + extra_hint
+        user_content = REFLECT_USER_PROMPT.format(
+            current_skill=skill_compact_for_reflect(current_skill),
+            failure_text=failure_text[:3000],
+        )
     if meta_skill_context.strip():
         system_content = meta_skill_context + "\n---\n" + system_content
     if code_tools is not None and getattr(code_tools, "enabled", False):
@@ -217,14 +252,11 @@ def _reflect_failure_group(
 
     from .code_evidence import build_reflect_code_evidence
 
-    code_evidence = build_reflect_code_evidence(failed_group, code_tools)
-    failure_text = _format_failure_cases(failed_group[:8])
-    user_content = REFLECT_USER_PROMPT.format(
-        current_skill=skill_compact_for_reflect(current_skill),
-        failure_text=failure_text[:3000],
+    evidence_result = build_reflect_code_evidence(
+        failed_group, code_tools, sidecars=graph_sidecars,
     )
-    if code_evidence:
-        user_content += "\n\n" + code_evidence[:4500]
+    if evidence_result.text:
+        user_content += "\n\n" + evidence_result.text[:4500]
 
     stage = reflect_stage_for_focus(focus)
     request = InteractionRequest(
@@ -244,13 +276,13 @@ def _reflect_failure_group(
         )
         parsed = _parse_reflect_response(response) if response else None
         if not parsed:
-            return None
+            return None, evidence_result.metrics
         edits = _sanitize_llm_edits(
             parsed.get("edits", []), current_skill, failed_results=failed_group,
         )
         if not edits:
             logger.warning("[reflect] %s: LLM returned no valid edits", focus)
-            return None
+            return None, evidence_result.metrics
         from .edit_traceability import missed_check_summary
 
         return {
@@ -260,10 +292,10 @@ def _reflect_failure_group(
             "edits": edits,
             "failure_summary": missed_check_summary(failed_group),
             "focus": focus,
-        }
+        }, evidence_result.metrics
     except Exception as e:
         logger.warning("LLM reflect %s failed: %s", focus, e)
-        return None
+        return None, evidence_result.metrics
 
 
 def reflect_llm(
@@ -275,11 +307,13 @@ def reflect_llm(
     backend: Any = None,
     code_tools: Any = None,
     max_tool_rounds: int = 5,
-) -> list[dict]:
+    graph_sidecars: Any = None,
+    adapter: Any = None,
+) -> ReflectLLMResult:
     """LLM Reflect：分析 rollout 轨迹，生成有意义的 patch。"""
     if not is_llm_available():
         logger.info("LLM not available for reflect, using rule-based")
-        return _rule_based_patches(rollout_results, current_skill)
+        return ReflectLLMResult(patches=_rule_based_patches(rollout_results, current_skill))
 
     if backend is None:
         backend = create_llm_backend()
@@ -288,6 +322,10 @@ def reflect_llm(
     failed = [r for r in rollout_results if r.get("hard", 0) == 0]
     succeeded = [r for r in rollout_results if r.get("hard", 1) == 1]
     patches: list[dict] = []
+    evidence_metrics = ReflectEvidenceMetrics()
+    tool_rounds_max = max_tool_rounds if (
+        code_tools is not None and getattr(code_tools, "enabled", False)
+    ) else 0
 
     if failed:
         primary_failed, boundary_failed = split_failure_groups(failed)
@@ -296,7 +334,7 @@ def reflect_llm(
             len(primary_failed), len(boundary_failed),
         )
         for focus, group in ((PRIMARY_FOCUS, primary_failed), (BOUNDARY_FOCUS, boundary_failed)):
-            patch = _reflect_failure_group(
+            patch, group_metrics = _reflect_failure_group(
                 group,
                 current_skill=current_skill,
                 buffer_summary=buffer_summary,
@@ -305,17 +343,23 @@ def reflect_llm(
                 code_tools=code_tools,
                 max_tool_rounds=max_tool_rounds,
                 focus=focus,
+                graph_sidecars=graph_sidecars,
+                adapter=adapter,
             )
+            evidence_metrics.merge(group_metrics)
             if patch:
                 patches.append(patch)
 
     if succeeded and not _patches_have_edits(patches):
         success_text = "\n".join([f"- {r.get('id', '?')}: PASS" for r in succeeded[:5]])
+        success_system = REFLECT_SUCCESS_PROMPT
+        if adapter is not None and getattr(adapter, "_reflect_prompt_success", ""):
+            success_system = adapter.get_success_reflect_prompt()
         request = InteractionRequest(
             role="optimizer",
             stage="reflect_success",
             messages=[
-                {"role": "system", "content": REFLECT_SUCCESS_PROMPT},
+                {"role": "system", "content": success_system},
                 {"role": "user", "content": success_text[:1500]},
             ],
             max_output_tokens=get_token_budgets().reflect_success,
@@ -336,11 +380,24 @@ def reflect_llm(
         except Exception as e:
             logger.warning("LLM reflect success analysis failed: %s", e)
 
+    custom_prompt = (
+        adapter is not None and getattr(adapter, "uses_custom_reflect_prompt", False)
+    )
     if _patches_have_edits(patches):
-        return patches
+        return ReflectLLMResult(
+            patches=patches,
+            evidence_metrics=evidence_metrics,
+            reflect_tool_rounds_max=tool_rounds_max,
+            custom_reflect_prompt=custom_prompt,
+        )
 
     logger.info("[reflect] falling back to rule-based patches")
-    return _rule_based_patches(rollout_results, current_skill)
+    return ReflectLLMResult(
+        patches=_rule_based_patches(rollout_results, current_skill),
+        evidence_metrics=evidence_metrics,
+        reflect_tool_rounds_max=tool_rounds_max,
+        custom_reflect_prompt=custom_prompt,
+    )
 
 
 def select_edits_llm(

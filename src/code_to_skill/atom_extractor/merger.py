@@ -1,6 +1,7 @@
 """Atom 合并与聚类。"""
 from __future__ import annotations
 
+import os
 from collections import defaultdict
 
 from .keywords import extract_seed_check_tokens
@@ -46,11 +47,32 @@ def cluster_by_domain(atoms: list[SkillAtom]) -> dict[str, list[SkillAtom]]:
     return dict(clusters)
 
 
+def _context_refs_from_atom(atom: SkillAtom) -> list[str]:
+    """从 atom source_refs / edge_path 生成 items.json 兼容的 context_refs。"""
+    refs: list[str] = []
+    for source in atom.source_refs:
+        if source.type != "code":
+            continue
+        sid = (source.id or "").strip()
+        if not sid:
+            continue
+        if "/" in sid or "." in os.path.basename(sid):
+            refs.append(sid)
+        elif source.edge_path:
+            symbol = source.edge_path[0]
+            refs.append(f"{sid}#{symbol}" if "#" not in sid else sid)
+        elif "::" in sid:
+            path_part, sym = sid.rsplit("::", 1)
+            refs.append(f"{path_part}#{sym}")
+        else:
+            refs.append(sid)
+    return refs[:4]
+
+
 def generate_benchmark_seeds(atoms: list[SkillAtom]) -> list[dict]:
     """从高价值 atom 生成 benchmark 种子。
 
-    生成的 expected_checks 与 atom.claim/action 对齐，
-    确保确定性 scorer 能通过关键词匹配验证。
+    输出对齐 ``items.json`` schema：``id``、``question``、``expected_checks``、``context_refs``。
     """
     seeds: list[dict] = []
     for atom in atoms:
@@ -64,11 +86,15 @@ def generate_benchmark_seeds(atoms: list[SkillAtom]) -> list[dict]:
                 checks.append(token)
                 existing.add(token.lower())
 
+        item_id = f"seed-{atom.atom_id}"
         seeds.append({
-            "seed_id": f"seed-{atom.atom_id}",
+            "id": item_id,
+            "question": atom.claim[:200],
+            "expected_checks": checks[:5],
+            "context_refs": _context_refs_from_atom(atom),
+            "seed_id": item_id,
             "atom_ids": [atom.atom_id],
             "task_template": atom.claim[:120],
-            "expected_checks": checks[:5],  # 最多5个检查
             "risk": atom.risk,
         })
     return seeds

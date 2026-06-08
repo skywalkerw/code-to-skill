@@ -33,6 +33,32 @@ def _check_keyword(text: str, check: str) -> bool:
     return norm_check in norm_text
 
 
+def score_benchmark_item(
+    predicted: str,
+    item: dict,
+    *,
+    judge_backend: Any = None,
+    hard_threshold: float = 0.8,
+) -> dict:
+    """按 benchmark item 的 ``scorer`` 字段路由评分器。"""
+    scorer = str(item.get("scorer") or "keyword").strip().lower()
+    if scorer in ("llm_judge", "judge", "llm"):
+        result = score_with_llm_judge(
+            predicted,
+            item.get("question") or item.get("task_template", ""),
+            rubric=item.get("rubric"),
+            backend=judge_backend,
+            hard_threshold=hard_threshold,
+        )
+        result.setdefault("passed_checks", [])
+        result.setdefault("missed_checks", list(item.get("expected_checks") or []))
+        if result.get("hard") == 1:
+            result["missed_checks"] = []
+        return result
+    checks = list(item.get("expected_checks") or [])
+    return score_rollout_result(predicted, checks)
+
+
 def score_rollout_result(predicted: str, expected_checks: list[str]) -> dict:
     """确定性 scorer：keyword/regex 检查 + accuracy/precision/F1。
 

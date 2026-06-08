@@ -71,6 +71,32 @@ def resolve_skillopt_backend_ids(
     )
 
 
+def resolve_judge_backend_id(
+    skillopt: dict | Any | None,
+    model_provider: dict | Any | None = None,
+) -> str | None:
+    """解析 LLM Judge backend（``routes.judge`` 或 ``skillopt.judge_backend``）。"""
+    skillopt = _as_config_dict(skillopt)
+    mp = _as_config_dict(model_provider)
+    routes = mp.get("routes") or {}
+    if not routes and model_provider is not None and not isinstance(model_provider, dict):
+        routes = getattr(model_provider, "routes", None) or {}
+
+    route = routes.get("judge") or {}
+    if hasattr(route, "model_dump"):
+        route = route.model_dump()
+    elif not isinstance(route, dict):
+        primary = getattr(route, "primary", "") or ""
+        route = {"primary": primary}
+
+    judge = (
+        skillopt.get("judge_backend")
+        or (route.get("primary") or "").strip()
+        or os.environ.get("SKILL_LAB_JUDGE_BACKEND")
+    )
+    return str(judge).strip() if judge else None
+
+
 def _lookup_backend(
     backend_id: str | None,
     prebuilt: dict[str, Any] | None,

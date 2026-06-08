@@ -35,6 +35,25 @@ def build_rollout_synthesis_hint(expected_checks: list[str]) -> str:
     return hint
 
 
+def assemble_rollout_user_content(
+    task_msg: str,
+    code_ctx: str = "",
+    *,
+    task_limit: int = 1200,
+    code_limit: int = 1400,
+    total_limit: int = 3000,
+) -> str:
+    """分段预算组装 rollout user 消息，避免整体截断丢掉代码证据。"""
+    task_part = (task_msg or "")[:task_limit]
+    if not code_ctx:
+        return task_part[:total_limit]
+    remaining = max(0, total_limit - len(task_part))
+    code_budget = min(code_limit, remaining)
+    if code_budget <= 0:
+        return task_part[:total_limit]
+    return task_part + code_ctx[:code_budget]
+
+
 def build_rollout_user_message(
     question: str,
     expected_checks: list[str],
@@ -86,7 +105,11 @@ def build_rollout_user_message(
     if rollout_hint:
         msg += f" {rollout_hint}"
     msg += " Output only the final answer; do not paste the skill document."
-    msg += " Use code tools briefly if needed, then produce the final answer."
+    mode = str((item or {}).get("context_mode") or "inline").strip().lower()
+    if mode == "agent_read":
+        msg += " Use code tools to fetch the referenced context before answering."
+    elif mode != "none":
+        msg += " Use code tools briefly if needed, then produce the final answer."
     return msg
 
 

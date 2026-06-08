@@ -492,14 +492,18 @@ resolver ──► 方法 calls 边 + callback 合成
 
 ### 8.5 与 SkillOpt（M4）的关系
 
-| M1 能力 | M4 消费方式 |
-|---------|------------|
-| `graph.db` | `run all` M1 产物 → M4 `code_tools.graph_db_path` |
-| `search_symbol` | reflect / rollout optimizer 自主查规则 |
-| `get_code_context` / `explore_symbol` | 失败 case 根因分析时拉上下文 |
-| `trace_symbol` | 验证调用链是否覆盖 benchmark check |
-| `build_rollout_item_context` | rollout 自动注入 benchmark `context_refs` 源码 |
-| `accounting_linker` | reflect 无 context_refs 时预取图谱块 |
-| `LeafContext` | M3 atom 抽取（不变） |
+| M1 能力 | M4 消费方式 | 流水线整合 |
+|---------|------------|------------|
+| `graph.db` | `code_tools.graph_db_path` / `GraphRegistry` | ✅ `artifact_contract.json` 记录 present |
+| `entrypoints.json` | `GraphSidecarContext` → entrypoint 驱动 `trace_symbol` | ✅ P1-1；不再仅用 `api` 路径启发式 |
+| `role_index.json` | `role_index.py` 建图时写入；M4 按 `graph_role_hints` 限定检索 | ✅ P1-2 sidecar |
+| `search_symbol` / `get_code_context` | reflect / rollout 工具链 | ✅ fallback 计入 metrics |
+| `trace_symbol` | 验证 `context_refs` 调用链 | ✅ |
+| `build_rollout_item_context` | `context_mode=inline` 时注入源码 | ✅ 分段 token 预算 |
+| `evidence_index.json`（M3） | M4 reflect 按 `context_ref`/symbol/atom_id 精确命中 | ✅ P1-4 |
+| `accounting_linker` | reflect 无 context_refs 时预取图谱块 | ✅ |
+| `LeafContext` | M3 atom 抽取 | ✅ `run extract-atoms --from <run_dir>` |
+
+**待后续**：P1-3 将 `metadata.role` 写入 `graph.db` nodes 表，使 `GraphRegistry` 可直接 SQL 按 role 查询（当前依赖 `role_index.json` sidecar）。
 
 图查询与文件读取**并存**：符号级优先，文件级兜底。详见 [04-skillopt-loop.md §4.4](./04-skillopt-loop.md)。

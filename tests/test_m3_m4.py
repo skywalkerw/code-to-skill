@@ -54,6 +54,21 @@ class TestM3Scorer:
         scored = score_atoms([raw])
         assert scored[0].status in ("accepted", "candidate")
 
+    def test_score_respects_settings_thresholds(self):
+        atom = SkillAtom(
+            atom_id="t", kind="constraint", claim="valid claim",
+            source_refs=[SourceRef(type="code", id="x")],
+            checks=["a"],
+        )
+        raw = RawAtom(raw_id="r1", atom=atom)
+        scored = score_atoms([raw], settings={
+            "confidence_tier_1_max": 0.7,
+            "llm_adjustment": 0.0,
+            "accepted_min": 0.99,
+            "candidate_min": 0.50,
+        })
+        assert scored[0].status == "candidate"
+
 
 class TestM3Merger:
     def test_merge_duplicates(self):

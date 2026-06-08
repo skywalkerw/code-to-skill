@@ -1,10 +1,10 @@
 # 流水线整合与代码利用率优化方案
 
-> 版本: 1.1  
-> 状态: **方案（审计后修订，待实施）**  
-> 关联: `00-overall-design.md`、`01`–`06` 模块设计、`config.yaml`  
-> 背景: 2026-06 审计发现 M1–M5 各子系统已实现，但 Fineract 典型路径（`initial_skill` + 显式 benchmark + `graph.db`）下大量产物**只写不读**，框架代码与配置项存在**悬空接口**。
-> 修订: 2026-06-08 结合最近 run 记录，补充 artifact contract、`context_refs` 解析、role/evidence 落地顺序。
+> 版本: 1.2  
+> 状态: **已实施（Phase -1 ~ P5，2026-06）**；P1-3（role 元数据入库）与 M3 `artifact_quality.json` 仍为后续项  
+> 关联: `00-overall-design.md`、`01`–`06` 模块设计、`config.template.yaml`  
+> 背景: 2026-06 审计发现 M1–M5 各子系统已实现，但 Fineract 典型路径下大量产物**只写不读**。  
+> 修订: 2026-06-08 方案定稿；2026-06 实施 Phase -1~P5 并同步本文档 §10 实现索引。
 
 ## 1. 问题陈述
 
@@ -83,26 +83,27 @@ flowchart LR
 | `training_curve` 记录 | step/gate/epoch/test 事件落盘 |
 | `custom_patterns` → M1 建图 | 产生 `metadata.framework` / `metadata.role` 节点 |
 
-### 2.2 未贯通或弱利用（优化目标）
+### 2.2 原审计项与当前状态（2026-06 实施后）
 
-| 能力 | 实现位置 | 现状 |
-|------|----------|------|
-| M1 `entrypoints.json` | `code_graph/entrypoints.py` | M4 `trace_symbol` 仅用路径含 `api` 的启发式 `from_entry=rest` |
-| M1 `custom_patterns` 角色 | `code_graph/framework.py` | 节点入库；M4 不做 role 过滤检索 |
-| M3 `evidence_index` / atom `edge_path` | `code_graph/evidence.py` | 仅写入 `atoms/`；reflect 重复 live 查图 |
-| M3 → benchmark 种子 | `atom_extractor/merger.py` | schema 用 `seed_id`/`task_template`，缺 `id`/`question`/`context_refs` |
-| M3 在有 benchmark 时仍全量运行 | `cli/main.py` `run all` | 耗时与 LLM 成本浪费 |
-| `settings.document_normalizer.*` | `config.yaml` | `normalize_document()` 未读配置 |
-| `settings.atom_extractor.*` | `config.yaml` | `scorer.py` 阈值硬编码 |
-| `settings.code_graph.*`（聚类等） | `config.yaml` | 未传入 `run_code_graph_pipeline` |
-| `score_with_llm_judge` | `skillopt_loop/scoring.py` | 无调用方；benchmark `scorer` 字段未用 |
-| `EnvAdapter` 自定义 reflect prompt | `envs/base.py` | `llm_components` 固定用 `reflect_helpers` |
-| `meta_skill.update()` | `skillopt_loop/__init__.py` | 嵌套在 `enable_slow_update` 分支内 |
-| `step_buffer` 成功/失败模式 | `step_buffer.py` | reflect 主要只用 rejected edits |
-| `training_curve` plot/backfill | `training_curve.py` | 无 CLI；仅库函数与测试 |
-| `publish_target` / gate 审批 | `cli/main.py` | publish 硬编码 `skills/agent`；`gate_ok=True` |
-| `context_mode` inline/agent_read/none | `types.py` / `envs/base.py` | 文档有、rollout 未分支 |
-| `run extract-atoms` | `cli/main.py` | 传空 `leaf_contexts`，独立命令几乎无意义 |
+| 能力 | 实现位置 | 原问题 | 当前状态 |
+|------|----------|--------|----------|
+| M1 `entrypoints.json` | `code_evidence.py`、`graph_sidecars.py` | 启发式 `from_entry=rest` | ✅ entrypoint 驱动 trace（P1-1） |
+| M1 `custom_patterns` 角色 | `role_index.py`、`code_evidence.py` | M4 不按 role 检索 | ✅ `role_index.json` sidecar + `graph_role_hints`（P1-2）；DB 内 role 查询仍待 P1-3 |
+| M3 `evidence_index` | `code_evidence.py` | reflect 仅 live 查图 | ✅ 精确命中 + fallback 计数（P1-4） |
+| M3 → benchmark 种子 | `merger.py` | schema 不完整 | ✅ `id`/`question`/`context_refs`（P2-1） |
+| M3 有 benchmark 仍全量跑 | `cli/main.py` | 成本浪费 | ✅ 默认跳过；`--with-atoms` 强制（P0-1） |
+| `settings.document_normalizer.*` | `pipeline_config.py` | 未传入 M2 | ✅ `ModuleRunSettings`（P3-2） |
+| `settings.atom_extractor.*` | `scorer.py` | 硬编码阈值 | ✅ `score_atoms(..., settings=)`（P2-4） |
+| `settings.code_graph.*` | `code_graph/__init__.py` | 未传入 M1 | ✅ `code_graph_pipeline_kwargs()`（P3-3） |
+| `scorer: llm_judge` | `scoring.py`、`envs/base.py` | 无调用方 | ✅ `routes.judge` + `score_benchmark_item`（P3-5） |
+| 自定义 reflect prompt | `envs/base.py`、`llm_components.py` | 固定模板 | ✅ `project.reflect_prompts`（P3-4） |
+| `meta_skill.update()` | `skillopt_loop/__init__.py` | 绑死 slow_update | ✅ 解耦（P0-3） |
+| `training_curve` CLI | `cli/main.py` | 无 CLI | ✅ `run training-curve plot\|backfill`（P0-6） |
+| `publish_target` | `cli/main.py` | 硬编码路径 | ✅ 读 config + `--force`（P0-4） |
+| `context_mode` 三模式 | `envs/base.py` | rollout 未分支 | ✅ inline / agent_read / none（P5-3） |
+| `run extract-atoms` | `cli/main.py` | 空 leaf_contexts | ✅ 必须 `--from <run_dir>`（P0-5） |
+| M3 `artifact_quality.json` | `03` 设计 | 质量摘要 | ⚠️ 未实现；由 `artifact_contract` + `context_ref_report` 部分替代 |
+| Role 元数据入 `graph.db` | `code_graph/db.py` | 仅 sidecar | ⚠️ 待 P1-3 |
 
 ### 2.3 最近 runs 证据（2026-06-08 审计）
 
@@ -150,7 +151,7 @@ flowchart LR
 
 ## 4. 分阶段方案
 
-### Phase -1 — 契约与可解析性（P0，1 天）
+### Phase -1 — 契约与可解析性（P0，1 天）✅
 
 **目标**：先把“哪些产物存在、哪些 ref 可解析、哪些证据命中”变成显式契约，避免后续 Phase 只是在现有猜测链路上叠功能。
 
@@ -165,7 +166,7 @@ flowchart LR
 
 ---
 
-### Phase 0 — 编排与成本（P0，1–2 天）
+### Phase 0 — 编排与成本（P0，1–2 天）✅
 
 **目标**：不增加新算法，只减少无效计算、修复明显断线。
 
@@ -182,7 +183,7 @@ flowchart LR
 
 ---
 
-### Phase 1 — M1 产物进 M4（P1，3–5 天）
+### Phase 1 — M1 产物进 M4（P1，3–5 天）✅（P1-3 后续）
 
 **目标**：图谱建图阶段的结构化信息进入 reflect/rollout，减少空工具轮次与泛化 patch。
 
@@ -190,7 +191,7 @@ flowchart LR
 |----|------|----------|
 | P1-1 | **Entrypoint 驱动 trace**：优先使用 `graph.db` 中已有 `route`/`entry_to` 节点；`entrypoints.json` 作为 sidecar 加速和解释。禁止仅靠路径含 `api` 推断 `from_entry=rest` | `code_evidence.py`、`code_graph/registry.py`、`cli/pipeline_config.py` |
 | P1-2 | **Role sidecar 先行**：从 `graph.json` 生成 `role_index.json`，记录 `(framework, role, file_path, symbols)`；M4 按 `graph_role` / `project.graph_role_hints` 限定候选，再 fallback 通用查图 | `code_graph/framework.py`、`code_evidence.py` |
-| P1-3 | **Role 入库后续**：为 `GraphDB.nodes` 增加 `metadata_json` 或独立 `node_metadata` 表，使 `GraphRegistry` 可直接按 role 查询 | `code_graph/db.py`、`graph_queries.py` |
+| P1-3 | **Role 入库后续**：为 `GraphDB.nodes` 增加 `metadata_json` 或独立 `node_metadata` 表，使 `GraphRegistry` 可直接按 role 查询 | `code_graph/db.py`、`graph_queries.py` | ⚠️ 未实施 |
 | P1-4 | **复用 evidence_index**：reflect 预取时若存在 `atoms/evidence_index.json`，只按 `context_ref` / symbol / atom_id 精确命中注入 compact `edge_path`；未命中再 fallback live 查图 | `code_evidence.py`、`code_graph/evidence.py` |
 | P1-5 | benchmark item 可选字段 `graph_role` / `entrypoint_id`，与 P1-2 对齐（手工维护，非框架硬编码） | `benchmark` schema、`types.py` |
 | P1-6 | rollout 证据预算分段：task/checks/code evidence 分别限额，避免整体 `user_msg[:3000]` 截断掉代码证据 | `envs/base.py`、`rollout_helpers.py` |
@@ -199,22 +200,22 @@ flowchart LR
 
 ---
 
-### Phase 2 — M3 与 benchmark 协同（P1，3–5 天）
+### Phase 2 — M3 与 benchmark 协同（P1，3–5 天）✅
 
 **目标**：M3 成为 benchmark/skill 的**辅助生产线**，而非与显式 benchmark 并行重复。
 
 | 项 | 动作 | 主要文件 |
 |----|------|----------|
 | P2-1 | `generate_benchmark_seeds` 输出对齐 `items.json`：`id`、`question`、`expected_checks`、`context_refs`（由 atom `source_refs` + `edge_path` 生成） | `atom_extractor/merger.py` |
-| P2-2 | 新命令或 `run all --bootstrap-benchmark`：高置信 atom → **追加** train items（需 `--merge-benchmark` 防覆盖） | `cli/main.py` |
-| P2-3 | 高置信 atom claims → 可选合并进 `initial_skill` 附录节（`### Auto-suggested rules`），gate 前人工可删 | `cli/main.py`、模板 skill |
-| P2-4 | `settings.atom_extractor` 传入 scorer tier / `llm_adjustment` | `config_loader.py`、`scorer.py` |
+| P2-2 | 新命令或 `run all --bootstrap-benchmark`：高置信 atom → **追加** train items（需 `--merge-benchmark` 防覆盖） | `cli/main.py` | ✅ `run bootstrap-benchmark` |
+| P2-3 | 高置信 atom claims → 可选合并进 `initial_skill` 附录节（`### Auto-suggested rules`），gate 前人工可删 | `cli/main.py`、模板 skill | ✅ |
+| P2-4 | `settings.atom_extractor` 传入 scorer tier / `llm_adjustment` | `config_loader.py`、`scorer.py` | ✅ |
 
 **验收**：无手工 benchmark 时，`run all` 仍可从 M3 种子启动 M4；种子项通过 `validate_splits` 无 missing `id`。
 
 ---
 
-### Phase 3 — 配置贯通与适配器（P2，2–4 天）
+### Phase 3 — 配置贯通与适配器（P2，2–4 天）✅
 
 | 项 | 动作 | 主要文件 |
 |----|------|----------|
@@ -228,7 +229,7 @@ flowchart LR
 
 ---
 
-### Phase 4 — 可观测性与闭环（P2，2–3 天）
+### Phase 4 — 可观测性与闭环（P2，2–3 天）✅
 
 | 项 | 动作 | 主要文件 |
 |----|------|----------|
@@ -241,13 +242,13 @@ flowchart LR
 
 ---
 
-### Phase 5 — 工具层统一（P3，可选）
+### Phase 5 — 工具层统一（P3，可选）✅
 
 | 项 | 动作 |
 |----|------|
-| P5-1 | MCP 可选暴露 `read_code_file` / `search_code`（与 SkillOpt 对齐），或文档明确「IDE 用 MCP 查图、训练用 Handler 查图+读文件」 |
-| P5-2 | `CodeToolsHandler` 工厂：daemon / M4 / 测试共用同一构造逻辑 |
-| P5-3 | 实现 `context_mode: agent_read`（rollout 不注入，仅靠工具）与 `none`（纯 skill） |
+| P5-1 | MCP 可选暴露 `read_code_file` / `search_code`（与 SkillOpt 对齐），或文档明确「IDE 用 MCP 查图、训练用 Handler 查图+读文件」 | ✅ MCP + `CODEGRAPH_REPO_ROOT` |
+| P5-2 | `CodeToolsHandler` 工厂：daemon / M4 / 测试共用同一构造逻辑 | ✅ `build_code_tools_handler()` |
+| P5-3 | 实现 `context_mode: agent_read`（rollout 不注入，仅靠工具）与 `none`（纯 skill） | ✅ `DEFAULTAdapter.rollout` |
 
 ## 5. 建议的配置扩展（`config.yaml`）
 
@@ -333,16 +334,38 @@ P-1（契约/可解析性）→ P0（编排修复）→ P1（M1→M4）→ P2（
 
 ## 10. 文档与代码同步
 
-实施各 Phase 时需更新：
+### 10.1 同步清单（2026-06 已完成）
 
-| 文档 | 更新内容 |
+| 文档 | 更新内容 | 状态 |
+|------|----------|------|
+| `04-skillopt-loop.md` | §12 扩展项；`context_mode`；`evaluate_test_split`；pipeline 契约产物 | ✅ |
+| `01-code-repo-to-code-graph-module-tree.md` | `role_index.json`、entrypoints、M4 sidecar 消费 | ✅ |
+| `03-skillatom-extraction.md` | 种子 schema、benchmark bootstrap、§8 实施状态 | ✅ |
+| `06-cli-human-interaction-orchestrator.md` | dry-run 三级、`bootstrap-benchmark`、`inspect run`、`pipeline` | ✅ |
+| `config.template.yaml` | `settings.pipeline`、`graph_role_hints` 示例 | ✅ |
+| `00-overall-design.md` | §16 流水线整合状态 | ✅ |
+
+### 10.2 实现索引（代码入口）
+
+| 区域 | 关键路径 |
 |------|----------|
-| `04-skillopt-loop.md` | §12 扩展项状态；meta_skill 解耦；evidence_index 消费 |
-| `01-code-repo-to-code-graph-module-tree.md` | entrypoints/custom_patterns 的 M4 消费契约 |
-| `03-skillatom-extraction.md` | 种子 schema、与 benchmark 关系、skip 策略 |
-| `06-cli-human-interaction-orchestrator.md` | 新子命令、`pipeline` 配置、`inspect run` |
-| `config.template.yaml` | `settings.pipeline` 与 `graph_role_hints` 示例 |
+| 契约 / 编排 | `cli/pipeline_config.py`、`cli/run_manifest.py`、`cli/benchmark_bootstrap.py` |
+| L2/L3 校验 | `cli/static_analysis.py`、`cli/full_simulate.py` |
+| M1 sidecar | `code_graph/role_index.py` → `role_index.json` |
+| M4 证据 | `skillopt_loop/code_evidence.py`、`skillopt_loop/graph_sidecars.py` |
+| M4 rollout | `skillopt_loop/envs/base.py`、`rollout_helpers.py` |
+| 工具层 | `codegraph_mcp/handler.py`（`build_code_tools_handler`）、MCP `search_code`/`read_code_file` |
+| 可观测 | `cli/inspect_run.py`、`optimization/artifact_contract.json`、`context_ref_report.json` |
+| 测试 | `tests/test_pipeline_config.py`、`test_context_mode.py`、`test_full_simulate.py` 等 |
+
+### 10.3 仍待文档/代码跟进
+
+| 项 | 说明 |
+|----|------|
+| P1-3 role 入 DB | 当前仅 `role_index.json` sidecar；`GraphRegistry` 尚不能 SQL 按 role 过滤 |
+| M3 `artifact_quality.json` | 设计 §3.6 字段；可用 run 级 contract + ref report 过渡 |
+| `step_buffer` 成功模式 | reflect 仍以 rejected edits 为主；非阻塞 |
 
 ---
 
-*本文档描述「应如何整合已有代码」；具体 issue/PR 可按 Phase 拆分为独立交付项。*
+*Phase -1 ~ P5 已合入主路径；后续 PR 可仅针对 §10.3 缺口。*

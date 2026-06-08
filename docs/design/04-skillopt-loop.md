@@ -18,7 +18,7 @@
 | Evaluate / Gate | `gate.py` + `cache.py` | ✅ |
 | Rejected-edit buffer | `step_buffer.py` | ✅ |
 | Slow update + Meta skill | `slow_update.py` + `meta_skill.py` | ✅（默认关闭） |
-| Test eval | `test_eval.py` | ✅ |
+| Test eval | `test_eval.py` → `evaluate_test_split()` | ✅ |
 | 断点续训 | `resume_state.py` | ✅（epoch/batch 级） |
 | **本仓库扩展** | | |
 | Benchmark 三份 split 接入 | `benchmark_splits.py` | ✅ |
@@ -107,7 +107,11 @@ epoch 末尾可选执行 slow update 和 meta skill。
 | `agent_read` | target Agent 自行通过工具（如 `read_file`）获取上下文 | Agent 工具链测试、多步探索任务 |
 | `none` | 不注入上下文，仅依赖 Skill 中的内置知识 | 纯策略问题、概念问答 |
 
-Adapter 负责在 rollout 前根据 `context_mode` 构造 prompt。当使用 `inline` 时，从模块 1 的 `leaf_contexts` 或 CodeGraph 中按 `context_refs` 取源码片段，确保每次 rollout 使用相同上下文。
+Adapter 负责在 rollout 前根据 `context_mode` 构造 prompt（**已实现**，见 `DEFAULTAdapter.rollout`）：
+
+- `inline`：`build_rollout_item_context()` 按 `context_refs` 注入源码片段（可复现）。
+- `agent_read`：prompt 列出 refs，不注入片段；启用 code tools 由 target 自行读取。
+- `none`：仅 skill + 问题；禁用 code tools。
 
 任务必须可评分。代码修改类任务优先使用确定性评分；问答和解释类任务可用 rubric judge。
 
@@ -637,7 +641,7 @@ skill-lab run all   # 端到端流水线
 | P1 | scoring missed/passed + rollout 丰富化 | ✅ |
 | P2 | 规则降级 + reflect prompt + edit_validator | ✅ |
 | P3 | insert_after 定位 + select 覆盖度排序 | ✅ |
-| P4 | test_evaluate 接入（显式 test split）+ CLI `eval` | ✅ |
+| P4 | `evaluate_test_split`（显式 test split）+ CLI `eval` | ✅ |
 
 ### 9.3 迭代修复记录
 
@@ -672,7 +676,7 @@ skill-lab run all   # 端到端流水线
 | `best_skill.md` 含实质性规则，无 `# Verify` 占位行 | ✅ 机制 | `EditValidator` + 语义规则降级 |
 | `test_report.json` 训练结束后生成 | ✅ | `__init__.py` → `{output_dir}/test_report.json` |
 | CLI `--benchmark` / `--output` 路径正确 | ✅ | `cli/main.py` optimize-skill |
-| 独立 `skill-lab eval` 使用 test split | ✅ | `cli/main.py` → `test_evaluate()` |
+| 独立 `skill-lab eval` 使用 test split | ✅ | `cli/main.py` → `evaluate_test_split()` |
 | 每步 edit 可追溯到 task id 与 missed checks | ✅ | `edit_proposals.json` + `rollout_summary.json` |
 | 断点续训 epoch/batch 级恢复 | ✅ | `resume_state.py` + `--resume` |
 | E2E 优化分数 | ⚠️ 非确定性 | 机制（synthesis / scenario / traceability）已就绪 |
@@ -716,7 +720,10 @@ skill-lab run all   # 端到端流水线
 | 扩展 | 动机 | 实现 |
 |---|---|---|
 | CodeGraph 代码证据 | 代码仓库 Skill 需要真实源码上下文 | `code_evidence.py`、Reflect/Rollout 工具链 |
-| `context_mode` 三模式 | 控制上下文注入可复现性 | `envs/base.py` |
+| `context_mode` 三模式 | 控制上下文注入可复现性 | `envs/base.py` `DEFAULTAdapter.rollout` | ✅ inline 注入 / agent_read 仅工具 / none 纯 skill |
+| Pipeline 契约产物 | M4 启动前可观测 | `artifact_contract.json`、`context_ref_report.json`、`steps/step_*/metrics.json` | ✅ |
+| Graph sidecar 消费 | entrypoints / role / evidence_index | `graph_sidecars.py` + `code_evidence.py` | ✅ |
+| `meta_skill` 与 slow_update 解耦 | 仅开 meta 时仍更新 | `skillopt_loop/__init__.py` | ✅ |
 | EditValidator | 防止 LLM 产出 meta 注释/重复规则 | `edit_validator.py` |
 | 场景规则兜底 | validate 全拒绝时仍能推进 | `scenario_rules.py` |
 | `missed_checks` 追溯 | 编辑可审计到具体失败 case | `edit_traceability.py` |
@@ -779,7 +786,8 @@ skill-lab run all   # 端到端流水线
 严格 hard gate          →    可配置 gate + 小集 soft 降级
 完整 minibatch resume   →    epoch/batch 级 resume
 论文实验超参            →    小数据集适配默认值
-无代码证据管线          →    CodeGraph + context_mode
+无代码证据管线          →    CodeGraph + context_mode（三模式已落地）
+无 pipeline 契约        →    artifact_contract + context_ref_report + step metrics
 无 edit 质量过滤        →    EditValidator + scenario_rules
 ```
 

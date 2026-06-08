@@ -31,6 +31,8 @@ def graph_env(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEGRAPH_DB_PATH", db_path)
     monkeypatch.setenv("CODEGRAPH_REPO_ROOT", str(repo))
     invalidate_registry()
+    from code_to_skill.codegraph_mcp.handler_holder import invalidate_handler
+    invalidate_handler()
     return db_path, str(repo)
 
 
@@ -64,3 +66,20 @@ def test_registry_holder_invalidate(graph_env):
     invalidate_registry()
     r2 = get_registry()
     assert r1 is not r2
+
+
+def test_mcp_file_tools_via_handler(graph_env):
+    from code_to_skill.codegraph_mcp.handler_holder import get_code_tools_handler
+
+    handler = get_code_tools_handler()
+    assert handler.file_enabled
+    raw = handler.execute({
+        "function": {
+            "name": "search_code",
+            "arguments": '{"query": "Hello", "max_results": 5}',
+        },
+    })
+    import json
+    data = json.loads(raw)
+    assert "error" not in data
+    assert data.get("results")

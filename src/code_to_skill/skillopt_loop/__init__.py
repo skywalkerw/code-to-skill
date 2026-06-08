@@ -80,6 +80,11 @@ def run_skillopt_loop(
     max_tool_rounds: int = 5,
     rollout_max_tool_rounds: int = 2,
     resume: bool = False,
+    pipeline_settings: Any = None,
+    run_root: str = "",
+    graph_role_hints: dict | None = None,
+    reflect_prompts: dict | None = None,
+    skillopt_settings: dict | None = None,
 ) -> dict:
     """运行 SkillOpt 优化循环（完整版）。
 
@@ -129,6 +134,12 @@ def run_skillopt_loop(
             max_tool_rounds=max_tool_rounds,
             rollout_max_tool_rounds=rollout_max_tool_rounds,
         )
+    from .separation import BackendManager, resolve_judge_backend_id
+    judge_id = resolve_judge_backend_id(skillopt_settings, model_provider)
+    judge_backend = BackendManager._try_create_backend(judge_id) if judge_id else None
+    if judge_id and judge_backend:
+        logger.info("[M4] judge backend: %s", judge_id)
+
     adapter.setup({
         "code_repos": code_repos,
         "graph_db_path": graph_db_path,
@@ -137,6 +148,8 @@ def run_skillopt_loop(
         "enable_code_tools": enable_code_tools,
         "max_tool_rounds": max_tool_rounds,
         "rollout_max_tool_rounds": rollout_max_tool_rounds,
+        "reflect_prompts": reflect_prompts or {},
+        "judge_backend": judge_backend,
     })
     code_tools = getattr(adapter, "code_tools", None)
     if code_tools and getattr(code_tools, "enabled", False):
@@ -163,6 +176,84 @@ def run_skillopt_loop(
     selection_items = resolved.selection
     test_items = resolved.test
     splits.log_validation()
+
+    from code_to_skill.cli.pipeline_config import (
+        PipelineSettings,
+        build_artifact_contract,
+        discover_pipeline_artifacts,
+        write_artifact_contract,
+    )
+    from .code_evidence import validate_context_refs_for_items
+
+    pipe = (
+        pipeline_settings
+        if isinstance(pipeline_settings, PipelineSettings)
+        else PipelineSettings(**pipeline_settings) if isinstance(pipeline_settings, dict)
+        else PipelineSettings()
+    )
+    effective_run_root = run_root or os.path.dirname(output_dir)
+    repo_specs: list[dict] = []
+    if graph_sources:
+        for gs in graph_sources:
+            db_path = gs.get("db_path", "")
+            code_root = os.path.dirname(db_path) if db_path else ""
+            ref = os.path.basename(code_root) if code_root else "HEAD"
+            repo_id = gs.get("repo_id") or (
+                os.path.basename(os.path.dirname(code_root)) if code_root else "default"
+            )
+            repo_specs.append({
+                "id": repo_id,
+                "ref": ref,
+                "path": gs.get("repo_root", repo_root or ""),
+            })
+
+    artifacts = discover_pipeline_artifacts(
+        effective_run_root, repos=repo_specs or None,
+    )
+    if pipe.write_artifact_contract:
+        contract = build_artifact_contract(
+            artifacts,
+            pipeline_settings=pipe,
+            extra={
+                "graph_db_path": graph_db_path,
+                "train_items": len(train_items),
+                "selection_items": len(selection_items),
+                "test_items": len(test_items),
+            },
+        )
+        contract_path = write_artifact_contract(output_dir, contract)
+        logger.info("[M4] artifact contract → %s", contract_path)
+
+    if pipe.validate_context_refs:
+        all_items = train_items + selection_items + test_items
+        ref_report = validate_context_refs_for_items(
+            all_items, code_tools, repo_root=repo_root or "",
+        )
+        ref_path = os.path.join(output_dir, "context_ref_report.json")
+        with open(ref_path, "w", encoding="utf-8") as f:
+            json.dump(ref_report, f, indent=2, ensure_ascii=False)
+        summary = ref_report.get("summary", {})
+        logger.info(
+            "[M4] context refs: %d/%d resolved (%.0f%%)",
+            summary.get("resolved", 0),
+            summary.get("total_refs", 0),
+            100 * summary.get("resolve_rate", 0),
+        )
+
+    from .graph_sidecars import GraphSidecarContext
+    graph_sidecars = GraphSidecarContext.from_artifacts(
+        artifacts, pipe, graph_role_hints=graph_role_hints,
+    )
+    adapter.graph_sidecars = graph_sidecars
+    sidecar_flags = []
+    if graph_sidecars.entrypoints:
+        sidecar_flags.append("entrypoints")
+    if graph_sidecars.role_index:
+        sidecar_flags.append("role_index")
+    if graph_sidecars.evidence_index:
+        sidecar_flags.append("evidence_index")
+    if sidecar_flags:
+        logger.info("[M4] graph sidecars loaded: %s", ", ".join(sidecar_flags))
 
     if resolved.use_explicit_splits:
         logger.info("[M4] 使用显式 benchmark split: train=%d selection=%d test=%d",
@@ -318,7 +409,7 @@ def run_skillopt_loop(
             # 构建 step_buffer（从 buffer 中提取该 step 已记录的失败模式）
             step_buf_entries = buffer.get_rejected_edits()  # rejected edits 作为 step buffer 的廉价近似
             step_buffer = [{"type": "rejected_edit", "edit": e} for e in step_buf_entries] if step_buf_entries else None
-            patches = reflect_llm(
+            reflect_result = reflect_llm(
                 all_results, current_skill,
                 rejected_edits=rejected_edits,
                 step_buffer=step_buffer,
@@ -326,7 +417,10 @@ def run_skillopt_loop(
                 backend=backend_mgr.optimizer,
                 code_tools=code_tools,
                 max_tool_rounds=max_tool_rounds,
+                graph_sidecars=graph_sidecars,
+                adapter=adapter,
             )
+            patches = reflect_result.patches
             logger.info("[M4] reflect: %d patches", len(patches))
 
             # 3. Aggregate（分层 merge）
@@ -346,11 +440,13 @@ def run_skillopt_loop(
             for edit, reason in rejected_validations:
                 logger.info("[M4] validate: REJECT [%s] %s — %s", edit.op, edit.content[:40], reason)
                 buffer.record_rejected_edit(step_counter, edit)
+            scenario_rules_triggered = 0
             if not valid_edits:
                 from .scenario_rules import build_scenario_edits
 
                 scenario_edits = build_scenario_edits(all_results, current_skill)
                 if scenario_edits:
+                    scenario_rules_triggered = len(scenario_edits)
                     valid_edits, scenario_rejected = filter_valid_edits(
                         scenario_edits, current_skill,
                     )
@@ -380,6 +476,17 @@ def run_skillopt_loop(
                         rejected_edits=[edit_to_dict(e) for e, _ in rejected_validations],
                     )
                     continue
+
+            _save_step_metrics(
+                output_dir, step_counter,
+                evidence_metrics=reflect_result.evidence_metrics,
+                reflect_tool_rounds_max=reflect_result.reflect_tool_rounds_max,
+                rollout_passed=passed,
+                rollout_failed=failed,
+                patch_count=len(patches),
+                custom_reflect_prompt=getattr(reflect_result, "custom_reflect_prompt", False),
+                scenario_rules_triggered=scenario_rules_triggered,
+            )
 
             # 4. Select（LLM 排序 + budget 截断）
             from .llm_components import select_edits_llm
@@ -535,6 +642,7 @@ def run_skillopt_loop(
         epoch_slow_gate: str | None = None
         epoch_slow_reason: str | None = None
         epoch_comparison: dict | None = None
+        slow_result: dict = {}
 
         # Slow Update（epoch >= 2 时启用）
         if enable_slow_update and epoch >= 1:
@@ -610,20 +718,21 @@ def run_skillopt_loop(
                 else:
                     logger.info("[M4] Slow update rejected by selection gate")
 
-            # Meta Skill
-            if enable_meta_skill:
-                logger.info("[M4] === Meta Skill epoch %d ===", epoch + 1)
-                meta_skill.update(
-                    prev_skill=prev_epoch_skill,
-                    curr_skill=current_skill,
-                    accepted_edits=buffer.get_accepted_edits(),
-                    rejected_edits=rejected_edits,
-                    comparison_pairs=slow_result.get("comparison_pairs", {}),
-                    optimizer_backend=backend_mgr.optimizer,
-                )
-                _save_meta_skill_artifacts(output_dir, epoch + 1, meta_skill)
             if slow_result.get("comparison_pairs"):
                 epoch_comparison = slow_result["comparison_pairs"]
+
+        # Meta Skill（与 slow_update 解耦：仅依赖 enable_meta_skill）
+        if enable_meta_skill:
+            logger.info("[M4] === Meta Skill epoch %d ===", epoch + 1)
+            meta_skill.update(
+                prev_skill=prev_epoch_skill,
+                curr_skill=current_skill,
+                accepted_edits=buffer.get_accepted_edits(),
+                rejected_edits=buffer.get_rejected_edits(),
+                comparison_pairs=epoch_comparison or slow_result.get("comparison_pairs", {}),
+                optimizer_backend=backend_mgr.optimizer,
+            )
+            _save_meta_skill_artifacts(output_dir, epoch + 1, meta_skill)
 
         curve.record_epoch_end(
             step=step_counter,
@@ -692,8 +801,8 @@ def run_skillopt_loop(
     # Test eval
     test_report = {}
     if test_items:
-        from .test_eval import test_evaluate
-        test_report = test_evaluate(
+        from .test_eval import evaluate_test_split
+        test_report = evaluate_test_split(
             best_skill,
             test_items,
             adapter=adapter,
@@ -710,6 +819,14 @@ def run_skillopt_loop(
         )
 
     curve.finalize(best_step=best_step, test_report=test_report or None)
+
+    if pipe.auto_plot_training_curve:
+        try:
+            from .training_curve import plot_training_curve
+            plot_training_curve(output_dir)
+            logger.info("[M4] training curve SVG written")
+        except (OSError, ValueError) as exc:
+            logger.warning("[M4] training curve plot skipped: %s", exc)
 
     final = {
         "best_skill": best_skill,
@@ -732,6 +849,44 @@ def run_skillopt_loop(
 
 
 # ── Artifact helpers ──────────────────────────────────────────
+
+def _save_step_metrics(
+    output_dir: str,
+    step: int,
+    *,
+    evidence_metrics: Any,
+    reflect_tool_rounds_max: int = 0,
+    rollout_passed: int = 0,
+    rollout_failed: int = 0,
+    patch_count: int = 0,
+    custom_reflect_prompt: bool = False,
+    scenario_rules_triggered: int = 0,
+) -> None:
+    step_dir = os.path.join(output_dir, "steps", f"step_{step:04d}")
+    os.makedirs(step_dir, exist_ok=True)
+    metrics = evidence_metrics.to_dict() if hasattr(evidence_metrics, "to_dict") else evidence_metrics
+    payload = {
+        "step": step,
+        "rollout": {"passed": rollout_passed, "failed": rollout_failed},
+        "reflect": {
+            "patch_count": patch_count,
+            "tool_rounds_max": reflect_tool_rounds_max,
+            "custom_reflect_prompt": custom_reflect_prompt,
+            "scenario_rules_triggered": scenario_rules_triggered,
+        },
+        "code_evidence": {
+            **metrics,
+            "ref_resolve_rate": round(
+                getattr(evidence_metrics, "ref_resolve_rate", 0.0), 4,
+            ),
+            "evidence_hit_rate": round(
+                getattr(evidence_metrics, "evidence_hit_rate", 0.0), 4,
+            ),
+        },
+    }
+    with open(os.path.join(step_dir, "metrics.json"), "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+
 
 def _save_config(output_dir: str, cfg: dict) -> None:
     path = os.path.join(output_dir, "config.json")

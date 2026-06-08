@@ -48,6 +48,8 @@ class ProjectConfig(BaseModel):
     code_graph: ProjectCodeGraphConfig = Field(default_factory=ProjectCodeGraphConfig)
     repos: list[RepoSource] = Field(default_factory=list)
     docs: list[DocSource] = Field(default_factory=list)
+    graph_role_hints: dict[str, Any] = Field(default_factory=dict)
+    reflect_prompts: dict[str, str] = Field(default_factory=dict)
 
 
 class BackendConfig(BaseModel):
@@ -95,6 +97,7 @@ class SettingsConfig(BaseModel):
     document_normalizer: dict[str, Any] = Field(default_factory=dict)
     atom_extractor: dict[str, Any] = Field(default_factory=dict)
     skillopt: dict[str, Any] = Field(default_factory=dict)
+    pipeline: dict[str, Any] = Field(default_factory=dict)
     model_provider: ModelProviderSettings = Field(default_factory=ModelProviderSettings)
     output_root: str = "runs"
     publish_target: str = ""
@@ -154,6 +157,8 @@ def _parse_project(raw: dict) -> ProjectConfig:
         ),
         repos=repos,
         docs=[DocSource(**d) for d in (sources.get("docs") or [])],
+        graph_role_hints=raw.get("graph_role_hints", {}) or {},
+        reflect_prompts=raw.get("reflect_prompts", {}) or {},
     )
 
 
@@ -170,6 +175,7 @@ def _parse_settings(raw: dict) -> SettingsConfig:
         document_normalizer=raw.get("document_normalizer", {}),
         atom_extractor=raw.get("atom_extractor", {}),
         skillopt=raw.get("skillopt", {}),
+        pipeline=raw.get("pipeline", {}),
         model_provider=_parse_model_provider(mp_raw),
         output_root=output.get("root", "runs"),
         publish_target=output.get("publish_target", ""),

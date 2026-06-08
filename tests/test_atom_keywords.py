@@ -64,5 +64,10 @@ def test_generate_benchmark_seeds_uses_generic_tokens():
     )
     seeds = generate_benchmark_seeds([atom])
     assert seeds
-    checks = seeds[0]["expected_checks"]
+    seed = seeds[0]
+    assert seed["id"] == "seed-a"
+    assert seed["question"]
+    assert "expected_checks" in seed
+    assert "context_refs" in seed
+    checks = seed["expected_checks"]
     assert any("idempotency" in c.lower() for c in checks)

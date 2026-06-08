@@ -1,10 +1,15 @@
 # 模块 3：从代码图谱/模块树与规范化文档到 SkillAtom 抽取
 
+> 状态: **已实现（核心路径）；`artifact_quality.json` 待补**  
+> 关联: `07-pipeline-integration-optimization.md` §8/§10、M1 sidecar、M4 `evidence_index` 消费、`run bootstrap-benchmark`
+
 ## 1. 模块目标
 
 本模块将模块 1 的代码证据和模块 2 的文档证据融合，抽取可被 Skill 生成器、Benchmark 生成器和 SkillOpt 优化器消费的 `SkillAtom`。`SkillAtom` 是最小可追踪技能单元，表达一条概念、流程、工具策略、约束、失败模式或输出要求。
 
 本模块不直接生成最终 `SKILL.md`，而是生成带来源、适用条件、可信度和验证断言的结构化候选规则。
+
+2026-06 审计结论：M3 当前已经能产出 atoms、seeds 和 evidence，但在显式 `initial_skill + benchmark` 的主路径中，多数产物只落盘、不进入 M4；同时 seed schema 与 M4 benchmark 不完全兼容，atom 合并过宽会稀释证据相关性。因此本设计以**可被 M4 直接消费**为约束重写产物契约。
 
 ## 2. 输入要求
 
@@ -39,12 +44,26 @@
 | `domain_taxonomy` | 业务领域词表 |
 | `atom_policy.yaml` | 纳入、剔除、权重和脱敏策略 |
 
+### 2.4 近期 run 审计发现
+
+以 `test-data/runs/20260607-145023` 为样本：
+
+| 产物 | 观察 | 影响 |
+|---|---|---|
+| `merged_atoms.jsonl` | 24 条 atoms；最大 atom 合并 1187 个 `source_refs`，另有 643、339、96 这类大 atom | 合并过宽，claim 与证据相关性下降 |
+| `benchmark_seeds.jsonl` | 20 条 seeds；20/20 缺 `id`，0/20 带 `context_refs` | 不能作为合格 M4 benchmark 直接消费；`validate_splits()` 会报 missing id |
+| `evidence_index.json` | 3959 条 evidence；`atom_ids` 均可回指 atom；2300 个 code refs 中 2271 个是 `graph.db` 精确 node id | 引用闭合度较好，但 evidence 缺少结构化 file/symbol/line/context_ref，M4 难以精确命中 |
+| `expected_checks` | 存在 `journal`、`确认`、`check`、`transaction` 等弱检查 | deterministic scorer 容易被泛 token 命中，无法稳定代表 skill 质量 |
+| M4 消费 | CLI 仅在无 initial skill 时用 atoms 生成 skill，仅在 train 为空时用 seeds | 有显式 benchmark 时 M3 产物不会自然进入优化闭环 |
+
+设计约束：M3 产物不得只追求数量；每个可消费产物必须有明确消费者、schema 校验和质量指标。
+
 ## 3. 输出与存储内容
 
 推荐目录：
 
 ```text
-runs/<run_id>/atoms/<domain>/
+runs/<run_id>/atoms/
 ├── atom_manifest.json
 ├── raw_atoms.jsonl
 ├── merged_atoms.jsonl
@@ -53,6 +72,7 @@ runs/<run_id>/atoms/<domain>/
 ├── atom_clusters.json
 ├── benchmark_seeds.jsonl
 └── diagnostics/
+    ├── artifact_quality.json
     ├── conflicts.json
     ├── low_confidence.json
     └── sensitive_atoms.json
@@ -113,16 +133,106 @@ runs/<run_id>/atoms/<domain>/
 
 ### 3.3 Atom 状态
 
-`status` 使用以下枚举，避免 `candidate`、`accepted`、`needs_review` 混用：
+`status` 使用以下枚举，避免 `candidate`、`accepted`、`needs_review` 混用。`merged_atoms.jsonl` 可以包含多个状态，但默认下游只消费 `accepted`；`candidate` 必须显式 opt-in 或进入人工抽检。
 
 | `status` | 存储位置 | 含义 |
 |---|---|---|
-| `candidate` | `raw_atoms.jsonl` | 初始抽取结果，尚未完成合并、冲突和置信度处理 |
+| `candidate` | `raw_atoms.jsonl` / `merged_atoms.jsonl` | 候选结果，尚未完全满足下游默认消费条件 |
 | `accepted` | `merged_atoms.jsonl` | 已通过来源、适用条件、置信度和冲突检查，可用于生成初始 Skill |
 | `needs_review` | `diagnostics/conflicts.json` 或 `raw_atoms.jsonl` | 存在冲突、高风险或低置信，需要人工审批 |
 | `rejected` | `rejected_atoms.jsonl` | 来源无效、过宽、重复、过期或不适合作为 Skill 规则 |
 
 下游文档中提到的 `accepted atom` 均指 `merged_atoms.jsonl` 中 `status=accepted` 的记录。
+
+### 3.4 `benchmark_seeds.jsonl` schema（M4 兼容）
+
+`benchmark_seeds.jsonl` 必须是 M4 `BenchmarkItem` 的合法子集，可以直接作为 train pool 进入 `BenchmarkSplits`。`seed_id/task_template` 可作为兼容字段保留，但 `id` 与 `question` 是强制字段。
+
+```json
+{
+  "schema_version": "1.0",
+  "id": "seed-payment-timeout-001",
+  "question": "Review the refund timeout handling and explain the required retry policy.",
+  "task_type": "code_review",
+  "context_refs": [
+    "src/refund/client.py::retry_refund"
+  ],
+  "context_mode": "inline",
+  "expected_checks": [
+    "mentions idempotency key state before retry",
+    "limits retry count or asks for configured retry budget",
+    "does not recommend duplicate charge/refund execution"
+  ],
+  "scorer": "deterministic",
+  "source_atom_ids": ["payment.timeout.retry-idempotency"],
+  "risk": "high",
+  "seed_id": "seed-payment-timeout-001"
+}
+```
+
+生成规则：
+
+- `id` 必须稳定、唯一，默认 `seed-{atom_id}`。
+- `question` 必须是可执行任务，不得只截断 `claim`。
+- `context_refs` 优先来自 atom 的精确 code `source_refs`；没有可解析 code ref 时，seed 只能进入 `needs_review` 或诊断，不进入默认 train。
+- `expected_checks` 至少 2 条，必须是可判定断言；禁止只输出 `journal`、`check`、`确认` 这类泛 token。
+- `source_atom_ids` 回指 atom；旧字段 `atom_ids` 可保留但不作为 M4 标准字段。
+
+### 3.5 `evidence_index.json` schema
+
+`evidence_index` 的目标消费者是 M4 reflect/rollout 的精确证据预取，不是全文搜索库。每条 evidence 必须能被 `context_ref`、symbol 或 atom_id 精确命中。
+
+```json
+{
+  "evidence_id": "ev-00001",
+  "type": "code_node",
+  "source_ref": "src/refund/client.py::retry_refund",
+  "context_ref": "src/refund/client.py::retry_refund",
+  "file_path": "src/refund/client.py",
+  "symbol": "retry_refund",
+  "line_range": [42, 88],
+  "atom_ids": ["payment.timeout.retry-idempotency"],
+  "claim_ids": ["payment.timeout.retry-idempotency"],
+  "edge_path": ["retry_refund", "check_key", "call_refund_api"],
+  "summary": "retry_refund checks idempotency state before retrying a refund call.",
+  "confidence_contribution": 0.12
+}
+```
+
+约束：
+
+- `source_ref` 必须优先使用 M1 `graph.db` node id 或可解析 `context_ref`。
+- `trace` 类型必须保留结构化 `edge_path`，不得只写 `"A→B"` 字符串。
+- 不做 broad search 注入；M4 只允许按 `context_ref` / `symbol` / `atom_id` 精确命中。
+- 若 source_ref 无法在 M1 artifact 中解析，写入 `diagnostics/artifact_quality.json`，并降低 atom 置信度。
+
+### 3.6 `artifact_quality.json`
+
+M3 每次运行必须输出质量摘要，供 `inspect run` 与 Phase -1 artifact contract 使用：
+
+```json
+{
+  "atoms_total": 24,
+  "accepted_total": 0,
+  "candidate_total": 20,
+  "seeds_total": 20,
+  "seed_missing_id": 0,
+  "seed_missing_context_refs": 0,
+  "generic_expected_checks": 0,
+  "max_source_refs_per_atom": 24,
+  "source_ref_resolve_rate": 0.98,
+  "evidence_entries_total": 3959,
+  "evidence_exact_hit_rate": 0.95
+}
+```
+
+验收红线：
+
+- `seed_missing_id = 0`
+- `seed_missing_context_refs = 0`，除非 seed 被标记为 `needs_review`
+- `generic_expected_checks = 0`
+- 单个 atom 的 `source_refs` 默认不超过 `atom_policy.max_source_refs_per_atom`
+- accepted/candidate atom 的 `source_ref_resolve_rate >= 0.90`
 
 ## 4. 执行过程
 
@@ -248,6 +358,8 @@ CRITICAL RULES:
 3. 代码与文档一致时提升 confidence。
 4. 代码与文档冲突时保留两边来源，写入 diagnostics，不自动进入核心候选。
 5. 只有代码证据、没有文档证据的规则可进入候选，但要标明来源是 observed implementation。
+6. 对齐不得仅依赖通用关键词重叠；必须同时满足相同 `kind`、相近 `code_scope` 或同一入口/调用链邻域。
+7. 对齐后如果 `source_refs` 超过上限，保留最相关的精确证据，其余写入 evidence_index，不直接挂在 atom 上。
 
 ### 4.4 步骤 3：冲突消解
 
@@ -317,6 +429,9 @@ CRITICAL RULES:
 - 同一流程多步分散在多个文档：合并为 procedure atom。
 - 代码调用链和文档 SOP 表达同一行为：合并，保留代码路径。
 - 互相矛盾的 atom 不合并，进入 conflict。
+- 禁止仅因 `journal`、`transaction`、`check` 等通用 token 相同而合并。
+- 合并后的 atom 必须保留 `applicability.code_scope`；如果 scope 无法收敛，拆分为多个 atom。
+- 合并后的 `source_refs` 默认上限为 24；超过上限时只保留代表性 source_refs，并把完整证据放入 `evidence_index`。
 
 聚类维度：
 
@@ -343,10 +458,12 @@ CRITICAL RULES:
 ```json
 {
   "schema_version": "1.0",
-  "seed_id": "seed-payment-timeout-001",
-  "atom_ids": ["payment.timeout.retry-idempotency"],
-  "task_template": "review_risky_code",
+  "id": "seed-payment-timeout-001",
+  "question": "Review the refund timeout handling and explain the required retry policy.",
+  "task_type": "code_review",
+  "context_refs": ["src/refund/client.py::retry_refund"],
   "expected_checks": ["mentions idempotency", "limits retry", "no duplicate charge"],
+  "source_atom_ids": ["payment.timeout.retry-idempotency"],
   "risk": "high"
 }
 ```
@@ -359,9 +476,13 @@ CRITICAL RULES:
 | 适用条件明确 | `applicability` 不为空 |
 | 非空泛 | claim 必须包含领域对象、动作或约束 |
 | 可验证 | accepted atom 至少一个 check |
+| seed 可直接进入 M4 | 每条 seed 必须有 `id`、`question`、`context_refs`、`expected_checks` |
+| 检查非泛化 | `expected_checks` 不得只有单词 token 或“确认/check/journal”类弱检查 |
+| 证据可解析 | code `source_refs` 能在 M1 `graph.db` 或 sidecar 中解析 |
 | 去重 | 相似 atom 聚类后无明显重复 |
 | 敏感信息 | claim、action、checks 不包含密钥和个人信息 |
 | 冲突可见 | 冲突 atom 不静默丢弃 |
+| 合并不过宽 | 单 atom `source_refs` 不超过策略上限，且 `applicability.code_scope` 可解释 |
 
 ## 6. 失败处理
 
@@ -371,6 +492,9 @@ CRITICAL RULES:
 | LLM 输出非 JSON | 重试；仍失败则保存 raw response 到 diagnostics |
 | Atom 过长 | 压缩为一句 claim，细节放 evidence_summary |
 | 规则过宽 | 拆成多个带适用条件的 atom |
+| 合并后 source_refs 过多 | 拆分 atom；代表性 refs 留在 atom，完整 refs 放入 evidence_index |
+| seed 缺 id/question/context_refs | 不进入默认 train，写入 diagnostics 并标记 `needs_review` |
+| expected_checks 过泛 | 重新生成检查；仍过泛则拒绝 seed |
 | 证据冲突 | 标记 `needs_review`，不进入核心 Skill |
 | 高风险低置信 | 只生成人工 review 任务，不生成 Skill 规则 |
 
@@ -390,6 +514,32 @@ Benchmark 生成模块读取：
 
 SkillOpt 循环读取：
 
-- 初始 Skill 由 accepted atoms 生成。
-- rollout 失败会回流为新的 trace-derived atoms。
+- 无显式 `initial_skill` 时，可由 accepted atoms 生成初始 Skill。
+- 无显式 train benchmark 时，可由 M4 兼容 seeds 生成 train pool。
+- 有显式 benchmark 时，M4 不默认合并 seeds；只按 `context_ref` / `symbol` / `atom_id` 精确读取 `evidence_index` 辅助 reflect。
+- rollout 失败可回流为新的 trace-derived atoms，但必须经过同一质量门禁。
 - rejected edits 可映射回 atom_id，降低相似 atom 权重。
+
+## 8. 与 07 流水线优化的衔接
+
+M3 落地顺序见 `07-pipeline-integration-optimization.md` Phase 2。实施状态（2026-06）：
+
+| # | 动作 | 状态 | 代码 / CLI |
+|---|------|------|------------|
+| 1 | `artifact_quality.json` 与 seed/evidence 质量摘要 | ⚠️ 未单独落盘 | 部分由 `artifact_contract.json`、`context_ref_report.json` 替代 |
+| 2 | `generate_benchmark_seeds()` 输出 M4 兼容 `id`/`question`/`context_refs` | ✅ | `atom_extractor/merger.py` |
+| 3 | 收紧 atom 合并，避免污染 `evidence_index` | ✅ | `merger.py` / `scorer.py`（持续迭代） |
+| 4 | `evidence_index` 纳入 artifact contract，M4 精确读取 | ✅ | `pipeline_config.py`、`code_evidence.py` |
+| 5 | 无 benchmark 或 `--bootstrap-benchmark` 时才并入 train | ✅ | `run all` 默认跳过 M3；`run bootstrap-benchmark` |
+
+### 8.1 Benchmark 引导命令
+
+```bash
+# 从已有 run 的 M3 产物写入 benchmark/train/items.json
+skill-lab run bootstrap-benchmark --from-run runs/<id> [--merge] [--benchmark DIR]
+
+# 全流程内等效 flag
+skill-lab run all --bootstrap-benchmark [--merge-benchmark] [--suggest-skill-rules]
+```
+
+高置信阈值：`settings.pipeline.bootstrap_min_confidence`（默认 0.8）。追加规则到 skill：`append_atom_rules_to_skill` → `### Auto-suggested rules` 节。

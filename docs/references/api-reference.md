@@ -66,13 +66,19 @@ cfg.validate_sources_exist()                # → list[str] warnings
 
 ```bash
 skill-lab init --workspace ./proj --domain fintech
-skill-lab config --config-path project.yaml [--dry-run-level config-only]
+skill-lab config --config-path project.yaml [--dry-run-level config-only|static-analysis|full-simulate]
+skill-lab run all --dry-run [--dry-run-level static-analysis|full-simulate]
+skill-lab run bootstrap-benchmark --from-run runs/<id> [--merge]
+skill-lab inspect run <run_id>
 skill-lab run all --config-path project.yaml
 skill-lab run code-graph --repo <path>
 skill-lab run normalize-docs --config-path project.yaml
-skill-lab run extract-atoms --from <sources_dir>
-skill-lab run optimize-skill --benchmark <path>
+skill-lab run extract-atoms --from <run_dir>
+skill-lab run bootstrap-benchmark --from-run <run_dir> [--merge]
+skill-lab run optimize-skill --benchmark <path> [--resume]
+skill-lab run training-curve plot <run_id>
 skill-lab status [run_id]
+skill-lab inspect run <run_id>
 skill-lab inspect <artifact.json|.jsonl|.md>
 skill-lab eval <run_id> --split test
 skill-lab resume <run_id>

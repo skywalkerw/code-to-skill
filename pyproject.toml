@@ -36,6 +36,9 @@ where = ["src"]
 [tool.setuptools.package-dir]
 "code_to_skill" = "src/code_to_skill"
 
+[tool.setuptools.package-data]
+"code_to_skill" = ["cli/fixtures/**/*"]
+
 [build-system]
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"

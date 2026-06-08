@@ -58,6 +58,13 @@ RUN_ALL_DOC = """\b
   --resume-run-id <id>  复用已有 run 目录，跳过 M1–M3（若 graph.db 已存在）
 
 \b
+Dry-run（不跑真实流水线）:
+  --dry-run
+  --dry-run-level config-only       # L1 配置校验（默认）
+  --dry-run-level static-analysis   # L2 + M1 扫描/M2 解析
+  --dry-run-level full-simulate     # L3 + M1–M4（MockReplayBackend）
+
+\b
 模块边界（--from-step / --to-step，实验性）:
   code-graph | normalize-docs | extract-atoms | optimize-skill
   别名: m1|m2|m3|m4 或 1|2|3|4
@@ -90,6 +97,17 @@ RUN_CODE_GRAPH_DAEMON_DOC = """\b
 
 RUN_CODE_GRAPH_WATCH_DOC = """\b
 监听仓库文件变更，防抖后增量更新 graph.db（前台运行，Ctrl+C 退出）。
+"""
+
+RUN_BOOTSTRAP_BENCHMARK_DOC = """\b
+将 M3 高置信 atom 种子写入或合并进 benchmark train。
+
+\b
+常用参数:
+  --from-run        含 atoms/merged_atoms.jsonl 的 run 目录
+  --merge           追加到已有 train（默认仅在没有 train 时填充）
+  --benchmark       覆盖 config.project.benchmark 目录
+  --dry-run         预览条目数，不写文件
 """
 
 RUN_OPTIMIZE_SKILL_DOC = """\b

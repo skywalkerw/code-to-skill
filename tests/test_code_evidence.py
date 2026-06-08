@@ -98,7 +98,7 @@ def test_build_reflect_code_evidence_without_graph():
         [{"id": "x", "hard": 0, "missed_checks": ["借"], "context_refs": []}],
         code_tools=None,
     )
-    assert out == ""
+    assert out.text == ""
 
 
 @pytest.mark.skipif(
@@ -138,4 +138,4 @@ def test_build_reflect_code_evidence_with_graph(tmp_path):
         ],
     }]
     evidence = build_reflect_code_evidence(failed, handler, max_cases=1)
-    assert "Code Evidence" in evidence or "Case" in evidence
+    assert "Code Evidence" in evidence.text or "Case" in evidence.text

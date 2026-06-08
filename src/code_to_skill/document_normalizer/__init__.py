@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+from typing import Any
 from code_to_skill.time_utils import local_timestamp
 
 from .knowledge_source import get_provider
@@ -20,6 +21,21 @@ from .types import (
 )
 
 
+def _resolve_normalizer_options(
+    *,
+    max_chunk_tokens: int,
+    normalizer_settings: dict | None,
+) -> dict[str, Any]:
+    """将 ``settings.document_normalizer`` 映射为 normalize_document 参数。"""
+    settings = normalizer_settings or {}
+    return {
+        "max_chunk_tokens": int(settings.get("max_chunk_tokens", max_chunk_tokens)),
+        "ocr_engine": str(settings.get("ocr_engine", "")),
+        "ocr_languages": str(settings.get("ocr_languages", "")),
+        "ocr_confidence_threshold": float(settings.get("ocr_confidence_threshold", 0.6)),
+    }
+
+
 def normalize_document(
     source_uri: str,
     source_id: str,
@@ -28,6 +44,7 @@ def normalize_document(
     authority_level: str = "team_runbook",
     output_root: str | None = None,
     max_chunk_tokens: int = 2000,
+    normalizer_settings: dict | None = None,
 ) -> dict:
     """规范化单个文档。
 
@@ -40,6 +57,12 @@ def normalize_document(
             "assets": list[DocumentAsset],
         }
     """
+    opts = _resolve_normalizer_options(
+        max_chunk_tokens=max_chunk_tokens,
+        normalizer_settings=normalizer_settings,
+    )
+    max_chunk_tokens = opts["max_chunk_tokens"]
+
     provider = get_provider(source_provider)
     raw = provider.fetch_raw_content(source_uri)
 
@@ -87,6 +110,7 @@ def normalize_document(
         "chunks": chunks,
         "tables": tables,
         "assets": [],
+        "normalizer_options": opts,
     }
 
 
