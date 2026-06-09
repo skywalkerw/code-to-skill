@@ -79,6 +79,7 @@ def run_skillopt_loop(
     enable_code_tools: bool = True,
     max_tool_rounds: int = 5,
     rollout_max_tool_rounds: int = 2,
+    rollout_workers: int = 4,
     resume: bool = False,
     pipeline_settings: Any = None,
     run_root: str = "",
@@ -133,6 +134,7 @@ def run_skillopt_loop(
             enable_code_tools=enable_code_tools,
             max_tool_rounds=max_tool_rounds,
             rollout_max_tool_rounds=rollout_max_tool_rounds,
+            rollout_workers=rollout_workers,
         )
     from .separation import BackendManager, resolve_judge_backend_id
     judge_id = resolve_judge_backend_id(skillopt_settings, model_provider)
@@ -148,6 +150,7 @@ def run_skillopt_loop(
         "enable_code_tools": enable_code_tools,
         "max_tool_rounds": max_tool_rounds,
         "rollout_max_tool_rounds": rollout_max_tool_rounds,
+        "rollout_workers": rollout_workers,
         "reflect_prompts": reflect_prompts or {},
         "judge_backend": judge_backend,
     })
@@ -160,6 +163,8 @@ def run_skillopt_loop(
             max_tool_rounds,
             rollout_max_tool_rounds,
         )
+    if rollout_workers > 1:
+        logger.info("[M4] rollout parallelism: workers=%d", rollout_workers)
 
     # ── Split: train / selection / test ─────────────────────
     from .benchmark_splits import BenchmarkSplits
@@ -284,6 +289,7 @@ def run_skillopt_loop(
         "enable_code_tools": enable_code_tools,
         "max_tool_rounds": max_tool_rounds,
         "rollout_max_tool_rounds": rollout_max_tool_rounds,
+        "rollout_workers": rollout_workers,
         "code_repos": len(code_repos or []),
     })
 

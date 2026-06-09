@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 from typing import Any
 
 from code_to_skill.time_utils import local_timestamp
@@ -92,6 +93,7 @@ class Tracer:
 
         self.redact_secrets = redact_secrets
         self._call_index = 0
+        self._lock = threading.Lock()
 
         self._trace_path = os.path.join(output_dir, "traces.jsonl")
         self._token_path = os.path.join(output_dir, "token_usage.jsonl")
@@ -105,7 +107,9 @@ class Tracer:
         resolved_route: dict | None = None,
     ):
         """记录一次调用的完整输入输出。"""
-        self._call_index += 1
+        with self._lock:
+            self._call_index += 1
+            call_index = self._call_index
         ts = local_timestamp()
 
         req_dump = request.model_dump()
@@ -120,10 +124,10 @@ class Tracer:
             if resp_changed:
                 redactions.append("response")
 
-        call_file = _call_file_name(self._call_index, request)
+        call_file = _call_file_name(call_index, request)
         trace = {
             "schema_version": "1.0",
-            "call_index": self._call_index,
+            "call_index": call_index,
             "call_file": call_file,
             "created_at": ts,
             "backend_id": backend_id or getattr(response, "backend_id", ""),
@@ -133,28 +137,31 @@ class Tracer:
             "retries": [],
             "redactions": redactions,
         }
-        self._append_jsonl(self._trace_path, trace)
+        with self._lock:
+            self._append_jsonl(self._trace_path, trace)
 
-        # 单条调用文件，便于直接打开查看完整内容
-        call_path = os.path.join(self.output_dir, "calls", call_file)
-        with open(call_path, "w", encoding="utf-8") as f:
-            json.dump(trace, f, ensure_ascii=False, indent=2)
+            # 单条调用文件，便于直接打开查看完整内容
+            call_path = os.path.join(self.output_dir, "calls", call_file)
+            with open(call_path, "w", encoding="utf-8") as f:
+                json.dump(trace, f, ensure_ascii=False, indent=2)
 
         usage = response.usage.copy()
         usage["ts"] = ts
-        usage["call_index"] = self._call_index
+        usage["call_index"] = call_index
         usage["request_id"] = response.request_id
         usage["backend_id"] = backend_id or response.backend_id
         usage["role"] = request.role
         usage["stage"] = request.stage
-        self._append_jsonl(self._token_path, usage)
+        with self._lock:
+            self._append_jsonl(self._token_path, usage)
 
         cost = self._estimate_cost(response)
         cost["ts"] = ts
-        cost["call_index"] = self._call_index
+        cost["call_index"] = call_index
         cost["request_id"] = response.request_id
         cost["backend_id"] = backend_id or response.backend_id
-        self._append_jsonl(self._cost_path, cost)
+        with self._lock:
+            self._append_jsonl(self._cost_path, cost)
 
     @staticmethod
     def _estimate_cost(response: InteractionResponse) -> dict:

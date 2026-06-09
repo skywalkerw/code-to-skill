@@ -97,6 +97,9 @@ def _skillopt_run_kwargs(
         "rollout_max_tool_rounds": _skillopt_get(
             skillopt, "rollout_max_tool_rounds", default=2,
         ),
+        "rollout_workers": _skillopt_get(
+            skillopt, "rollout_workers", "workers", default=4,
+        ),
         "use_llm_rollout": _skillopt_get(skillopt, "use_llm_rollout", default=False),
         "rollout_backend_id": rollout_backend_id,
         "optimizer_backend_id": optimizer_backend_id,

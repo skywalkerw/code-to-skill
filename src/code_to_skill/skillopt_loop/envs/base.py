@@ -175,6 +175,7 @@ class DEFAULTAdapter(EnvAdapter):
         enable_code_tools: bool = True,
         max_tool_rounds: int = 5,
         rollout_max_tool_rounds: int = 2,
+        rollout_workers: int = 1,
     ):
         super().__init__(env_name="DEFAULT")
         self.use_llm = use_llm
@@ -185,6 +186,7 @@ class DEFAULTAdapter(EnvAdapter):
         self.enable_code_tools = enable_code_tools
         self.max_tool_rounds = max_tool_rounds
         self.rollout_max_tool_rounds = rollout_max_tool_rounds
+        self.rollout_workers = max(1, int(rollout_workers or 1))
         from code_to_skill.codegraph_mcp.handler import build_code_tools_handler
         self.code_tools = build_code_tools_handler(
             code_repos, enable_code_tools=enable_code_tools,
@@ -207,6 +209,9 @@ class DEFAULTAdapter(EnvAdapter):
             self.rollout_max_tool_rounds = int(
                 cfg.get("rollout_max_tool_rounds", self.rollout_max_tool_rounds)
             )
+            if "rollout_workers" in cfg or "workers" in cfg:
+                workers = cfg.get("rollout_workers", cfg.get("workers", self.rollout_workers))
+                self.rollout_workers = max(1, int(workers or 1))
             self.enable_code_tools = bool(cfg.get("enable_code_tools", self.enable_code_tools))
             self.graph_sidecars = cfg.get("graph_sidecars")
             prompts = cfg.get("reflect_prompts") or {}
@@ -232,126 +237,147 @@ class DEFAULTAdapter(EnvAdapter):
         out_dir: str = "",
     ) -> list[dict]:
         """默认 rollout：LLM 优先，降级关键词规则。"""
+        if not items:
+            return []
+
+        backend = target_backend or self._backend
+        workers = min(self.rollout_workers, len(items))
+        if workers <= 1:
+            return [
+                self._rollout_single_item(skill, item, backend)
+                for item in items
+            ]
+
+        from concurrent.futures import ThreadPoolExecutor
+
+        logger.debug("[rollout] parallel workers=%d items=%d", workers, len(items))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            return list(pool.map(
+                lambda item: self._rollout_single_item(skill, item, backend),
+                items,
+            ))
+
+    def _rollout_single_item(
+        self,
+        skill: str,
+        item: dict,
+        backend: Any,
+    ) -> dict:
+        """对单条 benchmark item 执行 rollout。"""
         from ..scoring import score_benchmark_item  # local import to avoid circular
         from ..token_budgets import get_token_budgets
 
-        backend = target_backend or self._backend
-        results: list[dict] = []
+        checks = item.get("expected_checks", [])
+        context_mode = self._item_context_mode(item)
+        question = self._build_context_from_item(item)
 
-        for item in items:
-            checks = item.get("expected_checks", [])
-            context_mode = self._item_context_mode(item)
-            question = self._build_context_from_item(item)
+        if backend:
+            from code_to_skill.model_provider.types import InteractionRequest
+            from code_to_skill.model_provider.tool_loop import invoke_with_tool_loop
+            from ..rollout_helpers import (
+                assemble_rollout_user_content,
+                build_rollout_synthesis_hint,
+                build_rollout_system_prompt,
+                build_rollout_user_message,
+                extract_rollout_answer,
+                fallback_predicted_from_tools,
+                fallback_skill_answer,
+            )
+            try:
+                from ..code_evidence import build_rollout_item_context
 
-            if backend:
-                from code_to_skill.model_provider.types import InteractionRequest
-                from code_to_skill.model_provider.tool_loop import invoke_with_tool_loop
-                from ..rollout_helpers import (
-                    assemble_rollout_user_content,
-                    build_rollout_synthesis_hint,
-                    build_rollout_system_prompt,
-                    build_rollout_user_message,
-                    extract_rollout_answer,
-                    fallback_predicted_from_tools,
-                    fallback_skill_answer,
+                task_msg = build_rollout_user_message(question, checks, item=item)
+                sidecars = getattr(self, "graph_sidecars", None)
+                code_ctx = ""
+                if context_mode == "inline":
+                    code_ctx = build_rollout_item_context(
+                        item, self.code_tools, sidecars=sidecars,
+                    )
+                user_msg = assemble_rollout_user_content(task_msg, code_ctx)
+                code_tools_enabled = (
+                    context_mode != "none"
+                    and self.enable_code_tools
+                    and self.code_tools.enabled
                 )
-                try:
-                    from ..code_evidence import build_rollout_item_context
-
-                    task_msg = build_rollout_user_message(question, checks, item=item)
-                    sidecars = getattr(self, "graph_sidecars", None)
-                    code_ctx = ""
-                    if context_mode == "inline":
-                        code_ctx = build_rollout_item_context(
-                            item, self.code_tools, sidecars=sidecars,
-                        )
-                    user_msg = assemble_rollout_user_content(task_msg, code_ctx)
-                    code_tools_enabled = (
-                        context_mode != "none"
-                        and self.enable_code_tools
-                        and self.code_tools.enabled
+                request = InteractionRequest(
+                    role="target",
+                    stage="rollout",
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": build_rollout_system_prompt(
+                                skill, code_tools_enabled=code_tools_enabled,
+                            ),
+                        },
+                        {"role": "user", "content": user_msg},
+                    ],
+                    max_output_tokens=get_token_budgets().rollout,
+                    temperature=0.3,
+                    metadata={"synthesis_hint": build_rollout_synthesis_hint(checks)},
+                )
+                tool_rounds = (
+                    self.rollout_max_tool_rounds if code_tools_enabled else 0
+                )
+                logger.debug(
+                    "[rollout] item=%s context_mode=%s tool_rounds=%d (max_reflect=%d)",
+                    item.get("id", "?"),
+                    context_mode,
+                    tool_rounds,
+                    self.max_tool_rounds,
+                )
+                if tool_rounds > 0:
+                    resp = invoke_with_tool_loop(
+                        backend, request, self.code_tools, max_rounds=tool_rounds,
                     )
-                    request = InteractionRequest(
-                        role="target",
-                        stage="rollout",
-                        messages=[
-                            {
-                                "role": "system",
-                                "content": build_rollout_system_prompt(
-                                    skill, code_tools_enabled=code_tools_enabled,
-                                ),
-                            },
-                            {"role": "user", "content": user_msg},
-                        ],
-                        max_output_tokens=get_token_budgets().rollout,
-                        temperature=0.3,
-                        metadata={"synthesis_hint": build_rollout_synthesis_hint(checks)},
-                    )
-                    tool_rounds = (
-                        self.rollout_max_tool_rounds if code_tools_enabled else 0
-                    )
-                    logger.debug(
-                        "[rollout] item=%s context_mode=%s tool_rounds=%d (max_reflect=%d)",
-                        item.get("id", "?"),
-                        context_mode,
-                        tool_rounds,
-                        self.max_tool_rounds,
-                    )
-                    if tool_rounds > 0:
-                        resp = invoke_with_tool_loop(
-                            backend, request, self.code_tools, max_rounds=tool_rounds,
+                else:
+                    resp = backend.invoke(request)
+                predicted = extract_rollout_answer((resp.content or "").strip())
+                if not predicted:
+                    tool_snippets = getattr(resp, "tool_snippets", "") or ""
+                    if tool_snippets:
+                        predicted = fallback_predicted_from_tools(
+                            tool_snippets, question, checks, skill,
                         )
                     else:
-                        resp = backend.invoke(request)
-                    predicted = extract_rollout_answer((resp.content or "").strip())
-                    if not predicted:
-                        tool_snippets = getattr(resp, "tool_snippets", "") or ""
-                        if tool_snippets:
-                            predicted = fallback_predicted_from_tools(
-                                tool_snippets, question, checks, skill,
-                            )
-                        else:
-                            predicted = fallback_skill_answer(question, checks, skill)
-                    fail_reason = ""
-                except Exception as e:
-                    predicted = f"[LLM error: {e}]"
-                    fail_reason = str(e)[:100]
-            else:
-                from ..rollout_helpers import fallback_skill_answer
-
-                predicted = fallback_skill_answer(question, checks, skill)
+                        predicted = fallback_skill_answer(question, checks, skill)
                 fail_reason = ""
+            except Exception as e:
+                predicted = f"[LLM error: {e}]"
+                fail_reason = str(e)[:100]
+        else:
+            from ..rollout_helpers import fallback_skill_answer
 
-            scores = score_benchmark_item(
-                predicted, item, judge_backend=self._judge_backend,
-            )
-            missed = scores.get("missed_checks", [])
-            if not fail_reason and scores["hard"] == 0 and missed:
-                fail_reason = "missed: " + ", ".join(missed)
-            elif not fail_reason and scores["hard"] == 0:
-                fail_reason = "check_missed"
+            predicted = fallback_skill_answer(question, checks, skill)
+            fail_reason = ""
 
-            results.append({
-                "id": item.get("id", ""),
-                "question": item.get("question", item.get("task_template", "")),
-                "response_mode": item.get("response_mode", "answer"),
-                "reflect_focus": item.get("reflect_focus", ""),
-                "context_refs": list(item.get("context_refs") or []),
-                "expected_checks": checks,
-                "passed_checks": scores.get("passed_checks", []),
-                "missed_checks": missed,
-                "hard": scores["hard"],
-                "soft": scores["soft"],
-                "accuracy": scores.get("accuracy", 0.0),
-                "precision": scores.get("precision", 0.0),
-                "recall": scores.get("recall", 0.0),
-                "f1": scores.get("f1", 0.0),
-                "predicted_answer": predicted,
-                "fail_reason": fail_reason,
-                "task_type": item.get("task_type", ""),
-            })
+        scores = score_benchmark_item(
+            predicted, item, judge_backend=self._judge_backend,
+        )
+        missed = scores.get("missed_checks", [])
+        if not fail_reason and scores["hard"] == 0 and missed:
+            fail_reason = "missed: " + ", ".join(missed)
+        elif not fail_reason and scores["hard"] == 0:
+            fail_reason = "check_missed"
 
-        return results
+        return {
+            "id": item.get("id", ""),
+            "question": item.get("question", item.get("task_template", "")),
+            "response_mode": item.get("response_mode", "answer"),
+            "reflect_focus": item.get("reflect_focus", ""),
+            "context_refs": list(item.get("context_refs") or []),
+            "expected_checks": checks,
+            "passed_checks": scores.get("passed_checks", []),
+            "missed_checks": missed,
+            "hard": scores["hard"],
+            "soft": scores["soft"],
+            "accuracy": scores.get("accuracy", 0.0),
+            "precision": scores.get("precision", 0.0),
+            "recall": scores.get("recall", 0.0),
+            "f1": scores.get("f1", 0.0),
+            "predicted_answer": predicted,
+            "fail_reason": fail_reason,
+            "task_type": item.get("task_type", ""),
+        }
 
     def evaluate(
         self,

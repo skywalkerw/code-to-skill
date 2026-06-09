@@ -43,7 +43,7 @@ class GraphDB:
     def _connect(self) -> sqlite3.Connection:
         if self._conn is None:
             os.makedirs(os.path.dirname(self.db_path) if os.path.dirname(self.db_path) else ".", exist_ok=True)
-            self._conn = sqlite3.connect(self.db_path)
+            self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._create_tables()
         return self._conn

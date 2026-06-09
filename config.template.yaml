@@ -53,6 +53,7 @@ settings:
     enable_code_tools: true
     max_tool_rounds: 5
     rollout_max_tool_rounds: 2
+    rollout_workers: 4        # batch 内 item 并行 rollout（1=串行）
     # 各阶段 LLM 输出 token 预算（须 ≤ backend.max_output_tokens）
     token_budgets:
       rollout: 8192

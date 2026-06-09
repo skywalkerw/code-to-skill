@@ -27,8 +27,8 @@ settings:
     use_llm_rollout: true     # 训练/评估 rollout 使用 target LLM（论文默认）
     # rollout_backend: qwen-local   # 覆盖 routes.target，为 rollout 指定独立 LLM
     # optimizer_backend: deepseek   # 覆盖 routes.optimizer
-    num_epochs: 5
-    batch_size: 15          # train=15，每 epoch 一轮
+    num_epochs: 2           # fast benchmark 冒烟；完整集改回 5
+    batch_size: 5           # 对齐 fineract-fast train=5
     edit_budget: 4          # 论文推荐 L=4
     budget_strategy: cosine # 论文消融：cosine/constant 均优于无 budget
     gate_metric: hard       # selection≥20 时启用 hard gate（论文默认）
@@ -40,6 +40,7 @@ settings:
     enable_code_tools: true
     max_tool_rounds: 5
     rollout_max_tool_rounds: 2
+    rollout_workers: 4
     token_budgets:
       rollout: 8192
       reflect_failure: 16384
@@ -141,7 +142,9 @@ project:
   description: "Apache Fineract 金融核心系统 Agent Skill——贷款/储蓄/会计/费用/互操作"
 
   initial_skill: test-data/initial_skill.md
-  benchmark: test-data/benchmarks/fineract
+  benchmark: test-data/benchmarks/fineract-fast
+  # benchmark: test-data/benchmarks/fineract      # 完整集 15/22/8
+  # benchmark: test-data/benchmarks/fineract-full # 与 fineract 相同（备份）
 
   code_graph:
     custom_patterns:

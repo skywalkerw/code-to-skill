@@ -58,6 +58,14 @@ class TestBenchmarkSplits:
         warnings = splits.validate_splits()
         assert warnings == []
 
+    def test_fast_subset_from_dir(self):
+        path = Path("test-data/benchmarks/fineract-fast")
+        splits = BenchmarkSplits.from_dir(str(path))
+        assert len(splits.train) == 5
+        assert len(splits.selection) == 6
+        assert len(splits.test) == 3
+        assert splits.validate_splits() == []
+
     def test_validate_detects_overlap(self):
         item = {"id": "dup", "expected_checks": ["a"]}
         splits = BenchmarkSplits(
