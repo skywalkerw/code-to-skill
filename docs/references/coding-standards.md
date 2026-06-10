@@ -24,7 +24,7 @@ src/code_to_skill/                    # 唯一 Python 包
 │
 ├── cli/                              # M6：编排层
 │   ├── __init__.py
-│   ├── types.py                      # RunManifest/RunState/Event
+│   ├── types.py                      # PipelineRunManifest/RunState/Event
 │   ├── config_loader.py              # project.yaml → pydantic
 │   └── main.py                       # 全部 click 命令
 │

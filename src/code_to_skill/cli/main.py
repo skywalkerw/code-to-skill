@@ -27,7 +27,6 @@ import click
 
 from code_to_skill.time_utils import local_timestamp, local_timestamp_compact
 
-from .types import RunManifest, RunState, RunStatus, ModuleEvent
 from .config_loader import load_config, AppConfig, SettingsConfig, ProjectConfig
 from .codegraph_cmds import codegraph_group
 from .help_text import (
@@ -123,9 +122,14 @@ settings:
     max_leaf_tokens: 8000
     max_module_depth: 3
     tokenizer: cl100k_base
+    max_components_per_group: 200
+    split_strategy: top_dir
+    llm_clustering_enabled: false
+    use_cache: true
 
   # ── 模块 2：文档规范化 ────────────────────────────────────
   document_normalizer:
+    max_chunk_tokens: 2000
     ocr_engine: tesseract
     ocr_languages: chi_sim+eng
     ocr_confidence_threshold: 0.6
@@ -134,15 +138,27 @@ settings:
   atom_extractor:
     confidence_tier_1_max: 0.95
     llm_adjustment: 0.05
+    max_source_refs_per_atom: 24
 
   # ── 模块 4：SkillOpt 优化 ──────────────────────────────────
   skillopt:
+    use_llm_rollout: true
     num_epochs: 3
     batch_size: 20
     edit_budget: 3
+    budget_strategy: cosine
     gate_metric: soft
+    patience: 10
+    accumulation: 1
+    enable_slow_update: false
+    enable_meta_skill: false
+    slow_update_gate: true
     enable_code_tools: true
     max_tool_rounds: 5
+    rollout_max_tool_rounds: 2
+    rollout_workers: 4
+    expose_expected_checks_to_target: false
+    check_aliases: {{}}
     token_budgets:
       rollout: 8192
       reflect_failure: 16384
@@ -154,6 +170,29 @@ settings:
       slow_update: 4096
       meta_skill: 2048
       atom_extract: 8192
+
+  # ── M4 Skill 自进化（默认关闭）────────────────────────────
+  self_evolution:
+    enabled: false
+    trace_pool:
+      enabled: true
+      min_support_count: 2
+    proposals:
+      include_success: true
+      include_failure: true
+    gate:
+      strict_improvement: true
+      reject_ties: true
+    edits:
+      max_edits_per_step: null
+
+  # ── 流水线编排 ────────────────────────────────────────────
+  pipeline:
+    write_artifact_contract: true
+    validate_context_refs: true
+    run_atoms_when_benchmark_present: false
+    bootstrap_min_confidence: 0.8
+    auto_plot_training_curve: true
 
   # ── 模块 5：模型与智能体交互 ──────────────────────────────
   model_provider:
@@ -241,6 +280,13 @@ project:
 
   # ── Benchmark（可选：为空则用 M3 自动生成的 benchmark_seeds）──
   benchmark: ""
+
+  graph_role_hints: {{}}
+  reflect_prompts: {{}}
+
+  code_graph:
+    custom_patterns: {{}}
+    context_ref_path_rules: []
 
   sources:
     repos: []
@@ -1242,7 +1288,7 @@ def run_bootstrap_benchmark(
 @click.option("--slow-update", is_flag=True, help="启用 epoch 级 slow update（默认读 config）")
 @click.option("--meta-skill", is_flag=True, help="启用 meta skill 重写（默认读 config）")
 @click.option("--resume", is_flag=True, help="从 --output 目录 runtime_state.json 断点续训")
-@click.option("--self-evolve", is_flag=True, help="启用 Design 08 Skill 自进化（trace pool + proposals + 严格 gate）")
+@click.option("--self-evolve", is_flag=True, help="启用 M4 自进化（trace pool + proposals + 严格 gate）")
 @click.option("--trace-merge", is_flag=True, help="仅启用 trace 聚类归纳（不启用严格 gate / 归因）")
 def run_optimize_skill(
     benchmark: str | None,
@@ -1340,12 +1386,12 @@ def run_optimize_skill(
         click.echo(f"   test_score={tr.get('test_score', 0):.3f} n={tr.get('n_items', 0)}")
 
 
-@run.command(name="skill-hygiene", help=RUN_SKILL_HYGIENE_DOC, short_help="Design 08：离线 hygiene + gate")
+@run.command(name="skill-hygiene", help=RUN_SKILL_HYGIENE_DOC, short_help="M4 自进化：离线 hygiene + gate")
 @click.argument("run_id")
 @click.option("--config-path", default="config.yaml", help="配置文件路径")
 @click.option("--force", is_flag=True, help="忽略 token/规则阈值，强制执行 hygiene")
 def run_skill_hygiene(run_id: str, config_path: str, force: bool):
-    """Design 08：离线 Skill hygiene（合并/删除冗余规则）。"""
+    """M4 自进化：离线 Skill hygiene（合并/删除冗余规则）。"""
     from code_to_skill.skillopt_loop.envs import DEFAULTAdapter
     from code_to_skill.skillopt_loop.hygiene import apply_hygiene_with_gate
     from code_to_skill.skillopt_loop.self_evolution_config import SelfEvolutionConfig
@@ -1539,13 +1585,13 @@ def inspect_file(artifact: str):
     _inspect_artifact_file(artifact)
 
 
-@inspect.command(name="run", help=INSPECT_RUN_DOC, short_help="run 目录摘要与 Design 08 校验")
+@inspect.command(name="run", help=INSPECT_RUN_DOC, short_help="run 目录摘要与自进化校验")
 @click.argument("run_id")
 @click.option("--config-path", default="config.yaml", help="配置文件路径")
 @click.option("--trace-pool", is_flag=True, help="展示 trace pool / proposals 摘要")
 @click.option("--rule-attribution", is_flag=True, help="展示 rule attribution 摘要")
 @click.option("--frontier", is_flag=True, help="展示 frontier pool 摘要")
-@click.option("--validate-self-evolution", is_flag=True, help="校验 Design 08 产物完整性")
+@click.option("--validate-self-evolution", is_flag=True, help="校验 self_evolution 产物完整性")
 def inspect_run(
     run_id: str,
     config_path: str,
@@ -1678,7 +1724,7 @@ def approve(approval_id: str, deny: bool):
 @click.option("--target", default=None, help="发布目标目录")
 @click.option("--config-path", default="config.yaml", help="配置文件路径（读取 publish_target）")
 @click.option("--force", is_flag=True, help="门禁未 accept 时仍发布")
-@click.option("--strip-rule-ids", is_flag=True, help="发布前移除 rule_id HTML 注释（Design 08 归因元数据）")
+@click.option("--strip-rule-ids", is_flag=True, help="发布前移除 rule_id HTML 注释（自进化归因元数据）")
 def publish(run_id: str, target: str | None, config_path: str, force: bool, strip_rule_ids: bool):
     """\b
     将 runs/<run_id>/optimization/best_skill.md 复制为 SKILL.md。

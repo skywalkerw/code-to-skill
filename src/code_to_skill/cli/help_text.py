@@ -7,7 +7,7 @@ MAIN_EPILOG = """
   skill-lab run -h              流水线子命令列表
   skill-lab run all -h          完整流水线参数说明
   skill-lab codegraph -h        代码图谱查询子命令
-  skill-lab inspect run -h      run 产物摘要与 Design 08 校验
+  skill-lab inspect run -h      run 产物摘要与自进化校验
 
 \b
 示例:
@@ -130,8 +130,8 @@ RUN_OPTIMIZE_SKILL_DOC = """\b
   --epochs            覆盖 config.settings.skillopt.num_epochs
   --batch-size        每 epoch 训练 batch 大小
   --benchmark         覆盖 config.project.benchmark 目录
-  --trace-merge       Design 08：仅 trace 聚类归纳（不改严格 gate）
-  --self-evolve       Design 08：完整自进化（严格 gate、归因、hygiene）
+  --trace-merge       自进化：仅 trace 聚类归纳（不改严格 gate）
+  --self-evolve       自进化：完整路径（严格 gate、归因、hygiene）
   --slow-update       启用 epoch 级 slow update
   --meta-skill        启用 meta skill
 
@@ -141,7 +141,7 @@ RUN_OPTIMIZE_SKILL_DOC = """\b
   config.project.initial_skill 与 benchmark（train/selection/test）
 
 \b
-Design 08 产物（--trace-merge / --self-evolve）:
+自进化产物（--trace-merge / --self-evolve）:
   optimization/trace_pool/, proposals/, rejected_edit_buffer.jsonl
   rule_attribution.json（--self-evolve）
 """
@@ -160,11 +160,11 @@ INSPECT_RUN_DOC = """\b
 汇总 run 目录：manifest、gate、test、context refs、训练曲线。
 
 \b
-Design 08 扩展:
+自进化扩展:
   --trace-pool                 trace pool / proposals 摘要
   --rule-attribution           规则归因摘要
   --frontier                   前沿 Skill 池摘要
-  --validate-self-evolution    校验 Design 08 产物完整性
+  --validate-self-evolution    校验 self_evolution 产物完整性
 
 \b
 单文件查看: skill-lab inspect file <path>

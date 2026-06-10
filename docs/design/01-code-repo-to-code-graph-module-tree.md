@@ -357,6 +357,9 @@ Return a valid JSON object with:
   - "components": list of component IDs assigned to this module
   - "children": nested modules (same structure)
   - "reason": one-sentence justification
+```
+
+示例输出：
 
 ```json
 {
@@ -375,7 +378,6 @@ Return a valid JSON object with:
     }
   }
 }
-```
 ```
 
 降级策略：若 LLM 调用失败或输出非法 JSON，回退到确定性预分组结果，并记录 `clustering_fallback=true` 到 manifest。

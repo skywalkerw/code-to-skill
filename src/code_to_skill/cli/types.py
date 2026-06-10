@@ -30,18 +30,6 @@ class RunStatus(str, Enum):
 
 # ── Run Manifest ────────────────────────────────────────────
 
-class RunManifest(BaseModel):
-    """记录一次运行的元数据。"""
-    schema_version: str = "1.0"
-    run_id: str
-    domain: str = ""
-    created_at: str = Field(default_factory=local_timestamp)
-    workspace: str = ""
-    commands: list[str] = Field(default_factory=list)
-    modules: list[str] = Field(default_factory=list)
-    operator: str = "local-user"
-
-
 class PipelinePhaseRecord(BaseModel):
     """单次流水线阶段记录。"""
     phase: str  # m1_code_graph | m2_docs | m3_atoms | m4_skillopt

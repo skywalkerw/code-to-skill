@@ -31,7 +31,7 @@
 
 | 输入 | 类型 | 要求 |
 |---|---|---|
-| `interaction_config.yaml` | YAML | 所有 backend、routing、凭证引用、超时、重试、trace 配置 |
+| `config.yaml` → `settings.model_provider` | YAML | 所有 backend、routes、凭证引用、超时、重试、trace 配置 |
 | `request` | object | 标准化模型/Agent 请求 |
 | `role` | enum | `extractor` / `clusterer` / `optimizer` / `target` / `judge` / `agent_worker` |
 | `stage` | string | 调用阶段，例如 `skillatom_extract`、`rollout`、`merge` |

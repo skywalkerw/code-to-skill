@@ -27,6 +27,10 @@
 | 代码图谱证据 | `code_evidence.py` + CodeGraph 工具 | ✅ |
 | Token 预算控制 | `token_budgets.py` | ✅ |
 | Run 级文件日志 | `run_logging.py` | ✅ |
+| Trace pool + proposals（自进化） | `trace_pool.py`、`proposals.py`、`proposal_merge.py` | ✅（默认关闭） |
+| Strict gate + rejected buffer | `gate.py`、`rejected_buffer.py`、`step_buffer.py` | ✅（`--self-evolve`） |
+| Rule attribution + hygiene | `skill_rules.py`、`hygiene.py` | ✅ |
+| Frontier pool | `frontier.py` | ✅（可选） |
 
 ---
 
@@ -64,12 +68,7 @@ epoch 末尾可选执行 slow update 和 meta skill。
 
 ### 2.2 Benchmark Split 加载
 
-支持两种切分策略（`benchmark_splits.py`）：
-
-| 条件 | 行为 |
-|---|---|
-| 存在 `selection/items.json` 或 `test/items.json` | 使用显式 split，不做 ratio 切分 |
-| 仅有 `train/items.json` | 回退到 `selection_split_ratio` / `test_split_ratio` 切分（向后兼容） |
+仅支持**显式三份 split**（`benchmark_splits.py`）：从 `train/`、`selection/`、`test/` 下的 `items.json` 加载。无 `selection`/`test` 时仅用 train（`source=train_only`），**不做 ratio 自动切分**。
 
 加载时执行 ID 重叠检测（`validate_splits()` / `log_validation()`）。
 
@@ -410,21 +409,27 @@ flowchart TD
 
 #### Scorer 设计
 
-**1. 确定性 Scorer（`deterministic`）**
+**1. 关键词 Scorer（`keyword`，默认）**
 
-- `hard`：所有 check 通过为 1，否则为 0。
+- `hard`：所有 `expected_checks` 通过为 1，否则为 0。
 - `soft`：通过的 check 比例（0-1）。
+- 全局别名：`settings.skillopt.check_aliases`；item 级 `check_aliases` 可追加。
 
-**2. LLM Judge Scorer（`llm_judge`）**
+**2. LLM Judge Scorer（`llm_judge` / `judge` / `llm`）**
 
-适用于需要语义判断的问答和解释类任务。调用模块 5 的 `judge` role，`temperature=0`，trace 写入 `runs/<run_id>/traces/`。
+适用于需要语义判断的问答和解释类任务。调用模块 5 的 `routes.judge`，`temperature=0`，trace 写入 `runs/<run_id>/traces/`。
 
-**降级策略**：
+**3. Python 脚本 Scorer（`python_script` / `script`）**
 
-| task_type | 默认 scorer |
+benchmark item 指定 `score_script` 或 `scorer_config.script`，stdin 传入 `predicted` + `item`。
+
+**推荐**：
+
+| task_type | 推荐 scorer |
 |---|---|
-| `code_review` / `code_patch` | `deterministic` |
+| `code_review` / `journal_entry` | `keyword` |
 | `qa` / `explanation` | `llm_judge` |
+| 结构化校验 | `python_script` |
 
 ### 4.4 阶段 2：Reflect
 
@@ -621,7 +626,7 @@ skill-lab run all   # 端到端流水线
 
 将 `skillopt_loop` 从骨架升级为论文级完整循环的分期计划（均已交付）：
 
-### 9.1 论文对齐分期（原 07 计划）
+### 9.1 论文对齐分期
 
 | 阶段 | 模块 | 文件 | 状态 |
 |:---:|------|------|:---:|
@@ -792,3 +797,149 @@ skill-lab run all   # 端到端流水线
 ```
 
 核心优化循环（rollout → reflect → aggregate → select → update → gate）与论文一致；差异集中在**领域适配**（代码证据、split 管理、edit 质量控制）和**工程取舍**（默认关闭 slow/meta、gate 放宽、resume 粒度）。
+
+## 13. Skill 自进化（可选扩展）
+
+> 状态: **已实现（Phase 0–4 核心路径，2026-06）**  
+> 配置默认: `settings.self_evolution.enabled: false`  
+> CLI 详述: [06-cli-human-interaction-orchestrator.md](06-cli-human-interaction-orchestrator.md) §13
+
+### 13.1 动机
+
+仅依赖单条失败 case 或单个 minibatch 直接改 `best_skill.md` 时，容易出现：个例过拟合、Skill 膨胀、验证不硬、M3 产物只写不读、代码证据难归因。自进化在流水线契约（`artifact_contract`、`context_ref_report`、证据 metrics）之上，叠加 **批量轨迹归纳 + 验证选择 + 有界更新** 闭环：
+
+```text
+Trace2Skill（轨迹池 / 聚类 / proposal 合并）
++ EvoSkill（严格 gate / frontier / rejected buffer）
++ SkillOpt（有界 edit budget / training_curve / meta_skill）
+```
+
+### 13.2 目标与非目标
+
+**目标**：批量归纳而非单点反应；验证优先于生成；有界编辑抑制膨胀；负反馈可复用；规则级 `rule_id` 归因；M3 经质量门禁后才进入 M4。
+
+**非目标**：不做线上实时自进化；不让 LLM 无约束重写整份 Skill；不绕过现有 SkillOpt 主循环。
+
+### 13.3 架构
+
+```mermaid
+flowchart TD
+  BM[Benchmark] --> ROL[Rollout]
+  SK[Current Skill] --> ROL
+  GDB[graph.db + sidecars] --> ROL
+  M3[M3 atoms/evidence] --> AQ[Artifact Quality Gate]
+  AQ --> EVIDX[Validated Evidence Index]
+  ROL --> TP[Trace Pool]
+  TP --> CL[Clustering]
+  CL --> PROP[Proposals]
+  EVIDX --> PROP
+  PROP --> HM[Hierarchical Merge]
+  RB[Rejected Buffer] --> HM
+  HM --> CE[Candidate Edits]
+  CE --> VG[Validation Gate]
+  VG -->|accept| BEST[best_skill.md]
+  VG -->|reject| RB
+```
+
+| 范式 | 本仓库落点 |
+|---|---|
+| Trace2Skill | `trace_pool.py`、`proposals.py`、`proposal_merge.py` |
+| EvoSkill | 严格 `gate.py`、`frontier.py`、`rejected_buffer.py` |
+| SkillOpt | `EditBudgetScheduler`、`training_curve`、`meta_skill.py` |
+
+### 13.4 新增产物
+
+| 路径 | 说明 |
+|---|---|
+| `optimization/trace_pool/traces.jsonl` | 标准化 rollout 轨迹（`trace_id`、`missed_checks`、`context_refs`、`skill_version` 等） |
+| `optimization/trace_pool/clusters.json` | 按 `task_type` / `missed_checks` / `context_refs` 聚类 |
+| `optimization/proposals/` | 根目录最新副本 + `steps/step_NNNN/*.jsonl` + `steps_index.jsonl` |
+| `optimization/rejected_edit_buffer.jsonl` | gate 拒绝的 edit、分数差、原因（注入 reflect） |
+| `optimization/rule_attribution.json` | 规则使用次数、关联 checks、退步计数 |
+| `optimization/frontier/` | 多候选 Skill 前沿（可选） |
+
+Proposal 质量门禁：`support_count >= 2` 才进入 merge；`evidence_refs` 须可解析；`candidate_rule` 不得只复述单 case 输入。
+
+Skill 规则归因格式（发布可 strip）：
+
+```markdown
+<!-- rule_id: rule-journal-003; source: prop-step0003-cluster-journal-balance -->
+- When handling journal entries, verify debit and credit totals are balanced.
+```
+
+### 13.5 M3 在自进化中的角色
+
+| M3 产物 | 角色 | 消费者 |
+|---|---|---|
+| `merged_atoms.jsonl` | 初始 Skill 候选 / proposal 参考 | 无 `initial_skill` 时生成起点 |
+| `benchmark_seeds.jsonl` | benchmark 扩充候选 | `--bootstrap-benchmark` |
+| `evidence_index.json` | 精确证据索引 | `code_evidence.py`、failure proposals |
+| `artifact_quality.json` | 质量门禁 | 未通过时 M3 仅诊断，不进入 M4 |
+
+原则：`artifact_quality` 未通过不消费 M3；seed 须满足 M4 schema；evidence 仅精确命中；atom 须经 proposal + gate，不得直接覆盖 Skill。
+
+### 13.6 Gate、Frontier 与 Hygiene
+
+**严格 gate**（`--self-evolve` 或 `self_evolution.gate.strict_improvement`）默认：
+
+- `candidate.selection_score > current_best`
+- 平局拒绝（`reject_ties: true`）
+- `skill_tokens <= max_skill_tokens`、格式合法
+
+**Frontier**（`frontier_enabled: false` 默认）：产物为 `optimization/frontier/frontier.json` 及快照 skill 文件；保留多个候选 Skill 做对比，依赖稳定 benchmark。
+
+**Hygiene**（`run skill-hygiene <run_id>`）：epoch 末或超 token/规则数时合并、删除、降级冗余规则；仍须过 selection gate。
+
+### 13.7 配置
+
+```yaml
+settings:
+  self_evolution:
+    enabled: false
+    trace_pool:
+      enabled: true
+      min_support_count: 2
+      cluster_by: [task_type, missed_checks, context_refs]
+    proposals:
+      include_success: true
+      include_failure: true
+      hierarchical_merge: true
+      max_merge_fan_in: 8
+    gate:
+      strict_improvement: true
+      reject_ties: true
+      allowed_regressions: 0
+      frontier_enabled: false
+    edits:
+      max_edits_per_step: 3
+      max_new_rules_per_step: 2
+      max_skill_tokens: 2000
+    hygiene:
+      enabled: true
+      run_each_epoch: true
+    attribution:
+      enabled: true
+      inject_rule_ids: true
+    knowledge:
+      enabled: true
+      gate_tolerance: 0.05
+      min_support_count: 2
+```
+
+### 13.8 实现索引
+
+| 区域 | 路径 |
+|---|---|
+| 轨迹池 / 聚类 | `skillopt_loop/trace_pool.py` |
+| Proposal 生成 / 合并 | `proposals.py`、`proposal_merge.py` |
+| Rejected buffer | `rejected_buffer.py`、`step_buffer.py` |
+| 规则 ID / 归因 | `skill_rules.py` |
+| Hygiene | `hygiene.py` |
+| Frontier | `frontier.py` |
+| 配置 / 校验 | `self_evolution_config.py`、`self_evolution_validate.py` |
+| 主循环接线 | `skillopt_loop/__init__.py` |
+
+### 13.9 参考
+
+- [Trace2Skill](../references/Trace2Skill.pdf) · [EvoSkill](../references/EvoSkill.pdf) · [SkillOpt](../references/skillopt_2605.23904.pdf)
+- 微信文章：《如何更科学、方向可控的实现 Skill 的“自进化”?》

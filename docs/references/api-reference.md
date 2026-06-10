@@ -197,13 +197,14 @@ from code_to_skill.skillopt_loop import run_skillopt_loop
 
 result = run_skillopt_loop(
     initial_skill="# Initial Skill\n...",
-    benchmark_items=[{"id": "t1", "task_template": "...", "expected_checks": ["..."]}],
-    output_dir="outputs/",
+    benchmark_items=[{"id": "t1", "question": "...", "expected_checks": ["..."]}],
+    selection_items=[...],  # benchmark/selection/items.json
+    test_items=[...],       # benchmark/test/items.json
+    output_dir="runs/<id>/optimization/",
     num_epochs=3,
     batch_size=20,
     edit_budget=3,
-    selection_split_ratio=0.25,
-    use_llm_rollout=False,  # True → 真实LLM回答benchmark
+    use_llm_rollout=True,
 )
 # → {"best_skill": str, "history": list, "best_score": float}
 ```

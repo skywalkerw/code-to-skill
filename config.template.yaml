@@ -1,11 +1,15 @@
 # =============================================================================
-# code-to-skill 配置文件（config.yaml）
+# code-to-skill 配置文件参考（config.template.yaml）
 # =============================================================================
+# 完整枚举所有已接线配置键及代码默认值（空 `{}` / `[]` / `""` / `null` 表示可选或未设置）。
+# 复制为 config.yaml 后按项目填写；环境变量通过 ${VAR_NAME} 内联引用。
+#
+# 查看实际生效的已接线项：skill-lab config --config-path config.yaml
+# （输出 Effective settings (wired to CLI/modules) 段）
+#
 # 两个顶层段：
 #   settings    框架自身配置（控制 code-to-skill 如何工作）
 #   project     目标项目配置（要处理哪个项目的代码/文档）
-#
-# 环境变量通过 ${VAR_NAME} 内联引用。
 # =============================================================================
 
 # =============================================================================
@@ -17,11 +21,12 @@ settings:
   code_graph:
     max_leaf_tokens: 8000
     max_module_depth: 3
-    max_components_per_group: 200
-    split_strategy: top_dir   # top_dir | package_path
-    llm_clustering_enabled: false
     tokenizer: cl100k_base
-    use_cache: true   # 增量解析 graph.db，二次运行跳过未变更文件
+    max_components_per_group: 200
+    split_strategy: top_dir   # top_dir | package_path | file_then_function
+    llm_clustering_enabled: false
+    use_cache: true           # 增量解析 graph.db，二次运行跳过未变更文件
+    # max_components_per_llm_call: 50   # reserved / design doc only — NOT wired in src
 
   # ── 模块 2：文档规范化 ────────────────────────────────────
   document_normalizer:
@@ -34,30 +39,30 @@ settings:
   atom_extractor:
     confidence_tier_1_max: 0.95
     llm_adjustment: 0.05
+    max_source_refs_per_atom: 24
 
   # ── 模块 4：SkillOpt 优化 ──────────────────────────────────
   skillopt:
-    use_llm_rollout: true     # 训练/评估 rollout 使用 target LLM
-    # rollout_backend: qwen-local   # rollout 专用 backend（默认同 routes.target.primary）
-    # optimizer_backend: deepseek   # reflect/select 专用（默认同 routes.optimizer.primary）
-    num_epochs: 5
+    use_llm_rollout: true     # 推荐 true；代码 runtime 默认 false（未设置时）
+    rollout_backend: null     # 例: qwen-local — rollout 专用 backend（默认同 routes.target.primary）
+    optimizer_backend: null   # 例: deepseek — reflect/select 专用（默认同 routes.optimizer.primary）
+    judge_backend: null       # 例: deepseek — LLM Judge 专用（默认同 routes.judge.primary）
+    num_epochs: 3
     batch_size: 20
-    edit_budget: 4
+    edit_budget: 3
     budget_strategy: cosine   # constant | cosine | linear
-    gate_metric: hard         # hard（selection≥20）| mixed（5–19）| soft（<5）
+    gate_metric: soft         # hard（selection≥20）| mixed（5–19）| soft（<5）
     patience: 10
     accumulation: 1
-    enable_slow_update: true
-    enable_meta_skill: true
+    enable_slow_update: false
+    enable_meta_skill: false
     slow_update_gate: true
     enable_code_tools: true
     max_tool_rounds: 5
     rollout_max_tool_rounds: 2
     rollout_workers: 4        # batch 内 item 并行 rollout（1=串行）
-    # 全局 keyword scorer 别名（项目专用；benchmark item 的 check_aliases 可追加）
-    # check_aliases:
-    #   transfer: [转账, 账户间转账, liability_transfer]
-    #   overdraft: [透支, 透支组合, overdraft_portfolio_control]
+    expose_expected_checks_to_target: false
+    check_aliases: {}         # 全局 keyword scorer 别名；benchmark item 的 check_aliases 可追加
     # 各阶段 LLM 输出 token 预算（须 ≤ backend.max_output_tokens）
     token_budgets:
       rollout: 8192
@@ -71,22 +76,85 @@ settings:
       meta_skill: 2048
       atom_extract: 8192
 
+  # ── M4 Skill 自进化（settings.self_evolution，默认关闭）────
+  self_evolution:
+    enabled: false
+    trace_pool:
+      enabled: true
+      min_support_count: 2
+      cluster_by: ["task_type", "missed_checks", "context_refs"]
+    proposals:
+      include_success: true
+      include_failure: true
+      hierarchical_merge: true
+      max_merge_fan_in: 8
+      success_ignore_checks: []
+      success_default_checks_text: "verified task-specific requirements"
+      success_rule_tail: >-
+        preserve the answer pattern that passed the checks, keep variable
+        values grounded in the user input or provided context, and make the
+        result directly verifiable
+    gate:
+      strict_improvement: true
+      reject_ties: true
+      allowed_regressions: 0
+      frontier_enabled: false
+      frontier_size: 3
+    edits:
+      max_edits_per_step: null   # null 表示使用 skillopt.edit_budget
+      max_new_rules_per_step: 2
+      max_skill_tokens: 2000
+    hygiene:
+      enabled: true
+      run_each_epoch: true
+      min_rule_use_count: 1
+      max_rules: 40
+    attribution:
+      enabled: true
+      inject_rule_ids: true
+    knowledge:
+      enabled: true
+      gate_tolerance: 0.05
+      min_support_count: 2
+
+  # ── 流水线编排（M1–M4 产物契约与 skip 策略）────────────────
+  pipeline:
+    write_artifact_contract: true
+    validate_context_refs: true
+    run_atoms_when_benchmark_present: false
+    run_docs_when_atoms_skipped: false
+    merge_atom_seeds_into_benchmark: false
+    append_atom_rules_to_skill: false
+    bootstrap_min_confidence: 0.8
+    use_evidence_index: true
+    use_entrypoints: true
+    use_role_index: true
+    auto_plot_training_curve: true
+
   # ── 模块 5：模型与智能体交互 ──────────────────────────────
   # backend 由 type（高层类别）和 provider（具体实现）两个维度定义：
   #   type:     llm_api | local_llm | agent_cli | agent_service | mcp_agent | mock
   #   provider: openai_compatible | mock
   model_provider:
     backends:
-      # 生产级 LLM
+      # 生产级 LLM（示例含全部可选 BackendConfig 字段及默认值）
       deepseek:
         type: llm_api
         provider: openai_compatible
         base_url: ${DEEPSEEK_BASE_URL}
+        base_url_env: ""
         api_key_env: ${DEEPSEEK_API_KEY}
+        api_key: ""
         model: deepseek-v4-pro
-        context_window: 1000000      # 1M 上下文
-        max_output_tokens: 384000    # 最大 384K 输出
+        context_window: 128000
+        max_output_tokens: 16384
         timeout_seconds: 180
+        command: ""
+        profile: ""
+        sandbox: ""
+        workspace_required: false
+        returns_trajectory: false
+        fixture_dir: ""
 
       # 本地开发 LLM（vLLM / Ollama）
       qwen-local:
@@ -111,6 +179,9 @@ settings:
       extractor:
         primary: deepseek
         fallback: [qwen-local, mock-backend]
+        strategy: fallback
+        quorum: 2
+        backends: []
       # M1 代码图谱：LLM 辅助模块聚类（code_graph.llm_clustering_enabled=true 时）
       clusterer:
         primary: deepseek
@@ -120,7 +191,6 @@ settings:
         primary: deepseek
         fallback: [qwen-local, mock-backend]
       # M4 SkillOpt 执行端（rollout）：benchmark 上跑当前 Skill 生成答案；selection/test gate 评估
-      # 建议用较快模型（如 deepseek-flash），与 optimizer 强弱分离
       target:
         primary: deepseek
         fallback: [qwen-local, mock-backend]
@@ -140,60 +210,12 @@ settings:
     policies:
       default_retries: 3
       retry_backoff: exponential
-      # trace 模式：开启后将每次 LLM 调用的完整 messages 输入和 content 输出
-      # 写入 <output.root>/<run_id>/traces/traces.jsonl 及 calls/NNNN_role_stage.json
-      # 运行日志（INFO+）同时写入 <output.root>/<run_id>/logs/run.log
       trace_enabled: true
       cache_enabled: false
       redact_secrets: true
       max_cost_per_run_usd: 20
       max_timeout_seconds: 900
       structured_output_fallback: true
-
-  # ── Skill 自进化（Design 08，默认关闭）────────────────────
-  self_evolution:
-    enabled: false
-    trace_pool:
-      enabled: true
-      min_support_count: 2
-      cluster_by: ["task_type", "missed_checks", "context_refs"]
-    proposals:
-      include_success: true
-      include_failure: true
-      hierarchical_merge: true
-      max_merge_fan_in: 8
-    gate:
-      strict_improvement: true
-      reject_ties: true
-      allowed_regressions: 0
-      frontier_enabled: false
-      frontier_size: 3
-    edits:
-      max_edits_per_step: 3
-      max_new_rules_per_step: 2
-      max_skill_tokens: 2000
-    hygiene:
-      enabled: true
-      run_each_epoch: true
-      min_rule_use_count: 1
-      max_rules: 40
-    attribution:
-      enabled: true
-      inject_rule_ids: true
-
-  # ── 流水线编排（M1–M4 产物契约与 skip 策略）────────────────
-  pipeline:
-    write_artifact_contract: true
-    validate_context_refs: true
-    run_atoms_when_benchmark_present: false
-    run_docs_when_atoms_skipped: false
-    merge_atom_seeds_into_benchmark: false
-    append_atom_rules_to_skill: false
-    bootstrap_min_confidence: 0.8
-    use_evidence_index: true
-    use_entrypoints: true
-    use_role_index: true
-    auto_plot_training_curve: true
 
   # ── 输出与发布 ────────────────────────────────────────────
   output:
@@ -216,138 +238,49 @@ project:
   domain: agent-skill
   description: "从知识库和代码提取并优化 Agent Skill"
 
-  # ── 初始 Skill（可选：为空则由 M3 从代码/文档自动生成）────
   initial_skill: ""
-
-  # ── Benchmark（可选：为空则用 M3 自动生成的 benchmark_seeds）──
-  # 目录结构: train/items.json, selection/items.json, test/items.json
   benchmark: ""
-  # benchmark: test-data/benchmarks/fineract
 
-  # ── benchmark task_type → 图谱 role 映射（可选，项目专用）──
-  # M4 reflect/rollout 按 role_index 限定检索；benchmark item 也可直接设 graph_role。
+  graph_role_hints: {}
   # graph_role_hints:
   #   journal_entry:
   #     framework: fineract
   #     roles: [accounting_processor, api_resource]
 
-  # ── 可选：覆盖 M4 reflect prompt（写入 trace system 消息）────
+  reflect_prompts: {}
   # reflect_prompts:
   #   error: |
   #     ## Task
   #     Analyze failures and propose skill edits.
-  #     ## Current Skill
-  #     {current_skill}
-  #     ## Failures
-  #     {failure_text}
-  #     ## Step Buffer
-  #     {step_buffer_summary}
+  #   success: |
+  #     ## Task
+  #     Analyze successes and propose skill edits.
 
-  # ── 代码图谱扩展（目标项目专用，非框架内置）────────────────
-  # Spring / MyBatis 由框架自动识别，无需在此配置。
-  # custom_patterns 用于补充「项目约定命名」：扫描 .java 全文，命中子串则打标签节点。
-  #
-  # 结构：
-  #   custom_patterns:
-  #     <框架名>:           # 任意标签，写入节点 metadata.framework
-  #       <源码子串>: <角色> # 子串匹配（区分大小写），角色写入 metadata.role
-  #
-  # 合并规则：project.code_graph.custom_patterns 为全局默认；
-  # repos[].framework_patterns 可追加或覆盖同名 framework 下的 pattern。
-  #
-  # ── 什么时候要配置 ────────────────────────────────────────
-  # 需要配置（建议填写 custom_patterns）：
-  #   - 目标项目有稳定的「架构命名约定」，例如 Fineract 的 CommandHandler、
-  #     AccountingProcessor、ApiResource，或自研的 *Handler / *Processor / *Gateway
-  #   - 希望代码图谱（M1）按角色分层打标签，便于 CodeGraph 检索和人工排查
-  #   - 多仓库且不同 repo 需要不同的 pattern 集合（用 repos[].framework_patterns）
-  #
-  # 不需要配置（保持 custom_patterns: {} 即可）：
-  #   - 普通 Spring Boot + MyBatis 项目，内置识别已覆盖 @Service、@Mapper 等
-  #   - 主要依赖 benchmark items.json 里的 context_refs 指向具体类/方法
-  #   - 只跑 SkillOpt、且已有 graph.db，不重建代码图谱
-  #
-  # 配置后的作用（M1 建图阶段）：
-  #   - 命中子串的 .java 文件会多出带 framework/role 的标签节点
-  #   - 日志可能出现：[M1] 自定义框架节点: N
-  #
-  # 不直接影响：
-  #   - benchmark 的 expected_checks / rollout 评分
-  #   - reflect 补丁内容、gate 门禁、skill 正文
-  #   - 不会自动连调用边；精确定位仍靠 AST 解析节点 + benchmark context_refs
-  #
-  # 修改 custom_patterns 后需重新建图：
-  #   skill-lab run code-graph --config-path config.yaml
-  #   或完整流水线 skill-lab run --config-path config.yaml
   code_graph:
     custom_patterns: {}
-
-    # benchmark context_refs 简写路径 → 仓库内候选路径（项目专用，框架无内置规则）
-    # {rest} = 去掉 prefix 后的剩余路径；用于 M4 context_ref 校验与文件探测
+    context_ref_path_rules: []
     # context_ref_path_rules:
     #   - prefix: fineract-provider/
     #     skip_if_contains: src/main/java
     #     expansions:
     #       - fineract-provider/src/main/java/org/apache/fineract/{rest}
-    #   - prefix: fineract-accounting/
-    #     expansions:
-    #       - fineract-accounting/src/main/java/org/apache/fineract/accounting/{rest}
-    #       - fineract-provider/src/main/java/org/apache/fineract/accounting/{rest}
-    #   - prefix: fineract-core/
-    #     expansions:
-    #       - fineract-core/src/main/java/org/apache/fineract/{rest}
-    #       - fineract-provider/src/main/java/org/apache/fineract/{rest}
-
-    # ── 示例 A：Fineract（取消下行注释并删掉上面的 `{}` 即可启用）────
-    # custom_patterns:
-    #   fineract:
-    #     CommandHandler: command_handler
-    #     ReadPlatformService: read_service
-    #     WritePlatformService: write_service
-    #     AccountingProcessor: accounting_processor
-    #     ApiResource: api_resource
-
-    # ── 示例 B：通用业务项目（支付网关命名约定）────────────────
-    # custom_patterns:
-    #   payment:
-    #     PaymentGateway: payment_gateway
-    #     RefundHandler: refund_handler
-    #     SettlementBatch: settlement_batch
 
   sources:
-    repos:
-      # ── 示例：单仓库 + 全局 custom_patterns ─────────────────
-      # - id: fineract
-      #   path: /path/to/fineract
-      #   ref: develop
-      #   include:
-      #     - "fineract-provider/src/main/java/org/apache/fineract/accounting/**"
-      #     - "fineract-provider/src/main/java/org/apache/fineract/portfolio/**"
-      #   exclude:
-      #     - "**/test/**"
-      #     - "**/target/**"
-
-      # ── 示例：多仓库时按 repo 追加/覆盖 framework_patterns ──
-      # - id: fineract-core
-      #   path: /path/to/fineract
-      #   ref: develop
-      #   include: ["fineract-provider/**"]
-      #   exclude: ["**/test/**"]
-      #   framework_patterns:
-      #     fineract:
-      #       AccountingProcessor: accounting_processor
-      #
-      # - id: other-module
-      #   path: /path/to/other-module
-      #   ref: main
-      #   include: ["src/main/java/**"]
-      #   framework_patterns:
-      #     fineract:
-      #       ApiResource: rest_api_resource   # 覆盖 project 级同名 pattern
-    docs:
-      # - id: fin-technical
-      #   path: docs/fineract/technical.md
-      #   provider: local_file
-      #   type: markdown
-      #   authority: team_runbook
-      #   domain_tags: ["fineract", "financial"]
+    repos: []
+    # repos[] schema:
+    #   - id: my-repo
+    #     path: /path/to/repo
+    #     ref: HEAD
+    #     include: []
+    #     exclude: []
+    #     framework_patterns: {}
+    docs: []
+    # docs[] schema:
+    #   - id: my-doc
+    #     path: docs/readme.md
+    #     provider: local_file
+    #     type: markdown          # required: markdown | pdf | wiki_export | html | docx | text
+    #     version: latest
+    #     authority: team_runbook
+    #     domain_tags: []
+    #     ocr_enabled: false

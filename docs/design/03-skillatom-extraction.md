@@ -1,7 +1,7 @@
 # 模块 3：从代码图谱/模块树与规范化文档到 SkillAtom 抽取
 
-> 状态: **已实现（含 `artifact_quality.json`，Design 08 Phase 0）**  
-> 关联: `07-pipeline-integration-optimization.md` §8/§10、M1 sidecar、M4 `evidence_index` 消费、`run bootstrap-benchmark`
+> 状态: **已实现（含 `artifact_quality.json`）**  
+> 关联: `00-overall-design.md` §16、`06-cli-human-interaction-orchestrator.md` §12、M1 sidecar、M4 `evidence_index` 消费、`run bootstrap-benchmark`
 
 ## 1. 模块目标
 
@@ -146,7 +146,7 @@ runs/<run_id>/atoms/
 
 ### 3.4 `benchmark_seeds.jsonl` schema（M4 兼容）
 
-`benchmark_seeds.jsonl` 必须是 M4 `BenchmarkItem` 的合法子集，可以直接作为 train pool 进入 `BenchmarkSplits`。`seed_id/task_template` 可作为兼容字段保留，但 `id` 与 `question` 是强制字段。
+`benchmark_seeds.jsonl` 必须是 M4 `BenchmarkItem` 的合法子集，可以直接作为 train pool 进入 `BenchmarkSplits`。强制字段：`id`、`question`；推荐 `expected_checks`、`context_refs`。
 
 ```json
 {
@@ -155,7 +155,7 @@ runs/<run_id>/atoms/
   "question": "Review the refund timeout handling and explain the required retry policy.",
   "task_type": "code_review",
   "context_refs": [
-    "src/refund/client.py::retry_refund"
+    "src/refund/client.py#retry_refund"
   ],
   "context_mode": "inline",
   "expected_checks": [
@@ -163,10 +163,9 @@ runs/<run_id>/atoms/
     "limits retry count or asks for configured retry budget",
     "does not recommend duplicate charge/refund execution"
   ],
-  "scorer": "deterministic",
+  "scorer": "keyword",
   "source_atom_ids": ["payment.timeout.retry-idempotency"],
-  "risk": "high",
-  "seed_id": "seed-payment-timeout-001"
+  "risk": "high"
 }
 ```
 
@@ -174,9 +173,9 @@ runs/<run_id>/atoms/
 
 - `id` 必须稳定、唯一，默认 `seed-{atom_id}`。
 - `question` 必须是可执行任务，不得只截断 `claim`。
-- `context_refs` 优先来自 atom 的精确 code `source_refs`；没有可解析 code ref 时，seed 只能进入 `needs_review` 或诊断，不进入默认 train。
+- `context_refs` 使用 `path#symbol`，由 atom `source_refs` 生成；无可解析 code ref 时标记 `needs_review`。
 - `expected_checks` 至少 2 条，必须是可判定断言；禁止只输出 `journal`、`check`、`确认` 这类泛 token。
-- `source_atom_ids` 回指 atom；旧字段 `atom_ids` 可保留但不作为 M4 标准字段。
+- `source_atom_ids` 回指 atom。
 
 ### 3.5 `evidence_index.json` schema
 
@@ -520,9 +519,9 @@ SkillOpt 循环读取：
 - rollout 失败可回流为新的 trace-derived atoms，但必须经过同一质量门禁。
 - rejected edits 可映射回 atom_id，降低相似 atom 权重。
 
-## 8. 与 07 流水线优化的衔接
+## 8. 与流水线及 M4 的衔接
 
-M3 落地顺序见 `07-pipeline-integration-optimization.md` Phase 2。实施状态（2026-06）：
+M3 在流水线 Phase 2 中的落地状态（2026-06，编排见 `00-overall-design.md` §16、`06-cli-human-interaction-orchestrator.md` §12）：
 
 | # | 动作 | 状态 | 代码 / CLI |
 |---|------|------|------------|

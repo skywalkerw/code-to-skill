@@ -140,6 +140,7 @@ def build_effective_settings_report(
         "m3": {
             "confidence_tier_1_max": ms.atom_extractor.get("confidence_tier_1_max", 0.95),
             "llm_adjustment": ms.atom_extractor.get("llm_adjustment", 0.05),
+            "max_source_refs_per_atom": ms.atom_extractor.get("max_source_refs_per_atom", 24),
         },
         "m4": {
             "judge_backend": judge_id or "(none)",
