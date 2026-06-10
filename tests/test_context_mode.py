@@ -119,3 +119,23 @@ def test_rollout_none_disables_tools(mock_build_ctx, mock_invoke):
     mock_build_ctx.assert_not_called()
     mock_invoke.assert_not_called()
     adapter._backend.invoke.assert_called_once()
+
+
+def test_rollout_request_does_not_leak_expected_checks_by_default():
+    adapter = DEFAULTAdapter(use_llm=True, enable_code_tools=False)
+    adapter._backend = MagicMock()
+    adapter._backend.invoke.return_value = MagicMock(content="FINAL: answer", tool_snippets="")
+
+    item = {
+        "id": "i4",
+        "question": "Q?",
+        "expected_checks": ["SECRET_TOKEN"],
+        "context_mode": "none",
+    }
+    adapter.rollout("skill", [item], target_backend=adapter._backend)
+    request = adapter._backend.invoke.call_args.args[0]
+    user_msg = request.messages[-1]["content"]
+    metadata = request.metadata
+    assert "SECRET_TOKEN" not in user_msg
+    assert "SECRET_TOKEN" not in metadata["synthesis_hint"]
+    assert "SECRET_TOKEN" not in metadata["leak_retry_hint"]

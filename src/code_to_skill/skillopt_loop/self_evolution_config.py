@@ -1,4 +1,4 @@
-"""Design 08 self_evolution 配置解析。"""
+"""M4 self_evolution 配置解析。"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -31,6 +31,16 @@ class SelfEvolutionConfig:
     max_rules: int = 40
     attribution_enabled: bool = True
     inject_rule_ids: bool = True
+    knowledge_merge_enabled: bool = True
+    knowledge_gate_tolerance: float = 0.05
+    knowledge_min_support_count: int = 2
+    success_ignore_checks: list[str] = field(default_factory=list)
+    success_default_checks_text: str = "verified task-specific requirements"
+    success_rule_tail: str = (
+        "preserve the answer pattern that passed the checks, keep variable "
+        "values grounded in the user input or provided context, and make the "
+        "result directly verifiable"
+    )
 
     @classmethod
     def from_dict(
@@ -51,6 +61,7 @@ class SelfEvolutionConfig:
         edits = raw.get("edits") or {}
         hygiene = raw.get("hygiene") or {}
         attr = raw.get("attribution") or {}
+        knowledge = raw.get("knowledge") or {}
         cfg = cls(
             enabled=bool(raw.get("enabled", False) or cli_enabled or trace_merge_only),
             trace_pool_enabled=bool(tp.get("enabled", True)),
@@ -74,6 +85,23 @@ class SelfEvolutionConfig:
             max_rules=int(hygiene.get("max_rules", 40)),
             attribution_enabled=bool(attr.get("enabled", True)),
             inject_rule_ids=bool(attr.get("inject_rule_ids", True)),
+            knowledge_merge_enabled=bool(knowledge.get("enabled", True)),
+            knowledge_gate_tolerance=float(knowledge.get("gate_tolerance", 0.05)),
+            knowledge_min_support_count=int(
+                knowledge.get("min_support_count", tp.get("min_support_count", 2))
+            ),
+            success_ignore_checks=[
+                str(c).strip()
+                for c in (prop.get("success_ignore_checks") or [])
+                if str(c).strip()
+            ],
+            success_default_checks_text=str(
+                prop.get("success_default_checks_text")
+                or cls.success_default_checks_text
+            ).strip(),
+            success_rule_tail=str(
+                prop.get("success_rule_tail") or cls.success_rule_tail
+            ).strip(),
         )
         if trace_merge_only and not cli_enabled:
             return cls._as_trace_merge_only(cfg)
@@ -89,4 +117,5 @@ class SelfEvolutionConfig:
         cfg.attribution_enabled = False
         cfg.frontier_enabled = False
         cfg.hygiene_each_epoch = False
+        cfg.knowledge_merge_enabled = True
         return cfg

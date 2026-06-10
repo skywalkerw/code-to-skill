@@ -1,4 +1,4 @@
-"""Design 08 — Skill hygiene pass（合并/删除冗余规则）。"""
+"""M4 self_evolution — Skill hygiene pass（合并/删除冗余规则）。"""
 from __future__ import annotations
 
 import json

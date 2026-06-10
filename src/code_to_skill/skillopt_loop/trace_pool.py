@@ -1,4 +1,4 @@
-"""Design 08 Trace Pool — 标准化 rollout 轨迹与聚类。"""
+"""M4 self_evolution — Trace Pool：标准化 rollout 轨迹与聚类。"""
 from __future__ import annotations
 
 import json

@@ -1,11 +1,15 @@
-"""Design 08 — 从 trace cluster 生成 success/failure proposals。"""
+"""M4 self_evolution — 从 trace cluster 生成 success/failure proposals。"""
 from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any
 
+from .reflect_helpers import SCENARIO_SECTION_HEADING
 from .self_evolution_config import SelfEvolutionConfig
+
+_AMOUNT_RE = re.compile(r"^[\d.,]+$")
 
 
 def _failure_candidate_rule(cluster: dict) -> str:
@@ -19,12 +23,101 @@ def _failure_candidate_rule(cluster: dict) -> str:
     return f"Review {task_type} handling against benchmark expected checks."
 
 
-def _success_candidate_rule(cluster: dict) -> str:
+def _is_amount_check(check: str) -> bool:
+    return bool(_AMOUNT_RE.fullmatch(check.strip()))
+
+
+def _configured_ignore_checks(config: SelfEvolutionConfig) -> set[str]:
+    return {
+        str(c).strip().lower()
+        for c in getattr(config, "success_ignore_checks", [])
+        if str(c).strip()
+    }
+
+
+def _semantic_checks(
+    trace: dict,
+    config: SelfEvolutionConfig,
+    *,
+    limit: int = 6,
+) -> list[str]:
+    checks = trace.get("passed_checks") or trace.get("expected_checks") or []
+    ignore = _configured_ignore_checks(config)
+    picked: list[str] = []
+    for check in checks:
+        text = str(check).strip()
+        if not text or text.lower() in ignore or _is_amount_check(text):
+            continue
+        if text not in picked:
+            picked.append(text)
+        if len(picked) >= limit:
+            break
+    return picked
+
+
+def _success_scenario_line(trace: dict, config: SelfEvolutionConfig) -> str:
+    item_id = trace.get("item_id") or trace.get("id") or "unknown"
+    question = (trace.get("question") or "").strip()
+    q_short = question[:48] + ("..." if len(question) > 48 else "")
+    checks = _semantic_checks(trace, config)
+    checks_text = (
+        "、".join(checks)
+        if checks
+        else getattr(config, "success_default_checks_text", "")
+        or "verified task-specific requirements"
+    )
+    refs = trace.get("context_refs") or []
+    ref_hint = f"; ref {refs[0]}" if refs else ""
+    tail = getattr(config, "success_rule_tail", "").strip()
+    tail_text = f"; {tail}" if tail else ""
+    return (
+        f"- **{item_id}** ({q_short}): cover verified checks "
+        f"[{checks_text}]{tail_text}{ref_hint}."
+    )
+
+
+def _success_candidate_rule(
+    cluster: dict,
+    config: SelfEvolutionConfig,
+) -> str:
     task_type = cluster.get("task_type") or "general"
-    passed = cluster.get("passed_checks") or []
+    members = cluster.get("members") or []
+    if members:
+        lines = [_success_scenario_line(m, config) for m in members[:5]]
+        return "\n".join([SCENARIO_SECTION_HEADING, "", *lines])
+    ignore = _configured_ignore_checks(config)
+    passed = [
+        str(c).strip()
+        for c in (cluster.get("passed_checks") or [])
+        if str(c).strip()
+        and str(c).strip().lower() not in ignore
+        and not _is_amount_check(str(c))
+    ]
     if passed:
-        return f"For {task_type}, preserve patterns that satisfy: {', '.join(passed[:4])}."
-    return f"Retain effective {task_type} guidance validated by recent rollouts."
+        checks = "、".join(passed[:6])
+        tail = getattr(config, "success_rule_tail", "").strip()
+        tail_text = f"; {tail}" if tail else ""
+        return (
+            f"- For {task_type}, preserve the successful handling of "
+            f"「{checks}」{tail_text}."
+        )
+    tail = getattr(config, "success_rule_tail", "").strip()
+    if tail:
+        return f"- For {task_type}, {tail}."
+    return (
+        f"- For {task_type}, preserve the output rules validated by recent "
+        "successful rollouts."
+    )
+
+
+def _sort_success_members(members: list[dict]) -> list[dict]:
+    return sorted(
+        members,
+        key=lambda m: (
+            str(m.get("item_id") or m.get("id") or ""),
+            str(m.get("question") or ""),
+        ),
+    )
 
 
 def build_failure_proposals(
@@ -82,6 +175,7 @@ def build_success_proposals(
     for task_type, members in sorted(by_task.items(), key=lambda x: -len(x[1])):
         if len(members) < config.min_support_count:
             continue
+        members = _sort_success_members(members)
         cluster_id = f"success-{task_type}"
         prop_id = f"prop-step{step:04d}-{cluster_id}"
         passed = sorted({c for m in members for c in (m.get("passed_checks") or [])})
@@ -98,7 +192,11 @@ def build_success_proposals(
             "evidence_refs": [],
             "root_cause": f"Consistent success on {task_type} ({len(members)} traces).",
             "edit_intent": "reinforce_rule",
-            "candidate_rule": _success_candidate_rule({"task_type": task_type, "passed_checks": passed}),
+            "candidate_rule": _success_candidate_rule({
+                "task_type": task_type,
+                "passed_checks": passed,
+                "members": members,
+            }, config),
             "risk": "low",
             "confidence": min(0.9, 0.4 + 0.08 * len(members)),
             "status": "ready",

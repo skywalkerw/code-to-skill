@@ -101,3 +101,42 @@ def test_tool_loop_synthesis_after_max_rounds():
     assert len(backend.calls) == 4  # 3 tool rounds + 1 synthesis
     assert backend.calls[-1].tools == []
     assert any("tool-call limit" in m.get("content", "") for m in backend.calls[-1].messages)
+
+
+def test_tool_loop_blanks_persistent_tool_markup_leak_for_fallback():
+    class _PersistentLeakBackend(_FakeBackend):
+        def invoke(self, request: InteractionRequest) -> ModelResponse:
+            self.calls.append(request)
+            if request.tools:
+                return ModelResponse(
+                    request_id=request.request_id,
+                    backend_id="fake",
+                    model="fake",
+                    content="",
+                    tool_calls=[{
+                        "id": "tc1",
+                        "type": "function",
+                        "function": {"name": "search", "arguments": "{}"},
+                    }],
+                    usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                )
+            return ModelResponse(
+                request_id=request.request_id,
+                backend_id="fake",
+                model="fake",
+                content="<｜｜DSML｜｜tool_calls>search_code</｜｜DSML｜｜tool_calls>",
+                usage={"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5},
+            )
+
+    backend = _PersistentLeakBackend()
+    request = InteractionRequest(
+        role="target",
+        stage="rollout",
+        messages=[{"role": "user", "content": "generate voucher"}],
+        max_output_tokens=1024,
+    )
+    resp = invoke_with_tool_loop(backend, request, _FakeHandler(), max_rounds=1)
+    assert resp.content == ""
+    assert resp.status == "parse_error"
+    assert resp.finish_reason == "tool_call_leak"
+    assert "AccountingProcessor.java" in resp.tool_snippets

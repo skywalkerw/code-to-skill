@@ -1,10 +1,12 @@
 """M3 + M4 集成测试。"""
 import pytest
 from code_to_skill.atom_extractor.types import SkillAtom, RawAtom, SourceRef
-from code_to_skill.atom_extractor.scorer import score_atoms
+from code_to_skill.atom_extractor.scorer import refresh_atom_statuses, score_atoms
 from code_to_skill.atom_extractor.merger import merge_atoms, generate_benchmark_seeds
+from code_to_skill.atom_extractor.source_refs import DEFAULT_MAX_SOURCE_REFS_PER_ATOM
 from code_to_skill.atom_extractor.extractor import extract_from_code, extract_from_docs
 from code_to_skill.atom_extractor import run_atom_extraction
+from code_to_skill.skillopt_loop.scoring import score_benchmark_item
 
 from code_to_skill.skillopt_loop.types import EditOp, BenchmarkItem, RolloutResult
 from code_to_skill.skillopt_loop.skill_ops import apply_edits
@@ -12,7 +14,6 @@ from code_to_skill.skillopt_loop import (
     score_rollout_result, compute_semantic_hash,
     run_skillopt_loop, save_runtime_state,
 )
-from code_to_skill.skillopt_loop.scoring import score_benchmark_item
 
 
 class TestM3Types:
@@ -70,6 +71,18 @@ class TestM3Scorer:
         })
         assert scored[0].status == "candidate"
 
+    def test_refresh_status_after_merge_confidence_changes(self):
+        atom = SkillAtom(
+            atom_id="t",
+            kind="constraint",
+            claim="valid claim",
+            confidence=0.92,
+            status="candidate",
+            source_refs=[SourceRef(type="code", id="x")],
+        )
+        refreshed = refresh_atom_statuses([atom])
+        assert refreshed[0].status == "accepted"
+
 
 class TestM3Merger:
     def test_merge_duplicates(self):
@@ -81,11 +94,50 @@ class TestM3Merger:
         assert len(merged) == 1
         assert len(merged[0].source_refs) == 2
 
+    def test_merge_caps_source_refs_and_keeps_code_evidence(self):
+        refs = [
+            SourceRef(type="doc", id=f"doc-{i}", authority="official_doc")
+            for i in range(8)
+        ] + [
+            SourceRef(type="code", id=f"node-{i}")
+            for i in range(40)
+        ] + [
+            SourceRef(type="code", id="hot-node", edge_path=["run", "post"])
+        ]
+        atom = SkillAtom(
+            atom_id="a",
+            kind="constraint",
+            claim="same claim",
+            source_refs=refs,
+            confidence=0.8,
+        )
+        merged = merge_atoms([atom])
+        capped_refs = merged[0].source_refs
+        assert len(capped_refs) == DEFAULT_MAX_SOURCE_REFS_PER_ATOM
+        assert any(ref.id == "hot-node" for ref in capped_refs)
+        assert any(ref.type == "doc" for ref in capped_refs)
+
     def test_benchmark_seeds(self):
         a = SkillAtom(atom_id="a", kind="constraint", claim="high risk",
                       confidence=0.8, risk="high", checks=["check1"])
         seeds = generate_benchmark_seeds([a])
         assert len(seeds) >= 1
+        assert seeds[0]["risk"] == "needs_review"
+
+    def test_benchmark_seed_keeps_risk_when_context_refs_exist(self):
+        a = SkillAtom(
+            atom_id="a",
+            kind="constraint",
+            claim="high risk",
+            confidence=0.8,
+            risk="high",
+            checks=["check1"],
+            source_refs=[SourceRef(type="code", id="Foo::bar")],
+        )
+        seeds = generate_benchmark_seeds([a])
+        assert seeds[0]["risk"] == "high"
+        assert seeds[0]["context_refs"] == ["Foo#bar"]
+
 
 
 class TestM4Scorer:

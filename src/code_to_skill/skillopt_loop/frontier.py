@@ -1,4 +1,4 @@
-"""Design 08 Phase 4 — Frontier Pool 多候选 Skill 前沿集合。"""
+"""M4 self_evolution — Frontier Pool 多候选 Skill 前沿集合。"""
 from __future__ import annotations
 
 import json

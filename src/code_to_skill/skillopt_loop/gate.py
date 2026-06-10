@@ -75,6 +75,7 @@ class GateManager:
         *,
         strict_improvement: bool = False,
         reject_ties: bool = False,
+        allow_tie_acceptance: bool = False,
     ):
         self.patience = patience
         self.delta = delta
@@ -82,6 +83,7 @@ class GateManager:
         self.mixed_weight = mixed_weight
         self.strict_improvement = strict_improvement
         self.reject_ties = reject_ties
+        self.allow_tie_acceptance = allow_tie_acceptance
         self._consecutive_rejects = 0
         self._total_accepts = 0
         self._total_rejects = 0
@@ -151,6 +153,22 @@ class GateManager:
                     f"train_improved ({prev_train_rollout:.3f} → {train_rollout:.3f}) "
                     f"selection_held ({candidate:.3f}) [{self.metric}]"
                 ),
+            )
+
+        if (
+            self.allow_tie_acceptance
+            and not self.strict_improvement
+            and not self.reject_ties
+            and candidate >= current_score - 1e-9
+        ):
+            self._consecutive_rejects = 0
+            self._total_accepts += 1
+            return GateDecision(
+                action="accept",
+                candidate_score=candidate,
+                best_score=best_score,
+                current_score=candidate,
+                reason=f"tie_accepted ({current_score:.3f} → {candidate:.3f}) [{self.metric}]",
             )
 
         self._consecutive_rejects += 1

@@ -10,9 +10,10 @@ import os
 
 from .types import SkillAtom, RawAtom, SourceRef
 from .extractor import extract_from_code, extract_from_docs
-from .scorer import score_atoms
+from .scorer import refresh_atom_statuses, score_atoms
 from .merger import merge_atoms, cluster_by_domain, generate_benchmark_seeds
 from .aligner import align_atoms
+from .source_refs import cap_atoms_source_refs, max_source_refs_from_settings
 
 
 def run_atom_extraction(
@@ -40,6 +41,7 @@ def run_atom_extraction(
     """
     leaf_contexts = leaf_contexts or []
     document_chunks = document_chunks or []
+    max_source_refs = max_source_refs_from_settings(atom_extractor_settings)
 
     # Step 1: 抽取（规则模式 + LLM 模式并行，自动降级）
     from .extractor.llm_extractor import extract_from_code_llm, extract_from_docs_llm
@@ -58,9 +60,11 @@ def run_atom_extraction(
 
     # Step 3: 合并
     merged = merge_atoms(scored)
+    merged = cap_atoms_source_refs(merged, max_refs=max_source_refs)
 
     # Step 3.5: 证据对齐（跨来源匹配 + 置信度提升）
     merged = align_atoms(merged)
+    merged = cap_atoms_source_refs(merged, max_refs=max_source_refs)
 
     # Step 3.6: 图谱证据增强（edge_path + evidence_index）
     evidence_index = []
@@ -69,9 +73,13 @@ def run_atom_extraction(
             from code_to_skill.code_graph.evidence import EvidenceBuilder
             builder = EvidenceBuilder(graph_db_path, repo_root)
             merged = builder.enrich_atoms(merged)
+            merged = cap_atoms_source_refs(merged, max_refs=max_source_refs)
             evidence_index = builder.build_evidence_index(merged)
         except (FileNotFoundError, OSError):
             pass
+    else:
+        merged = cap_atoms_source_refs(merged, max_refs=max_source_refs)
+    merged = refresh_atom_statuses(merged, settings=atom_extractor_settings)
 
     # Step 4: 聚类
     clusters = cluster_by_domain(merged)

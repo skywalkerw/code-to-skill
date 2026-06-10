@@ -39,12 +39,22 @@ def test_system_prompt_is_domain_agnostic():
     assert "(placeholder)" not in prompt
 
 
-def test_user_message_includes_checks():
+def test_user_message_hides_checks_by_default():
     msg = build_rollout_user_message(
         "deploy service X",
         ["output", "health", "check"],
     )
     assert "deploy service X" in msg
+    assert "health" not in msg
+    assert "verification checks" not in msg
+
+
+def test_user_message_can_expose_checks_when_explicit():
+    msg = build_rollout_user_message(
+        "deploy service X",
+        ["output", "health", "check"],
+        expose_expected_checks=True,
+    )
     assert "health" in msg
     assert "verification checks" in msg
 
@@ -56,17 +66,17 @@ def test_user_message_clarify_mode():
         item={"response_mode": "clarify"},
     )
     assert "clarification" in msg.lower()
-    assert "amount" in msg
+    assert "amount" not in msg
 
 
 def test_user_message_reject_mode():
     msg = build_rollout_user_message(
         "invalid payload",
-        ["reject", "constraint"],
+        ["reject", "SECRET_TOKEN"],
         item={"response_mode": "reject"},
     )
     assert "refuse" in msg.lower()
-    assert "constraint" in msg
+    assert "SECRET_TOKEN" not in msg
 
 
 def test_user_message_supports_rollout_hint_from_item():
@@ -78,8 +88,17 @@ def test_user_message_supports_rollout_hint_from_item():
     assert "TOKEN_A" in msg
 
 
-def test_synthesis_hint_lists_expected_checks():
+def test_synthesis_hint_hides_expected_checks_by_default():
     hint = build_rollout_synthesis_hint(["alpha", "beta"])
+    assert "alpha" not in hint
+    assert "beta" not in hint
+
+
+def test_synthesis_hint_can_expose_expected_checks_when_explicit():
+    hint = build_rollout_synthesis_hint(
+        ["alpha", "beta"],
+        expose_expected_checks=True,
+    )
     assert "alpha" in hint
     assert "beta" in hint
 
@@ -104,7 +123,7 @@ def test_fallback_skill_answer_uses_checks_and_skill():
     assert "job" in predicted.lower()
 
 
-def test_fallback_predicted_from_tools_has_structure():
+def test_fallback_predicted_from_tools_has_structure_without_checks():
     tool_raw = json.dumps({
         "results": [{"path": "Foo.java", "snippet": "Handler"}],
     })
@@ -115,5 +134,16 @@ def test_fallback_predicted_from_tools_has_structure():
         "# skill\nEmit structured output for each request.",
     )
     assert "R-1" in predicted
-    assert "Checks:" in predicted
+    assert "Checks:" not in predicted
     assert "Handler" in predicted or "Foo.java" in predicted
+
+
+def test_fallback_predicted_from_tools_can_expose_checks_when_explicit():
+    predicted = fallback_predicted_from_tools(
+        "{}",
+        "process request R-1",
+        ["output", "request", "R-1"],
+        "# skill\nEmit structured output for each request.",
+        expose_expected_checks=True,
+    )
+    assert "Checks:" in predicted

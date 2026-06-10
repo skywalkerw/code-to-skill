@@ -14,7 +14,7 @@ from code_to_skill.skillopt_loop.reflect_helpers import (
     RULE_SECTION_HEADING_PRIMARY,
     skill_compact_for_reflect,
 )
-from code_to_skill.skillopt_loop.scoring import score_rollout_result
+from code_to_skill.skillopt_loop.scoring import score_benchmark_item, score_rollout_result
 from code_to_skill.skillopt_loop.types import EditOp
 
 
@@ -91,6 +91,75 @@ class TestScoringChecks:
         )
         assert "50000" in result["passed_checks"]
         assert result["hard"] == 1
+
+    def test_python_script_scorer(self, tmp_path):
+        script = tmp_path / "score_item.py"
+        script.write_text(
+            "import json, sys\n"
+            "payload = json.load(sys.stdin)\n"
+            "text = payload['predicted']\n"
+            "ok = '借方' in text and '贷方' in text and '平衡' in text\n"
+            "print(json.dumps({\n"
+            "  'hard': 1 if ok else 0,\n"
+            "  'soft': 1.0 if ok else 0.25,\n"
+            "  'passed_checks': ['balanced'] if ok else [],\n"
+            "  'missed_checks': [] if ok else ['balanced'],\n"
+            "  'justification': 'script evaluated structure'\n"
+            "}, ensure_ascii=False))\n",
+            encoding="utf-8",
+        )
+        result = score_benchmark_item(
+            "表格包含借方、贷方，并说明平衡。",
+            {
+                "scorer": "python_script",
+                "score_script": str(script),
+                "expected_checks": ["balanced"],
+            },
+        )
+        assert result["hard"] == 1
+        assert result["score_type"] == "python_script"
+        assert result["passed_checks"] == ["balanced"]
+
+    def test_python_script_scorer_accepts_count_fields(self, tmp_path):
+        script = tmp_path / "score_counts.py"
+        script.write_text(
+            "import json\n"
+            "print(json.dumps({'soft': 0.5, 'passed': 1, 'total': 2}))\n",
+            encoding="utf-8",
+        )
+        result = score_benchmark_item(
+            "answer",
+            {
+                "scorer": "python_script",
+                "score_script": str(script),
+                "expected_checks": ["a", "b"],
+            },
+        )
+        assert result["hard"] == 0
+        assert result["soft"] == 0.5
+        assert result["passed"] == 1
+        assert result["missed_checks"] == ["a", "b"]
+
+    def test_python_script_scorer_resolves_config_base_dir(self, tmp_path):
+        script = tmp_path / "score_relative.py"
+        script.write_text(
+            "import json\n"
+            "print(json.dumps({'hard': 1, 'soft': 1.0, 'passed_checks': ['ok']}))\n",
+            encoding="utf-8",
+        )
+        result = score_benchmark_item(
+            "answer",
+            {
+                "scorer": "python_script",
+                "scorer_config": {
+                    "script": "score_relative.py",
+                    "base_dir": str(tmp_path),
+                },
+                "expected_checks": ["ok"],
+            },
+        )
+        assert result["hard"] == 1
+        assert result["passed_checks"] == ["ok"]
 
 
 class TestEditValidator:

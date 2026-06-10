@@ -1,9 +1,10 @@
-"""Design 08 — proposal 分层合并与 EditOp 转换。"""
+"""M4 self_evolution — proposal 分层合并与 EditOp 转换。"""
 from __future__ import annotations
 
 import hashlib
 from typing import Any
 
+from .reflect_helpers import SCENARIO_SECTION_HEADING, find_insert_target, PRIMARY_FOCUS
 from .self_evolution_config import SelfEvolutionConfig
 from .types import EditOp
 
@@ -11,6 +12,50 @@ from .types import EditOp
 def _content_fingerprint(text: str) -> str:
     norm = " ".join((text or "").split()).strip().lower()
     return hashlib.sha256(norm.encode()).hexdigest()[:16]
+
+
+def _last_line_in_section(skill: str, heading: str) -> str:
+    idx = skill.find(heading)
+    if idx < 0:
+        return heading
+    rest = skill[idx + len(heading):]
+    last: str | None = None
+    for ln in rest.splitlines():
+        stripped = ln.strip()
+        if stripped.startswith("#"):
+            break
+        if stripped.startswith("-") or stripped.startswith("|"):
+            last = stripped
+    return last or heading
+
+
+def _prepare_rule_edit(rule: str, current_skill: str) -> tuple[str, str, str]:
+    """Return (op, target, content), trimming duplicate scenario bullets."""
+    if not rule.startswith(SCENARIO_SECTION_HEADING):
+        return "append", "", rule
+
+    body_lines = [
+        ln.rstrip()
+        for ln in rule.splitlines()[1:]
+        if ln.strip()
+    ]
+    new_lines = [
+        ln for ln in body_lines
+        if not ln.strip().startswith("-") or ln.strip() not in current_skill
+    ]
+    if not new_lines:
+        return "append", "", ""
+
+    if SCENARIO_SECTION_HEADING in current_skill:
+        return (
+            "insert_after",
+            _last_line_in_section(current_skill, SCENARIO_SECTION_HEADING),
+            "\n".join(new_lines),
+        )
+
+    target = find_insert_target(current_skill, PRIMARY_FOCUS)
+    content = "\n".join([SCENARIO_SECTION_HEADING, "", *new_lines])
+    return ("insert_after" if target else "append"), target, content
 
 
 def proposals_to_edits(
@@ -32,19 +77,22 @@ def proposals_to_edits(
         rule = (prop.get("candidate_rule") or "").strip()
         if not rule or len(rule) < 12:
             continue
+        op, target, content = _prepare_rule_edit(rule, current_skill)
+        if not content:
+            continue
         fp = _content_fingerprint(rule)
         if fp in seen:
             continue
-        if rule in current_skill:
+        if content in current_skill:
             continue
         if config.max_new_rules_per_step and new_rules >= config.max_new_rules_per_step:
             break
         seen.add(fp)
         new_rules += 1
         edits.append(EditOp(
-            op="append",
-            content=rule,
-            target="",
+            op=op,  # type: ignore[arg-type]
+            content=content,
+            target=target,
             support_count=prop.get("support_count"),
             source_type="failure" if prop.get("source") == "failure_cluster" else "success",
             related_task_ids=[

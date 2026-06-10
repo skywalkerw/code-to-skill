@@ -11,7 +11,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
+import os
+import subprocess
+import sys
 from typing import Any
 
 from .token_budgets import get_token_budgets
@@ -91,6 +95,12 @@ def score_benchmark_item(
         if result.get("hard") == 1:
             result["missed_checks"] = []
         return result
+    if scorer in ("python", "py", "python_script", "script"):
+        return score_with_python_script(
+            predicted,
+            item,
+            hard_threshold=hard_threshold,
+        )
     checks = list(item.get("expected_checks") or [])
     aliases = merge_check_aliases(global_check_aliases, item.get("check_aliases"))
     return score_rollout_result(predicted, checks, check_aliases=aliases or None)
@@ -175,6 +185,186 @@ def compute_scores(results: list[dict]) -> dict[str, float]:
 def skill_hash(content: str) -> str:
     """返回 Skill 内容的短确定性 hash（用于缓存）。"""
     return hashlib.sha256(content.encode()).hexdigest()[:16]
+
+
+# ── Python Script Scorer ────────────────────────────────────
+
+def _script_path_from_item(item: dict) -> str:
+    scorer_config = item.get("scorer_config") or {}
+    path = (
+        item.get("score_script")
+        or item.get("scorer_script")
+        or scorer_config.get("script")
+        or scorer_config.get("path")
+    )
+    return str(path or "").strip()
+
+
+def _resolve_script_path(script_path: str, item: dict) -> str:
+    script_path = os.path.expanduser(script_path)
+    if os.path.isabs(script_path):
+        return script_path
+    scorer_config = item.get("scorer_config") or {}
+    base_dir = (
+        item.get("score_script_base_dir")
+        or scorer_config.get("base_dir")
+        or item.get("_benchmark_dir")
+        or item.get("_item_dir")
+    )
+    if base_dir:
+        return os.path.abspath(
+            os.path.join(os.path.expanduser(str(base_dir)), script_path)
+        )
+    return os.path.abspath(script_path)
+
+
+def _coerce_str_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        stripped = value.strip()
+        return [stripped] if stripped else []
+    if isinstance(value, (list, tuple, set)):
+        return [str(v) for v in value if str(v).strip()]
+    return []
+
+
+def _coerce_count(value: Any, fallback: int) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return int(value)
+    return fallback
+
+
+def _normalize_script_score(
+    raw: dict,
+    item: dict,
+    *,
+    hard_threshold: float,
+) -> dict:
+    checks = list(item.get("expected_checks") or [])
+    passed_checks = _coerce_str_list(raw.get("passed_checks"))
+    missed_checks = _coerce_str_list(raw.get("missed_checks") or raw.get("missed"))
+
+    if "soft" in raw:
+        soft = max(0.0, min(1.0, float(raw.get("soft") or 0.0)))
+    elif checks:
+        passed = len(passed_checks)
+        soft = passed / max(len(checks), 1)
+    else:
+        soft = 1.0 if int(raw.get("hard", 0) or 0) == 1 else 0.0
+
+    if "hard" in raw:
+        hard = 1 if int(raw.get("hard") or 0) == 1 else 0
+    else:
+        hard = 1 if soft >= hard_threshold else 0
+
+    if not missed_checks and checks and hard == 0:
+        seen = {str(c) for c in passed_checks}
+        missed_checks = [c for c in checks if str(c) not in seen]
+
+    precision = float(raw.get("precision", 0.0) or 0.0)
+    recall = float(raw.get("recall", soft) or soft)
+    f1 = float(raw.get("f1", 0.0) or 0.0)
+    if not f1 and (precision + recall) > 0:
+        f1 = 2 * precision * recall / (precision + recall)
+
+    return {
+        "hard": hard,
+        "soft": round(soft, 3),
+        "passed": _coerce_count(
+            raw.get("passed_count", raw.get("passed")),
+            len(passed_checks),
+        ),
+        "total": int(raw.get("total", len(checks) if checks else 1) or 1),
+        "passed_checks": passed_checks,
+        "missed_checks": missed_checks,
+        "accuracy": float(raw.get("accuracy", hard) or hard),
+        "precision": round(precision, 3),
+        "recall": round(recall, 3),
+        "f1": round(f1, 3),
+        "score_type": "python_script",
+        **({"justification": str(raw.get("justification"))} if raw.get("justification") else {}),
+    }
+
+
+def score_with_python_script(
+    predicted: str,
+    item: dict,
+    *,
+    hard_threshold: float = 0.8,
+) -> dict:
+    """Run a benchmark-provided Python scorer script.
+
+    The script receives JSON on stdin:
+    ``{"predicted": str, "item": dict}``
+
+    It must print a JSON object. Supported fields include:
+    ``hard``, ``soft``, ``passed_checks``, ``missed_checks``, ``precision``,
+    ``recall``, ``f1`` and ``justification``.
+    """
+    script_path = _script_path_from_item(item)
+    checks = list(item.get("expected_checks") or [])
+    if not script_path:
+        return {
+            "hard": 0,
+            "soft": 0.0,
+            "passed": 0,
+            "total": len(checks) if checks else 1,
+            "passed_checks": [],
+            "missed_checks": checks,
+            "accuracy": 0.0,
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "score_type": "python_script",
+            "error": "missing_score_script",
+        }
+
+    script_path = _resolve_script_path(script_path, item)
+    scorer_config = item.get("scorer_config") or {}
+    timeout = float(
+        item.get("score_timeout_seconds")
+        or scorer_config.get("timeout_seconds")
+        or 10
+    )
+    payload = {"predicted": predicted, "item": item}
+    try:
+        proc = subprocess.run(
+            [sys.executable, script_path],
+            input=json.dumps(payload, ensure_ascii=False),
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError((proc.stderr or proc.stdout or "").strip()[:500])
+        parsed = json.loads(proc.stdout or "{}")
+        if not isinstance(parsed, dict):
+            raise ValueError("script output must be a JSON object")
+        return _normalize_script_score(
+            parsed,
+            item,
+            hard_threshold=hard_threshold,
+        )
+    except Exception as exc:
+        logger.warning("Python scorer failed for %s: %s", script_path, exc)
+        return {
+            "hard": 0,
+            "soft": 0.0,
+            "passed": 0,
+            "total": len(checks) if checks else 1,
+            "passed_checks": [],
+            "missed_checks": checks,
+            "accuracy": 0.0,
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "score_type": "python_script",
+            "error": str(exc)[:500],
+        }
 
 
 # ── LLM Judge Scorer ────────────────────────────────────────

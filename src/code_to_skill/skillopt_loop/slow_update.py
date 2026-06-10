@@ -14,12 +14,22 @@ Slow update 是跨 epoch 的纵向优化：
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from .skill_ops import SLOW_UPDATE_START, SLOW_UPDATE_END
 from .token_budgets import get_token_budgets
 
 logger = logging.getLogger(__name__)
+
+
+_NON_ACTIONABLE_PATTERNS = (
+    re.compile(r"\b(no|not)\s+(changes?|updates?|modifications?)\s+(needed|required)\b", re.I),
+    re.compile(r"\b(skill definition|skill content)\s+(remained|is)\s+unchanged\b", re.I),
+    re.compile(r"\bno additional (tightening|loosening|rules?|guidance)\b", re.I),
+    re.compile(r"\bpreserve (the )?(core )?principles\b", re.I),
+    re.compile(r"\bconsistent pass\b", re.I),
+)
 
 
 def run_slow_update(
@@ -73,6 +83,14 @@ def run_slow_update(
         len(pairs["improved"]), len(pairs["regressed"]),
         len(pairs["persistent_fail"]), len(pairs["stable_success"]),
     )
+    if _stable_success_only(pairs):
+        logger.info("[SlowUpdate] Stable-success only comparison; skipping slow update")
+        return {
+            "slow_update_content": "",
+            "comparison_pairs": _pair_counts(pairs),
+            "action": "skip_stable_success_only",
+            "skip_reason": "stable_success_only",
+        }
 
     # Step 3: Optimizer analysis (LLM if available)
     if optimizer_backend:
@@ -172,14 +190,17 @@ def _llm_slow_update(
     ))
 
     content = resp.content.strip()
+    if is_non_actionable_slow_update(content):
+        logger.info("[SlowUpdate] Non-actionable slow update content; skipping")
+        return {
+            "slow_update_content": "",
+            "comparison_pairs": _pair_counts(pairs),
+            "action": "skip_non_actionable",
+            "skip_reason": "non_actionable_content",
+        }
     return {
         "slow_update_content": content,
-        "comparison_pairs": {
-            "improved": len(pairs["improved"]),
-            "regressed": len(pairs["regressed"]),
-            "persistent_fail": len(pairs["persistent_fail"]),
-            "stable_success": len(pairs["stable_success"]),
-        },
+        "comparison_pairs": _pair_counts(pairs),
         "action": "suggested",
     }
 
@@ -231,6 +252,52 @@ def _format_pairs_for_prompt(pairs: dict) -> str:
         lines.append(f"  {len(pairs['stable_success'])} tasks consistently passed")
 
     return "\n".join(lines) if lines else "(no comparison data)"
+
+
+def _pair_counts(pairs: dict) -> dict[str, int]:
+    return {
+        "improved": len(pairs.get("improved") or []),
+        "regressed": len(pairs.get("regressed") or []),
+        "persistent_fail": len(pairs.get("persistent_fail") or []),
+        "stable_success": len(pairs.get("stable_success") or []),
+    }
+
+
+def _stable_success_only(pairs: dict) -> bool:
+    counts = _pair_counts(pairs)
+    return (
+        counts["stable_success"] > 0
+        and counts["improved"] == 0
+        and counts["regressed"] == 0
+        and counts["persistent_fail"] == 0
+    )
+
+
+def has_actionable_slow_update_signal(comparison_pairs: dict | None) -> bool:
+    """Slow update 只有在真实变化/失败信号存在时才值得进入 gate。"""
+    pairs = comparison_pairs or {}
+    return (
+        int(pairs.get("improved") or 0) > 0
+        or int(pairs.get("regressed") or 0) > 0
+        or int(pairs.get("persistent_fail") or 0) > 0
+    )
+
+
+def is_non_actionable_slow_update(content: str) -> bool:
+    """识别只描述“无需改动/保持现状”的 slow update。"""
+    text = (content or "").strip()
+    if not text:
+        return True
+    lowered = text.lower()
+    if any(p.search(text) for p in _NON_ACTIONABLE_PATTERNS):
+        return True
+    # 没有任何规则性动词，通常只是观察性总结。
+    actionable_terms = (
+        "add", "remove", "replace", "tighten", "relax", "prefer", "avoid",
+        "must", "should", "ensure", "when ", "if ", "use ",
+        "新增", "删除", "替换", "收紧", "放宽", "避免", "必须", "应该", "确保", "当", "如果", "使用",
+    )
+    return not any(term in lowered or term in text for term in actionable_terms)
 
 
 _SLOW_UPDATE_PROMPT = """## Task

@@ -1,4 +1,4 @@
-"""Design 08 — 自进化 run 产物校验。"""
+"""M4 self_evolution — run 产物校验。"""
 from __future__ import annotations
 
 import json
@@ -8,7 +8,7 @@ from typing import Any
 
 
 def validate_self_evolution_run(opt_dir: str | Path) -> dict[str, Any]:
-    """检查 optimization 目录下 Design 08 产物是否齐全、格式是否合理。"""
+    """检查 optimization 目录下 self_evolution 产物是否齐全、格式是否合理。"""
     root = Path(opt_dir)
     checks: list[dict[str, Any]] = []
 

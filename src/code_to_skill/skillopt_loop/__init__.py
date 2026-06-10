@@ -36,6 +36,26 @@ def compute_semantic_hash(content: str) -> str:
     return hashlib.sha256(normalized.encode()).hexdigest()[:12]
 
 
+def _success_ranked_for_knowledge(
+    ranked: list[RankedEdit],
+    se_cfg: Any,
+) -> list[RankedEdit]:
+    """Select success-derived edits eligible for the knowledge merge channel."""
+    if not getattr(se_cfg, "knowledge_merge_enabled", False):
+        return []
+    min_support = int(getattr(se_cfg, "knowledge_min_support_count", 2) or 1)
+    selected: list[RankedEdit] = []
+    for item in ranked:
+        edit = item.edit
+        if edit.source_type != "success":
+            continue
+        support = edit.support_count or item.support_count or 0
+        if support < min_support:
+            continue
+        selected.append(item)
+    return selected
+
+
 # ── State Manager ────────────────────────────────────────────
 
 from .resume_state import (
@@ -156,6 +176,9 @@ def run_skillopt_loop(
         "reflect_prompts": reflect_prompts or {},
         "judge_backend": judge_backend,
         "check_aliases": (skillopt_settings or {}).get("check_aliases"),
+        "expose_expected_checks_to_target": bool(
+            (skillopt_settings or {}).get("expose_expected_checks_to_target", False)
+        ),
     })
     code_tools = getattr(adapter, "code_tools", None)
     if code_tools and getattr(code_tools, "enabled", False):
@@ -405,6 +428,9 @@ def run_skillopt_loop(
         metric=effective_gate_metric,  # type: ignore[arg-type]
         strict_improvement=se_cfg.strict_improvement if se_cfg.enabled else False,
         reject_ties=se_cfg.reject_ties if se_cfg.enabled else False,
+        allow_tie_acceptance=(
+            se_cfg.enabled and not se_cfg.strict_improvement and not se_cfg.reject_ties
+        ),
     )
     scheduler = EditBudgetScheduler(
         initial_budget=edit_budget, min_budget=1,
@@ -484,10 +510,11 @@ def run_skillopt_loop(
             skill_version = f"v{step_counter:04d}"
             proposal_patches: list[dict] = []
             if trace_pool is not None:
-                trace_pool.record_batch(step_counter, all_results, skill_version)
+                step_traces = trace_pool.record_batch(step_counter, all_results, skill_version)
                 clusters, cluster_summary = trace_pool.cluster_traces(step=step_counter)
                 trace_pool.persist_clusters(clusters, cluster_summary, step=step_counter)
-                if clusters:
+                has_success_traces = any(t.get("hard", 0) == 1 for t in step_traces)
+                if clusters or (se_cfg.include_success and has_success_traces):
                     from .proposals import generate_step_proposals, write_proposals
                     from .proposal_merge import proposals_to_patches
 
@@ -495,7 +522,7 @@ def run_skillopt_loop(
                     if graph_sidecars and graph_sidecars.evidence_index:
                         ev_refs = ["evidence_index"]
                     fail_props, succ_props = generate_step_proposals(
-                        clusters, all_results, se_cfg, step=step_counter, evidence_refs=ev_refs,
+                        clusters, step_traces, se_cfg, step=step_counter, evidence_refs=ev_refs,
                     )
                     write_proposals(
                         output_dir,
@@ -681,6 +708,88 @@ def run_skillopt_loop(
                             before_score=current_score,
                             after_score=candidate_gate,
                         )
+                knowledge_ranked = _success_ranked_for_knowledge(ranked, se_cfg)
+                if knowledge_ranked:
+                    knowledge_content, knowledge_reports = apply_edits(
+                        current_skill, [r.edit for r in knowledge_ranked],
+                    )
+                    knowledge_hash = compute_semantic_hash(knowledge_content)
+                    knowledge_gate = current_score
+                    knowledge_hard = current_hard
+                    knowledge_soft = current_soft
+                    if knowledge_content.strip() != current_skill.strip():
+                        cached_knowledge = cache.get(knowledge_hash)
+                        if cached_knowledge is not None:
+                            knowledge_hard = cached_knowledge.get("hard", cached_knowledge["gate_score"])
+                            knowledge_soft = cached_knowledge.get("soft", cached_knowledge["gate_score"])
+                            knowledge_gate = cached_knowledge["gate_score"]
+                        elif selection_items:
+                            knowledge_eval = adapter.evaluate(
+                                knowledge_content,
+                                selection_items,
+                                target_backend=backend_mgr.target,
+                            )
+                            knowledge_hard = knowledge_eval.get("accuracy", 0.0)
+                            knowledge_soft = knowledge_eval["soft"]
+                            knowledge_gate = select_gate_score(
+                                knowledge_hard,
+                                knowledge_soft,
+                                metric=gate.metric,
+                                mixed_weight=gate.mixed_weight,
+                            )
+                            cache.put(
+                                knowledge_hash,
+                                knowledge_hard,
+                                knowledge_soft,
+                                knowledge_gate,
+                                epoch + 1,
+                                step_counter,
+                            )
+                        tolerance = float(getattr(se_cfg, "knowledge_gate_tolerance", 0.05) or 0.0)
+                        knowledge_accept = (
+                            not selection_items
+                            or knowledge_gate >= best_score - tolerance
+                        )
+                        _save_knowledge_merge_artifact(
+                            output_dir,
+                            step_counter,
+                            action="accept" if knowledge_accept else "reject",
+                            tolerance=tolerance,
+                            before_score=current_score,
+                            best_score=best_score,
+                            knowledge_score=knowledge_gate,
+                            candidate_hash=knowledge_hash,
+                            ranked=knowledge_ranked,
+                            edit_reports=knowledge_reports,
+                        )
+                        if knowledge_accept:
+                            action = "accept"
+                            decision.reason = (
+                                f"knowledge_accept ({knowledge_gate:.3f} >= "
+                                f"{best_score:.3f}-{tolerance:.3f}) [{gate.metric}]"
+                            )
+                            candidate_content = knowledge_content
+                            candidate_hash = knowledge_hash
+                            candidate_hard = knowledge_hard
+                            candidate_soft = knowledge_soft
+                            candidate_gate = knowledge_gate
+                            edit_reports = knowledge_reports
+                            best_score = knowledge_gate
+                            best_skill = knowledge_content
+                            best_step = step_counter
+                            for r in knowledge_ranked:
+                                buffer.record_accepted_edit(step_counter, r.edit)
+                            logger.info(
+                                "[M4] knowledge merge: ✓ accepted success edits=%d score=%.3f",
+                                len(knowledge_ranked),
+                                knowledge_gate,
+                            )
+                        else:
+                            logger.info(
+                                "[M4] knowledge merge: ✗ rejected success edits=%d score=%.3f",
+                                len(knowledge_ranked),
+                                knowledge_gate,
+                            )
 
             current_hard = candidate_hard if action != "reject" else current_hard
             current_soft = candidate_soft if action != "reject" else current_soft
@@ -792,7 +901,12 @@ def run_skillopt_loop(
         # Slow Update（epoch >= 2 时启用）
         if enable_slow_update and epoch >= 1:
             logger.info("[M4] === Slow Update epoch %d ===", epoch + 1)
-            from .slow_update import run_slow_update, apply_slow_update
+            from .slow_update import (
+                apply_slow_update,
+                has_actionable_slow_update_signal,
+                is_non_actionable_slow_update,
+                run_slow_update,
+            )
             # 从 train 抽 20 条做 comparison
             import random
             samples = random.sample(train_items, min(20, len(train_items)))
@@ -803,65 +917,93 @@ def run_skillopt_loop(
                 optimizer_backend=backend_mgr.optimizer,
             )
             if slow_result["slow_update_content"]:
-                candidate_slow = apply_slow_update(
-                    current_skill, slow_result["slow_update_content"],
-                )
-                apply_slow = True
-                slow_action = "force_apply"
-                if slow_update_gate and selection_items:
-                    slow_hash = compute_semantic_hash(candidate_slow)
-                    cached_slow = cache.get(slow_hash)
-                    if cached_slow is not None:
-                        slow_hard = cached_slow.get("hard", cached_slow["gate_score"])
-                        slow_soft = cached_slow.get("soft", cached_slow["gate_score"])
-                        slow_gate = cached_slow["gate_score"]
-                    else:
-                        slow_eval = adapter.evaluate(
-                            candidate_slow, selection_items, target_backend=backend_mgr.target,
-                        )
-                        slow_hard = slow_eval.get("accuracy", 0.0)
-                        slow_soft = slow_eval["soft"]
-                        slow_gate = select_gate_score(
-                            slow_hard, slow_soft, metric=gate.metric, mixed_weight=gate.mixed_weight,
-                        )
-                        cache.put(slow_hash, slow_hard, slow_soft, slow_gate, epoch + 1, step_counter)
-                    slow_decision = gate.evaluate(
-                        slow_hard, slow_soft, best_score, current_score,
-                    )
-                    slow_action = slow_decision.action
-                    apply_slow = slow_action != "reject"
-                    epoch_slow_gate = slow_action
-                    epoch_slow_reason = slow_decision.reason
+                slow_pairs = slow_result.get("comparison_pairs") or {}
+                if not has_actionable_slow_update_signal(slow_pairs):
+                    epoch_slow_gate = "reject"
+                    epoch_slow_reason = "no_actionable_comparison_signal"
                     logger.info(
                         "[M4] slow update gate: %s (%s)",
-                        _gate_icon(slow_action), slow_decision.reason,
+                        _gate_icon("reject"), epoch_slow_reason,
                     )
-                    if apply_slow:
-                        if slow_action == "accept_new_best":
-                            best_score = slow_decision.candidate_score
-                            best_skill = candidate_slow
-                            best_step = step_counter
-                        current_score = slow_decision.candidate_score
-                        current_hard = slow_hard
-                        current_soft = slow_soft
-                if apply_slow:
-                    current_skill = candidate_slow
-                    if not slow_update_gate or not selection_items:
-                        best_skill = apply_slow_update(
-                            best_skill, slow_result["slow_update_content"],
-                        )
-                    elif slow_action == "accept_new_best":
-                        pass  # best_skill already set above
+                    slow_result["gate_action"] = "reject"
+                    slow_result["gate_reason"] = epoch_slow_reason
                     _save_slow_update_artifacts(
-                        output_dir, epoch + 1, {**slow_result, "gate_action": slow_action},
+                        output_dir, epoch + 1, slow_result,
                         prev_epoch_skill, current_skill,
                     )
+                elif is_non_actionable_slow_update(slow_result["slow_update_content"]):
+                    epoch_slow_gate = "reject"
+                    epoch_slow_reason = "non_actionable_content"
                     logger.info(
-                        "[M4] Slow update applied: %d chars (gate=%s)",
-                        len(slow_result["slow_update_content"]), slow_action,
+                        "[M4] slow update gate: %s (%s)",
+                        _gate_icon("reject"), epoch_slow_reason,
+                    )
+                    slow_result["gate_action"] = "reject"
+                    slow_result["gate_reason"] = epoch_slow_reason
+                    _save_slow_update_artifacts(
+                        output_dir, epoch + 1, slow_result,
+                        prev_epoch_skill, current_skill,
                     )
                 else:
-                    logger.info("[M4] Slow update rejected by selection gate")
+                    candidate_slow = apply_slow_update(
+                        current_skill, slow_result["slow_update_content"],
+                    )
+                    apply_slow = True
+                    slow_action = "force_apply"
+                    if slow_update_gate and selection_items:
+                        slow_hash = compute_semantic_hash(candidate_slow)
+                        cached_slow = cache.get(slow_hash)
+                        if cached_slow is not None:
+                            slow_hard = cached_slow.get("hard", cached_slow["gate_score"])
+                            slow_soft = cached_slow.get("soft", cached_slow["gate_score"])
+                            slow_gate = cached_slow["gate_score"]
+                        else:
+                            slow_eval = adapter.evaluate(
+                                candidate_slow, selection_items, target_backend=backend_mgr.target,
+                            )
+                            slow_hard = slow_eval.get("accuracy", 0.0)
+                            slow_soft = slow_eval["soft"]
+                            slow_gate = select_gate_score(
+                                slow_hard, slow_soft, metric=gate.metric, mixed_weight=gate.mixed_weight,
+                            )
+                            cache.put(slow_hash, slow_hard, slow_soft, slow_gate, epoch + 1, step_counter)
+                        slow_decision = gate.evaluate(
+                            slow_hard, slow_soft, best_score, current_score,
+                        )
+                        slow_action = slow_decision.action
+                        apply_slow = slow_action != "reject"
+                        epoch_slow_gate = slow_action
+                        epoch_slow_reason = slow_decision.reason
+                        logger.info(
+                            "[M4] slow update gate: %s (%s)",
+                            _gate_icon(slow_action), slow_decision.reason,
+                        )
+                        if apply_slow:
+                            if slow_action == "accept_new_best":
+                                best_score = slow_decision.candidate_score
+                                best_skill = candidate_slow
+                                best_step = step_counter
+                            current_score = slow_decision.candidate_score
+                            current_hard = slow_hard
+                            current_soft = slow_soft
+                    if apply_slow:
+                        current_skill = candidate_slow
+                        if not slow_update_gate or not selection_items:
+                            best_skill = apply_slow_update(
+                                best_skill, slow_result["slow_update_content"],
+                            )
+                        elif slow_action == "accept_new_best":
+                            pass  # best_skill already set above
+                        _save_slow_update_artifacts(
+                            output_dir, epoch + 1, {**slow_result, "gate_action": slow_action},
+                            prev_epoch_skill, current_skill,
+                        )
+                        logger.info(
+                            "[M4] Slow update applied: %d chars (gate=%s)",
+                            len(slow_result["slow_update_content"]), slow_action,
+                        )
+                    else:
+                        logger.info("[M4] Slow update rejected by selection gate")
 
             if slow_result.get("comparison_pairs"):
                 epoch_comparison = slow_result["comparison_pairs"]
@@ -1122,12 +1264,44 @@ def _save_step_artifacts(
                 "action": action,
             }, f, indent=2)
 
-        final_skill = candidate_skill if action != "reject" else prev_skill
-        skills_dir = os.path.join(output_dir, "skills")
-        os.makedirs(skills_dir, exist_ok=True)
-        with open(os.path.join(skills_dir, f"skill_v{step:04d}.md"), "w", encoding="utf-8") as f:
-            f.write(final_skill)
+    final_skill = candidate_skill if action != "reject" else prev_skill
+    skills_dir = os.path.join(output_dir, "skills")
+    os.makedirs(skills_dir, exist_ok=True)
+    with open(os.path.join(skills_dir, f"skill_v{step:04d}.md"), "w", encoding="utf-8") as f:
+        f.write(final_skill)
     logger.debug("Saved step %d artifacts", step)
+
+
+def _save_knowledge_merge_artifact(
+    output_dir: str,
+    step: int,
+    *,
+    action: str,
+    tolerance: float,
+    before_score: float,
+    best_score: float,
+    knowledge_score: float,
+    candidate_hash: str,
+    ranked: list[RankedEdit],
+    edit_reports: list[dict],
+) -> None:
+    from .edit_traceability import ranked_edit_to_proposal
+
+    step_dir = os.path.join(output_dir, "steps", f"step_{step:04d}")
+    os.makedirs(step_dir, exist_ok=True)
+    with open(os.path.join(step_dir, "knowledge_merge.json"), "w", encoding="utf-8") as f:
+        json.dump({
+            "step": step,
+            "action": action,
+            "tolerance": tolerance,
+            "before_score": before_score,
+            "best_score_before": best_score,
+            "knowledge_score": knowledge_score,
+            "candidate_hash": candidate_hash,
+            "edit_count": len(ranked),
+            "edits": [ranked_edit_to_proposal(r) for r in ranked],
+            "apply_report": edit_reports,
+        }, f, indent=2, ensure_ascii=False)
 
 def _save_slow_update_artifacts(
     output_dir: str, epoch: int, slow_result: dict,

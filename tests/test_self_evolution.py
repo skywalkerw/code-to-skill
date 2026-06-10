@@ -1,4 +1,4 @@
-"""Design 08 — trace pool、proposals、artifact_quality 测试。"""
+"""M4 self_evolution — trace pool、proposals、artifact_quality 测试。"""
 from __future__ import annotations
 
 import json
@@ -180,6 +180,72 @@ class TestProposals:
         assert fail_p
         assert patches
 
+    def test_success_proposals_without_failure_clusters(self):
+        cfg = SelfEvolutionConfig(enabled=True, min_support_count=2)
+        traces = [
+            {
+                "trace_id": "step_0001:item_jv_a",
+                "item_id": "jv_a",
+                "step": 1,
+                "hard": 1,
+                "task_type": "journal_entry",
+                "question": "loan disbursement 100",
+                "passed_checks": ["会计凭证", "借", "贷", "贷款", "现金", "100"],
+                "context_refs": ["CashBasedAccountingProcessorForLoan.java#createJournalEntriesForDisbursements"],
+            },
+            {
+                "trace_id": "step_0001:item_jv_b",
+                "item_id": "jv_b",
+                "step": 1,
+                "hard": 1,
+                "task_type": "journal_entry",
+                "question": "loan repayment 50",
+                "passed_checks": ["会计凭证", "借", "贷", "还款", "现金", "贷款", "50"],
+                "context_refs": ["CashBasedAccountingProcessorForLoan.java#createJournalEntriesForRepayments"],
+            },
+        ]
+        fail_p, succ_p = generate_step_proposals([], traces, cfg, step=1)
+        patches = proposals_to_patches(fail_p + succ_p, cfg, current_skill="# Skill\n## 输出要求\n")
+        assert not fail_p
+        assert succ_p
+        assert patches
+        assert "jv_a" in patches[0]["edits"][0]["content"]
+        assert "CashBasedAccountingProcessorForLoan" in patches[0]["edits"][0]["content"]
+
+    def test_success_proposals_use_configured_domain_filters(self):
+        cfg = SelfEvolutionConfig(
+            enabled=True,
+            min_support_count=2,
+            success_ignore_checks=["会计凭证", "借", "贷", "借贷平衡"],
+            success_rule_tail="金额只取用户输入，并输出借贷平衡检查",
+        )
+        traces = [
+            {
+                "trace_id": "step_0001:item_jv_a",
+                "item_id": "jv_a",
+                "step": 1,
+                "hard": 1,
+                "task_type": "journal_entry",
+                "question": "loan disbursement 100",
+                "passed_checks": ["会计凭证", "借", "贷", "贷款", "100"],
+            },
+            {
+                "trace_id": "step_0001:item_jv_b",
+                "item_id": "jv_b",
+                "step": 1,
+                "hard": 1,
+                "task_type": "journal_entry",
+                "question": "loan repayment 50",
+                "passed_checks": ["会计凭证", "借", "贷", "还款", "50"],
+            },
+        ]
+        _, succ_p = generate_step_proposals([], traces, cfg, step=1)
+        rule = succ_p[0]["candidate_rule"]
+        assert "贷款" in rule
+        assert "还款" in rule
+        assert "金额只取用户输入" in rule
+        assert "会计凭证" not in rule
+
 
 class TestArtifactQuality:
     def test_passes_clean_seeds(self):
@@ -213,6 +279,17 @@ class TestStrictGate:
         decision = gate.evaluate(0.5, 0.70, best_score=0.70, current_score=0.70)
         assert decision.action == "reject"
         assert "tie" in decision.reason or "no_improvement" in decision.reason
+
+    def test_accept_tie_when_non_strict_and_ties_allowed(self):
+        gate = GateManager(
+            metric="soft",
+            strict_improvement=False,
+            reject_ties=False,
+            allow_tie_acceptance=True,
+        )
+        decision = gate.evaluate(0.5, 0.70, best_score=0.70, current_score=0.70)
+        assert decision.action == "accept"
+        assert "tie_accepted" in decision.reason
 
 
 class TestTraceMergeMode:
@@ -276,6 +353,46 @@ class _OfflineSelfEvolveAdapter:
         return {"soft": 0.35, "accuracy": 0.0, "f1": 0.1}
 
 
+class _OfflineAllSuccessAdapter:
+    """离线 adapter：固定成功 rollout，用于验证成功 trace 也能沉淀规则。"""
+
+    code_tools = None
+
+    def setup(self, cfg=None):
+        return None
+
+    def rollout(self, skill, items, target_backend=None, out_dir=""):
+        out = []
+        for item in items:
+            checks = list(item.get("expected_checks") or [])
+            out.append({
+                "id": item.get("id", ""),
+                "question": item.get("question", ""),
+                "context_refs": list(item.get("context_refs") or []),
+                "expected_checks": checks,
+                "passed_checks": checks,
+                "missed_checks": [],
+                "hard": 1,
+                "soft": 1.0,
+                "predicted_answer": "## 会计凭证\n借\n贷\n借贷平衡",
+                "fail_reason": "",
+                "task_type": item.get("task_type", "journal_entry"),
+            })
+        return out
+
+    def evaluate(self, skill, items, target_backend=None):
+        return {"soft": 1.0, "accuracy": 1.0, "f1": 1.0}
+
+
+class _OfflineKnowledgeToleranceAdapter(_OfflineAllSuccessAdapter):
+    """成功知识候选略降 selection，但应被 knowledge gate 容忍沉淀。"""
+
+    def evaluate(self, skill, items, target_backend=None):
+        if "Scenario rules" in skill:
+            return {"soft": 0.95, "accuracy": 0.95, "f1": 0.95}
+        return {"soft": 1.0, "accuracy": 1.0, "f1": 1.0}
+
+
 class TestSelfEvolutionIntegration:
     @pytest.mark.parametrize("mode", ["trace_merge", "self_evolve"])
     def test_offline_run_produces_artifacts(self, tmp_path, mode):
@@ -317,6 +434,88 @@ class TestSelfEvolutionIntegration:
         assert os.path.isdir(os.path.join(out, "proposals"))
         report = validate_self_evolution_run(out)
         assert report["passed"] is True
+
+    def test_all_success_run_updates_skill_with_trace_rules(self, tmp_path):
+        items = [
+            {
+                "id": "jv_success_a",
+                "question": "loan disbursement 100",
+                "task_type": "journal_entry",
+                "expected_checks": ["会计凭证", "借", "贷", "贷款", "现金", "100"],
+                "context_refs": ["CashBasedAccountingProcessorForLoan.java#createJournalEntriesForDisbursements"],
+            },
+            {
+                "id": "jv_success_b",
+                "question": "loan repayment 50",
+                "task_type": "journal_entry",
+                "expected_checks": ["会计凭证", "借", "贷", "还款", "现金", "贷款", "50"],
+                "context_refs": ["CashBasedAccountingProcessorForLoan.java#createJournalEntriesForRepayments"],
+            },
+        ]
+        out = str(tmp_path / "opt_success")
+        result = run_skillopt_loop(
+            initial_skill="# Skill\n## 输出要求\n- base rule\n",
+            benchmark_items=items,
+            selection_items=items,
+            output_dir=out,
+            num_epochs=1,
+            batch_size=2,
+            edit_budget=2,
+            use_llm_rollout=False,
+            enable_code_tools=False,
+            adapter=_OfflineAllSuccessAdapter(),
+            self_evolution_settings={
+                "enabled": True,
+                "trace_pool": {"min_support_count": 2},
+                "gate": {"strict_improvement": False, "reject_ties": False},
+            },
+        )
+        assert "jv_success_a" in result["best_skill"]
+        assert "CashBasedAccountingProcessorForLoan" in result["best_skill"]
+        assert result["history"]
+        assert result["history"][-1]["gate_action"] == "accept"
+
+    def test_success_knowledge_merge_accepts_small_selection_drop(self, tmp_path):
+        items = [
+            {
+                "id": "jv_success_a",
+                "question": "loan disbursement 100",
+                "task_type": "journal_entry",
+                "expected_checks": ["会计凭证", "借", "贷", "贷款", "现金", "100"],
+                "context_refs": ["CashBasedAccountingProcessorForLoan.java#createJournalEntriesForDisbursements"],
+            },
+            {
+                "id": "jv_success_b",
+                "question": "loan repayment 50",
+                "task_type": "journal_entry",
+                "expected_checks": ["会计凭证", "借", "贷", "还款", "现金", "贷款", "50"],
+                "context_refs": ["CashBasedAccountingProcessorForLoan.java#createJournalEntriesForRepayments"],
+            },
+        ]
+        out = str(tmp_path / "opt_knowledge")
+        result = run_skillopt_loop(
+            initial_skill="# Skill\n## 输出要求\n- base rule\n",
+            benchmark_items=items,
+            selection_items=items,
+            output_dir=out,
+            num_epochs=1,
+            batch_size=2,
+            edit_budget=2,
+            use_llm_rollout=False,
+            enable_code_tools=False,
+            adapter=_OfflineKnowledgeToleranceAdapter(),
+            self_evolution_settings={
+                "enabled": True,
+                "trace_pool": {"min_support_count": 2},
+                "knowledge": {"enabled": True, "gate_tolerance": 0.1},
+            },
+        )
+        assert "jv_success_a" in result["best_skill"]
+        knowledge_report = os.path.join(out, "steps", "step_0001", "knowledge_merge.json")
+        assert os.path.isfile(knowledge_report)
+        with open(knowledge_report, encoding="utf-8") as f:
+            payload = json.load(f)
+        assert payload["action"] == "accept"
 
 
 class TestHygieneHelpers:

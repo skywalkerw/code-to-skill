@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 from .keywords import extract_alignment_tokens
-from .types import SkillAtom, SourceRef
+from .source_refs import cap_atom_source_refs
+from .types import SkillAtom
 
 
 def align_atoms(atoms: list[SkillAtom]) -> list[SkillAtom]:
@@ -83,4 +84,4 @@ def _merge_group(group: list[SkillAtom]) -> SkillAtom:
         base.evidence_summary = f"Code+Doc aligned ({n_files} sources)"
 
     base.evidence_summary = f"Merged from {len(group)} atoms across {n_files} files"
-    return base
+    return cap_atom_source_refs(base)

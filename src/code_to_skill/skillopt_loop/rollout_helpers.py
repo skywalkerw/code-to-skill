@@ -26,10 +26,17 @@ def _format_checks(checks: list[str], *, limit: int = 12) -> str:
     return ", ".join(tokens[:limit])
 
 
-def build_rollout_synthesis_hint(expected_checks: list[str]) -> str:
-    """按 expected_checks 追加 synthesis 阶段的验证 token 提醒。"""
+def build_rollout_synthesis_hint(
+    expected_checks: list[str],
+    *,
+    expose_expected_checks: bool = False,
+) -> str:
+    """Build synthesis-stage hint without leaking scorer checks by default."""
     hint = ROLLOUT_SYNTHESIS_HINT
-    checks_hint = _format_checks(expected_checks or [])
+    checks_hint = (
+        _format_checks(expected_checks or [])
+        if expose_expected_checks and expected_checks else ""
+    )
     if checks_hint:
         hint += f" Your answer must include these verification tokens: {checks_hint}."
     return hint
@@ -59,6 +66,7 @@ def build_rollout_user_message(
     expected_checks: list[str],
     *,
     item: dict | None = None,
+    expose_expected_checks: bool = False,
 ) -> str:
     """在用户问题后附加可检查的输出要求。
 
@@ -66,9 +74,8 @@ def build_rollout_user_message(
     - ``response_mode``: ``clarify`` | ``reject`` | ``answer``（默认 ``answer``）
     - ``rollout_hint``: 项目/任务级补充说明（由 benchmark 或 skill 侧提供）
     """
-    checks = expected_checks or []
     item = item or {}
-    checks_hint = _format_checks(checks)
+    checks_hint = _format_checks(expected_checks or []) if expose_expected_checks else ""
     rollout_hint = str(item.get("rollout_hint") or "").strip()
     mode = str(item.get("response_mode") or "answer").strip().lower()
 
@@ -87,7 +94,7 @@ def build_rollout_user_message(
     if mode == "reject":
         msg = (
             f"{question.strip()}\n\n"
-            "Follow the skill document. This input violates constraints — "
+            "Follow the skill document. If the input violates constraints, "
             "refuse the primary deliverable and explain why."
         )
         if checks_hint:
@@ -157,7 +164,11 @@ def looks_like_tool_call_leak(text: str) -> bool:
     return False
 
 
-def build_tool_leak_retry_hint(expected_checks: list[str] | None = None) -> str:
+def build_tool_leak_retry_hint(
+    expected_checks: list[str] | None = None,
+    *,
+    expose_expected_checks: bool = False,
+) -> str:
     """tool 泄漏后强制纯文本最终答案的 synthesis 提示。"""
     hint = (
         "Your previous response contained tool-call markup instead of a final answer. "
@@ -165,7 +176,10 @@ def build_tool_leak_retry_hint(expected_checks: list[str] | None = None) -> str:
         "Using only information already gathered, output the complete final deliverable "
         "in markdown / natural language."
     )
-    checks_hint = _format_checks(expected_checks or [])
+    checks_hint = (
+        _format_checks(expected_checks or [])
+        if expose_expected_checks and expected_checks else ""
+    )
     if checks_hint:
         hint += f" Include verification tokens: {checks_hint}."
     return hint
@@ -202,15 +216,24 @@ def build_rollout_system_prompt(skill: str, *, code_tools_enabled: bool) -> str:
     return "\n".join(parts)
 
 
-def fallback_skill_answer(question: str, checks: list[str], skill: str) -> str:
-    """无 LLM 输出时，从 skill 与 checks 拼最小可评分骨架（不注入领域模板）。"""
+def fallback_skill_answer(
+    question: str,
+    checks: list[str],
+    skill: str,
+    *,
+    expose_expected_checks: bool = False,
+) -> str:
+    """无 LLM 输出时，从 question + skill 拼最小骨架，默认不泄漏 scorer checks。"""
     checks = checks or []
-    relevant_lines = [
-        line for line in skill.split("\n")
-        if any(c.lower() in line.lower() for c in checks)
-    ]
+    if expose_expected_checks:
+        relevant_lines = [
+            line for line in skill.split("\n")
+            if any(c.lower() in line.lower() for c in checks)
+        ]
+    else:
+        relevant_lines = []
     relevant_text = "\n".join(relevant_lines[:10]) if relevant_lines else skill[:300]
-    checks_line = _format_checks(checks, limit=8)
+    checks_line = _format_checks(checks, limit=8) if expose_expected_checks else ""
     parts = [f"Task: {question.strip()}"]
     if checks_line:
         parts.append(f"Checks: {checks_line}")
@@ -224,6 +247,8 @@ def fallback_predicted_from_tools(
     question: str,
     expected_checks: list[str],
     skill: str,
+    *,
+    expose_expected_checks: bool = False,
 ) -> str:
     """工具轮次用尽且 LLM 无文本时，从 tool 结果与 skill 拼最小可评分回答。"""
     evidence = _summarize_tool_snippets(tool_snippets)
@@ -231,7 +256,10 @@ def fallback_predicted_from_tools(
         ln.strip() for ln in skill.splitlines()
         if ln.strip() and not ln.strip().startswith("#")
     ][:6]
-    checks_line = _format_checks(expected_checks or [], limit=8)
+    checks_line = (
+        _format_checks(expected_checks or [], limit=8)
+        if expose_expected_checks else ""
+    )
 
     lines = [f"Task: {question.strip()}", ""]
     if checks_line:

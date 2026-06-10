@@ -184,6 +184,7 @@ class DEFAULTAdapter(EnvAdapter):
         self._reflect_prompt_success = ""
         self._judge_backend = None
         self._global_check_aliases: dict[str, list[str]] = {}
+        self.expose_expected_checks_to_target = False
         self.enable_code_tools = enable_code_tools
         self.max_tool_rounds = max_tool_rounds
         self.rollout_max_tool_rounds = rollout_max_tool_rounds
@@ -219,6 +220,9 @@ class DEFAULTAdapter(EnvAdapter):
             self._reflect_prompt_success = str(prompts.get("success") or "").strip()
             self._judge_backend = cfg.get("judge_backend")
             self._global_check_aliases = dict(cfg.get("check_aliases") or {})
+            self.expose_expected_checks_to_target = bool(
+                cfg.get("expose_expected_checks_to_target", self.expose_expected_checks_to_target)
+            )
         if self.use_llm:
             try:
                 from code_to_skill.model_provider.llm_backend import (
@@ -289,7 +293,16 @@ class DEFAULTAdapter(EnvAdapter):
             try:
                 from ..code_evidence import build_rollout_item_context
 
-                task_msg = build_rollout_user_message(question, checks, item=item)
+                expose_checks = bool(
+                    self.expose_expected_checks_to_target
+                    or item.get("expose_expected_checks_to_target")
+                )
+                task_msg = build_rollout_user_message(
+                    question,
+                    checks,
+                    item=item,
+                    expose_expected_checks=expose_checks,
+                )
                 sidecars = getattr(self, "graph_sidecars", None)
                 code_ctx = ""
                 if context_mode == "inline":
@@ -317,8 +330,14 @@ class DEFAULTAdapter(EnvAdapter):
                     max_output_tokens=get_token_budgets().rollout,
                     temperature=0.3,
                     metadata={
-                        "synthesis_hint": build_rollout_synthesis_hint(checks),
-                        "leak_retry_hint": build_tool_leak_retry_hint(checks),
+                        "synthesis_hint": build_rollout_synthesis_hint(
+                            checks,
+                            expose_expected_checks=expose_checks,
+                        ),
+                        "leak_retry_hint": build_tool_leak_retry_hint(
+                            checks,
+                            expose_expected_checks=expose_checks,
+                        ),
                     },
                 )
                 tool_rounds = (
@@ -344,10 +363,19 @@ class DEFAULTAdapter(EnvAdapter):
                     tool_snippets = getattr(resp, "tool_snippets", "") or ""
                     if tool_snippets:
                         predicted = fallback_predicted_from_tools(
-                            tool_snippets, question, checks, skill,
+                            tool_snippets,
+                            question,
+                            checks,
+                            skill,
+                            expose_expected_checks=expose_checks,
                         )
                     else:
-                        predicted = fallback_skill_answer(question, checks, skill)
+                        predicted = fallback_skill_answer(
+                            question,
+                            checks,
+                            skill,
+                            expose_expected_checks=expose_checks,
+                        )
                 fail_reason = ""
             except Exception as e:
                 predicted = f"[LLM error: {e}]"
@@ -355,7 +383,16 @@ class DEFAULTAdapter(EnvAdapter):
         else:
             from ..rollout_helpers import fallback_skill_answer
 
-            predicted = fallback_skill_answer(question, checks, skill)
+            expose_checks = bool(
+                self.expose_expected_checks_to_target
+                or item.get("expose_expected_checks_to_target")
+            )
+            predicted = fallback_skill_answer(
+                question,
+                checks,
+                skill,
+                expose_expected_checks=expose_checks,
+            )
             fail_reason = ""
 
         scores = score_benchmark_item(

@@ -51,6 +51,21 @@ def _response_needs_answer_retry(response: InteractionResponse) -> bool:
     return _looks_like_tool_call_leak(getattr(response, "content", "") or "")
 
 
+def _blank_leaked_response(response: InteractionResponse) -> InteractionResponse:
+    """Return an empty-content response so callers can use deterministic fallback."""
+    try:
+        return response.model_copy(update={
+            "content": "",
+            "status": "parse_error",
+            "finish_reason": "tool_call_leak",
+        })
+    except Exception:
+        response.content = ""
+        response.status = "parse_error"
+        response.finish_reason = "tool_call_leak"
+        return response
+
+
 def _invoke_synthesis(
     backend: Any,
     request: InteractionRequest,
@@ -112,6 +127,11 @@ def invoke_with_tool_loop(
                 )
                 for k in total_usage:
                     total_usage[k] += response.usage.get(k, 0)
+                if _response_needs_answer_retry(response):
+                    logger.warning(
+                        "[tool_loop] retry still leaked tool calls; returning empty content for fallback"
+                    )
+                    response = _blank_leaked_response(response)
             response.usage = total_usage
             snippets = _collect_tool_snippets(messages)
             if snippets and hasattr(response, "tool_snippets"):
@@ -168,6 +188,11 @@ def invoke_with_tool_loop(
             total_usage[k] += retry.usage.get(k, 0)
         if (retry.content or "").strip() and not _response_needs_answer_retry(retry):
             final = retry
+        else:
+            logger.warning(
+                "[tool_loop] plain-text retry still leaked tool calls; returning empty content for fallback"
+            )
+            final = _blank_leaked_response(retry)
 
     final.usage = total_usage
     snippets = _collect_tool_snippets(messages)

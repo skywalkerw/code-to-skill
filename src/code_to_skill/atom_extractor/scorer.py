@@ -16,6 +16,36 @@ def _settings_float(settings: dict | None, key: str, default: float) -> float:
         return default
 
 
+def status_for_confidence(confidence: float, settings: dict | None = None) -> str:
+    """Map final confidence to atom status using configured thresholds."""
+    accepted_min = _settings_float(settings, "accepted_min", 0.80)
+    candidate_min = _settings_float(settings, "candidate_min", 0.60)
+    needs_review_min = _settings_float(settings, "needs_review_min", 0.40)
+
+    if confidence >= accepted_min:
+        return "accepted"
+    if confidence >= candidate_min:
+        return "candidate"
+    if confidence >= needs_review_min:
+        return "needs_review"
+    return "rejected"
+
+
+def refresh_atom_statuses(
+    atoms: list[SkillAtom],
+    settings: dict | None = None,
+) -> list[SkillAtom]:
+    """Recompute statuses after merge/alignment confidence changes."""
+    refreshed: list[SkillAtom] = []
+    for atom in atoms:
+        status = status_for_confidence(atom.confidence, settings)
+        if status == atom.status:
+            refreshed.append(atom)
+        else:
+            refreshed.append(atom.model_copy(update={"status": status}))
+    return refreshed
+
+
 def score_atoms(
     raw_atoms: list[RawAtom],
     settings: dict | None = None,
@@ -33,10 +63,6 @@ def score_atoms(
     """
     tier_1_max = _settings_float(settings, "confidence_tier_1_max", 0.95)
     llm_adjustment = _settings_float(settings, "llm_adjustment", 0.05)
-    accepted_min = _settings_float(settings, "accepted_min", 0.80)
-    candidate_min = _settings_float(settings, "candidate_min", 0.60)
-    needs_review_min = _settings_float(settings, "needs_review_min", 0.40)
-
     scored: list[SkillAtom] = []
     for raw in raw_atoms:
         atom = raw.atom
@@ -79,14 +105,7 @@ def score_atoms(
 
         atom.confidence = min(tier_1_max, max(0.0, tier_base + adjustment))
 
-        if atom.confidence >= accepted_min:
-            atom.status = "accepted"
-        elif atom.confidence >= candidate_min:
-            atom.status = "candidate"
-        elif atom.confidence >= needs_review_min:
-            atom.status = "needs_review"
-        else:
-            atom.status = "rejected"
+        atom.status = status_for_confidence(atom.confidence, settings)
 
         scored.append(atom)
 

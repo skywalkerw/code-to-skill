@@ -13,7 +13,7 @@ from code_to_skill.model_provider.tracker import (
     format_tool_calls_log,
     format_tools_log,
 )
-from code_to_skill.cli.types import RunManifest, RunState, RunStatus, StepInternal, ModuleEvent
+from code_to_skill.cli.types import PipelineRunManifest, RunState, RunStatus, StepInternal, ModuleEvent
 from code_to_skill.cli.config_loader import ProjectConfig, RepoSource, DocSource
 
 
@@ -114,8 +114,8 @@ class TestM5Router:
 
 
 class TestM6Types:
-    def test_run_manifest(self):
-        m = RunManifest(run_id="test-001")
+    def test_pipeline_run_manifest(self):
+        m = PipelineRunManifest(run_id="test-001", output_root="runs/test-001")
         assert m.schema_version == "1.0"
         assert m.run_id == "test-001"
 

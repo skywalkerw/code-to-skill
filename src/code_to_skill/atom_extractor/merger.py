@@ -5,6 +5,7 @@ import os
 from collections import defaultdict
 
 from .keywords import extract_seed_check_tokens
+from .source_refs import cap_atom_source_refs
 from .types import SkillAtom
 
 
@@ -35,7 +36,7 @@ def merge_atoms(atoms: list[SkillAtom]) -> list[SkillAtom]:
             seen_claims[claim_key] = len(merged)
             merged.append(atom)
 
-    return merged
+    return [cap_atom_source_refs(atom) for atom in merged]
 
 
 def cluster_by_domain(atoms: list[SkillAtom]) -> dict[str, list[SkillAtom]]:
@@ -87,12 +88,13 @@ def generate_benchmark_seeds(atoms: list[SkillAtom]) -> list[dict]:
                 existing.add(token.lower())
 
         item_id = f"seed-{atom.atom_id}"
+        context_refs = _context_refs_from_atom(atom)
         seeds.append({
             "id": item_id,
             "question": atom.claim[:200],
             "expected_checks": checks[:5],
-            "context_refs": _context_refs_from_atom(atom),
+            "context_refs": context_refs,
             "source_atom_ids": [atom.atom_id],
-            "risk": atom.risk,
+            "risk": atom.risk if context_refs else "needs_review",
         })
     return seeds

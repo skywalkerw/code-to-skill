@@ -1,4 +1,4 @@
-"""Design 08 — rejected edit buffer 持久化。"""
+"""M4 self_evolution — rejected edit buffer 持久化。"""
 from __future__ import annotations
 
 import hashlib

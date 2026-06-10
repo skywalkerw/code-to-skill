@@ -1,4 +1,4 @@
-"""Design 08 — rule_id 注入与归因。"""
+"""M4 self_evolution — rule_id 注入与归因。"""
 from __future__ import annotations
 
 import json
