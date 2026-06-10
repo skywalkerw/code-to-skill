@@ -134,6 +134,43 @@ def sanitize_skill_for_rollout(skill: str) -> str:
     return cleaned if cleaned.strip() else skill
 
 
+_TOOL_LEAK_PATTERNS = (
+    re.compile(r"<\s*[｜|].*tool[_\s-]*calls", re.IGNORECASE),
+    re.compile(r"DSML.*tool[_\s-]*calls", re.IGNORECASE),
+    re.compile(r"tool[_\s-]*calls\s*>", re.IGNORECASE),
+    re.compile(r'"name"\s*:\s*"(search_code|read_code_file|explore_symbol)"'),
+)
+
+
+def looks_like_tool_call_leak(text: str) -> bool:
+    """检测最终答案是否泄漏 tool-call / DSML 标记而非真实输出。"""
+    t = (text or "").strip()
+    if not t:
+        return False
+    if any(p.search(t) for p in _TOOL_LEAK_PATTERNS):
+        return True
+    lowered = t.lower()
+    if "dsml" in lowered and "tool" in lowered:
+        return True
+    if lowered.count("tool_calls") >= 1 and ("<" in t or "{" in t):
+        return True
+    return False
+
+
+def build_tool_leak_retry_hint(expected_checks: list[str] | None = None) -> str:
+    """tool 泄漏后强制纯文本最终答案的 synthesis 提示。"""
+    hint = (
+        "Your previous response contained tool-call markup instead of a final answer. "
+        "Do NOT output XML, JSON tool calls, DSML markers, or function invocations. "
+        "Using only information already gathered, output the complete final deliverable "
+        "in markdown / natural language."
+    )
+    checks_hint = _format_checks(expected_checks or [])
+    if checks_hint:
+        hint += f" Include verification tokens: {checks_hint}."
+    return hint
+
+
 def extract_rollout_answer(predicted: str) -> str:
     """评分前截取主回答段落，去掉模型回显的 skill 正文。"""
     if not predicted:

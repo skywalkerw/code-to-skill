@@ -14,6 +14,12 @@ _SYNTHESIS_HINT = (
     "Using only the information gathered above, provide your complete final answer now."
 )
 
+_LEAK_RETRY_HINT = (
+    "Your previous response contained tool-call markup instead of a final answer. "
+    "Do NOT output XML, JSON tool calls, DSML markers, or function invocations. "
+    "Output only the final deliverable in markdown / natural language."
+)
+
 
 class ToolHandler(Protocol):
     @property
@@ -28,6 +34,39 @@ def _collect_tool_snippets(messages: list[dict]) -> str:
         if m.get("role") == "tool" and m.get("content"):
             parts.append(str(m["content"])[:2000])
     return "\n---\n".join(parts[-8:])
+
+
+def _looks_like_tool_call_leak(text: str) -> bool:
+    try:
+        from code_to_skill.skillopt_loop.rollout_helpers import looks_like_tool_call_leak
+        return looks_like_tool_call_leak(text)
+    except Exception:
+        t = (text or "").strip().lower()
+        return bool(t) and ("dsml" in t or "tool_calls" in t)
+
+
+def _response_needs_answer_retry(response: InteractionResponse) -> bool:
+    if getattr(response, "tool_calls", None):
+        return True
+    return _looks_like_tool_call_leak(getattr(response, "content", "") or "")
+
+
+def _invoke_synthesis(
+    backend: Any,
+    request: InteractionRequest,
+    messages: list[dict],
+    *,
+    hint: str,
+    response_format: Any = None,
+) -> InteractionResponse:
+    return backend.invoke(InteractionRequest(
+        **{
+            **request.model_dump(),
+            "messages": [*messages, {"role": "user", "content": hint}],
+            "tools": [],
+            "response_format": response_format,
+        }
+    ))
 
 
 def invoke_with_tool_loop(
@@ -60,6 +99,19 @@ def invoke_with_tool_loop(
 
         tool_calls = getattr(response, "tool_calls", None) or []
         if not tool_calls:
+            if _response_needs_answer_retry(response):
+                logger.warning(
+                    "[tool_loop] round %d: final text looks like tool-call leak, retrying synthesis",
+                    round_idx + 1,
+                )
+                leak_hint = request.metadata.get("leak_retry_hint") or _LEAK_RETRY_HINT
+                response = _invoke_synthesis(
+                    backend, request, messages,
+                    hint=leak_hint,
+                    response_format=request.response_format,
+                )
+                for k in total_usage:
+                    total_usage[k] += response.usage.get(k, 0)
             response.usage = total_usage
             snippets = _collect_tool_snippets(messages)
             if snippets and hasattr(response, "tool_snippets"):
@@ -90,44 +142,33 @@ def invoke_with_tool_loop(
 
     logger.warning("[tool_loop] reached max_rounds=%d, forcing final synthesis", max_rounds)
     hint = request.metadata.get("synthesis_hint") or _SYNTHESIS_HINT
-    synthesis_req = InteractionRequest(
-        **{
-            **request.model_dump(),
-            "messages": [
-                *messages,
-                {"role": "user", "content": hint},
-            ],
-            "tools": [],
-            "response_format": request.response_format,
-        }
+    final = _invoke_synthesis(
+        backend, request, messages, hint=hint, response_format=request.response_format,
     )
-    final = backend.invoke(synthesis_req)
     for k in total_usage:
         total_usage[k] += final.usage.get(k, 0)
+
     if not (final.content or "").strip():
         logger.warning("[tool_loop] synthesis returned empty content, retrying once")
-        retry_req = InteractionRequest(
-            **{
-                **request.model_dump(),
-                "messages": [
-                    *messages,
-                    {
-                        "role": "user",
-                        "content": (
-                            hint
-                            + " Your previous reply was empty. Respond with the required output format only."
-                        ),
-                    },
-                ],
-                "tools": [],
-                "response_format": request.response_format,
-            }
+        final = _invoke_synthesis(
+            backend, request, messages,
+            hint=hint + " Your previous reply was empty. Respond with the required output format only.",
+            response_format=request.response_format,
         )
-        retry = backend.invoke(retry_req)
+        for k in total_usage:
+            total_usage[k] += final.usage.get(k, 0)
+
+    if _response_needs_answer_retry(final):
+        logger.warning("[tool_loop] synthesis leaked tool calls, forcing plain-text retry")
+        leak_hint = request.metadata.get("leak_retry_hint") or _LEAK_RETRY_HINT
+        retry = _invoke_synthesis(
+            backend, request, messages, hint=leak_hint, response_format=request.response_format,
+        )
         for k in total_usage:
             total_usage[k] += retry.usage.get(k, 0)
-        if (retry.content or "").strip():
+        if (retry.content or "").strip() and not _response_needs_answer_retry(retry):
             final = retry
+
     final.usage = total_usage
     snippets = _collect_tool_snippets(messages)
     if snippets and hasattr(final, "tool_snippets"):

@@ -113,27 +113,32 @@ def write_proposals(
     failure_proposals: list[dict],
     success_proposals: list[dict],
     merged_proposals: list[dict] | None = None,
+    step: int | None = None,
 ) -> dict[str, str]:
+    """写入 proposals；``step`` 非空时额外落盘到 ``proposals/steps/step_NNNN/``。"""
     prop_dir = os.path.join(output_dir, "proposals")
     os.makedirs(prop_dir, exist_ok=True)
+    step_dir = (
+        os.path.join(prop_dir, "steps", f"step_{step:04d}")
+        if step is not None
+        else prop_dir
+    )
+    os.makedirs(step_dir, exist_ok=True)
     paths: dict[str, str] = {}
+    merged = merged_proposals if merged_proposals is not None else (
+        failure_proposals + success_proposals
+    )
 
-    def _write_jsonl(name: str, rows: list[dict]) -> str:
-        path = os.path.join(prop_dir, name)
+    def _write_jsonl(target_dir: str, name: str, rows: list[dict]) -> str:
+        path = os.path.join(target_dir, name)
         with open(path, "w", encoding="utf-8") as f:
             for row in rows:
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
         paths[name] = path
         return path
 
-    _write_jsonl("failure_proposals.jsonl", failure_proposals)
-    _write_jsonl("success_proposals.jsonl", success_proposals)
-    merged = merged_proposals if merged_proposals is not None else (
-        failure_proposals + success_proposals
-    )
-    _write_jsonl("merged_proposals.jsonl", merged)
-
     quality = {
+        "step": step,
         "failure_count": len(failure_proposals),
         "success_count": len(success_proposals),
         "ready_count": sum(1 for p in merged if p.get("status") == "ready"),
@@ -142,10 +147,29 @@ def write_proposals(
             sum(p.get("support_count", 0) for p in merged) / len(merged) if merged else 0
         ),
     }
-    qpath = os.path.join(prop_dir, "proposal_quality.json")
-    with open(qpath, "w", encoding="utf-8") as f:
-        json.dump(quality, f, indent=2, ensure_ascii=False)
-    paths["proposal_quality.json"] = qpath
+
+    for target in ({step_dir} if step is not None else {prop_dir}) | {prop_dir}:
+        _write_jsonl(target, "failure_proposals.jsonl", failure_proposals)
+        _write_jsonl(target, "success_proposals.jsonl", success_proposals)
+        _write_jsonl(target, "merged_proposals.jsonl", merged)
+        qpath = os.path.join(target, "proposal_quality.json")
+        with open(qpath, "w", encoding="utf-8") as f:
+            json.dump(quality, f, indent=2, ensure_ascii=False)
+        paths[f"proposal_quality.json@{target}"] = qpath
+
+    if step is not None:
+        index_path = os.path.join(prop_dir, "steps_index.jsonl")
+        with open(index_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "step": step,
+                "dir": f"steps/step_{step:04d}",
+                "failure_count": len(failure_proposals),
+                "success_count": len(success_proposals),
+                "ready_count": quality["ready_count"],
+            }, ensure_ascii=False) + "\n")
+        paths["steps_index.jsonl"] = index_path
+        paths["step_dir"] = step_dir
+
     return paths
 
 

@@ -9,6 +9,8 @@ import pytest
 from code_to_skill.skillopt_loop.code_evidence import (
     _fetch_trace_summary,
     build_reflect_code_evidence,
+    context_ref_path_candidates,
+    normalize_context_ref,
     graph_queries_from_failure,
     parse_context_ref,
     trace_pairs_from_failure,
@@ -18,6 +20,31 @@ from code_to_skill.codegraph_mcp.handler import CodeToolsHandler, CodeRepoConfig
 
 def test_parse_context_ref():
     assert parse_context_ref("a/b/Foo.java#bar") == ("a/b/Foo.java", "bar")
+
+
+def test_normalize_context_ref_fineract_paths():
+    ref = normalize_context_ref(
+        "fineract-accounting/journalentry/data/JournalEntryDataValidator.java",
+    )
+    assert ref == (
+        "fineract-accounting/src/main/java/org/apache/fineract/accounting/"
+        "journalentry/data/JournalEntryDataValidator.java"
+    )
+    sym = normalize_context_ref(
+        "fineract-core/accounting/common/AccountingConstants.java#FinancialActivity.LIABILITY_TRANSFER",
+    )
+    assert sym.endswith("#FinancialActivity.LIABILITY_TRANSFER")
+    assert "fineract-core/src/main/java" in sym
+
+
+def test_context_ref_path_candidates_fineract_shorthand():
+    cands = context_ref_path_candidates(
+        "fineract-accounting/journalentry/data/JournalEntryDataValidator.java",
+    )
+    assert "fineract-provider/src/main/java/org/apache/fineract/accounting/journalentry/data/JournalEntryDataValidator.java" in cands
+
+    core = context_ref_path_candidates("fineract-core/accounting/common/AccountingConstants.java")
+    assert "fineract-core/src/main/java/org/apache/fineract/accounting/common/AccountingConstants.java" in core
 
 
 def test_graph_queries_from_failure_skips_short_verification_tokens():

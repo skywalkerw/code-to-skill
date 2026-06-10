@@ -491,6 +491,7 @@ def run_skillopt_loop(
                         output_dir,
                         failure_proposals=fail_props,
                         success_proposals=succ_props,
+                        step=step_counter,
                     )
                     proposal_patches = proposals_to_patches(
                         fail_props + succ_props, se_cfg, current_skill=current_skill,

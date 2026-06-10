@@ -276,6 +276,7 @@ class DEFAULTAdapter(EnvAdapter):
             from ..rollout_helpers import (
                 assemble_rollout_user_content,
                 build_rollout_synthesis_hint,
+                build_tool_leak_retry_hint,
                 build_rollout_system_prompt,
                 build_rollout_user_message,
                 extract_rollout_answer,
@@ -312,7 +313,10 @@ class DEFAULTAdapter(EnvAdapter):
                     ],
                     max_output_tokens=get_token_budgets().rollout,
                     temperature=0.3,
-                    metadata={"synthesis_hint": build_rollout_synthesis_hint(checks)},
+                    metadata={
+                        "synthesis_hint": build_rollout_synthesis_hint(checks),
+                        "leak_retry_hint": build_tool_leak_retry_hint(checks),
+                    },
                 )
                 tool_rounds = (
                     self.rollout_max_tool_rounds if code_tools_enabled else 0

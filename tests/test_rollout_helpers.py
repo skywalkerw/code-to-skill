@@ -10,8 +10,14 @@ from code_to_skill.skillopt_loop.rollout_helpers import (
     extract_rollout_answer,
     fallback_predicted_from_tools,
     fallback_skill_answer,
+    looks_like_tool_call_leak,
     sanitize_skill_for_rollout,
 )
+
+
+def test_looks_like_tool_call_leak_detects_dsml_markup():
+    assert looks_like_tool_call_leak("<｜｜DSML｜｜tool_calls>search_code</｜｜DSML｜｜tool_calls>")
+    assert not looks_like_tool_call_leak("## 会计凭证\n| 借 | 贷 |")
 
 
 def test_sanitize_skill_strips_placeholder_example():

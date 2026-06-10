@@ -60,6 +60,66 @@ def parse_context_ref(ref: str) -> tuple[str, str]:
     return ref, ""
 
 
+def context_ref_path_candidates(file_path: str) -> list[str]:
+    """将 benchmark 简写路径展开为仓库内可解析的候选路径。"""
+    path = (file_path or "").strip().lstrip("/")
+    if not path:
+        return []
+
+    candidates: list[str] = [path]
+
+    def _add(*variants: str) -> None:
+        for v in variants:
+            if v and v not in candidates:
+                candidates.append(v)
+
+    if path.startswith("fineract-provider/") and "src/main/java" not in path:
+        rest = path[len("fineract-provider/"):]
+        _add(f"fineract-provider/src/main/java/org/apache/fineract/{rest}")
+
+    if path.startswith("fineract-accounting/"):
+        rest = path[len("fineract-accounting/"):]
+        _add(f"fineract-accounting/src/main/java/org/apache/fineract/accounting/{rest}")
+        _add(f"fineract-provider/src/main/java/org/apache/fineract/accounting/{rest}")
+
+    if path.startswith("fineract-core/"):
+        rest = path[len("fineract-core/"):]
+        _add(f"fineract-core/src/main/java/org/apache/fineract/{rest}")
+        _add(f"fineract-provider/src/main/java/org/apache/fineract/{rest}")
+
+    basename = path.rsplit("/", 1)[-1]
+    if basename and basename != path:
+        _add(basename)
+
+    return candidates
+
+
+def normalize_context_ref(ref: str, *, repo_root: str = "") -> str:
+    """将 benchmark context_ref 规范为仓库内 Maven 源码路径。"""
+    ref = (ref or "").strip()
+    if not ref:
+        return ref
+
+    path, symbol = parse_context_ref(ref)
+    candidates = context_ref_path_candidates(path)
+    maven = [c for c in candidates if "src/main/java" in c or "src/test/java" in c]
+    ordered = maven + [c for c in candidates if c not in maven]
+
+    chosen = path
+    if repo_root:
+        for candidate in ordered:
+            abs_path = candidate if os.path.isabs(candidate) else os.path.join(repo_root, candidate)
+            if os.path.isfile(abs_path):
+                chosen = candidate
+                break
+    elif maven:
+        chosen = maven[0]
+    elif ordered:
+        chosen = ordered[0]
+
+    return f"{chosen}#{symbol}" if symbol else chosen
+
+
 def graph_queries_from_failure(failure: dict) -> list[str]:
     """从失败 rollout 推断通用图谱搜索词（无项目硬编码）。"""
     queries: list[str] = []
@@ -471,20 +531,21 @@ def _probe_file_ref(
     code_tools: Any | None,
     repo_root: str,
 ) -> tuple[str, str]:
-    if code_tools is not None and getattr(code_tools, "enabled", False):
-        raw = code_tools.execute({
-            "function": {
-                "name": "read_code_file",
-                "arguments": json.dumps({"path": file_path, "end_line": 5}),
-            },
-        })
-        data = json.loads(raw)
-        if data.get("content"):
-            return "file_hit", file_path
-    if repo_root:
-        abs_path = file_path if os.path.isabs(file_path) else os.path.join(repo_root, file_path)
-        if os.path.isfile(abs_path):
-            return "file_hit", abs_path
+    for candidate in context_ref_path_candidates(file_path):
+        if code_tools is not None and getattr(code_tools, "enabled", False):
+            raw = code_tools.execute({
+                "function": {
+                    "name": "read_code_file",
+                    "arguments": json.dumps({"path": candidate, "end_line": 5}),
+                },
+            })
+            data = json.loads(raw)
+            if data.get("content"):
+                return "file_hit", candidate
+        if repo_root:
+            abs_path = candidate if os.path.isabs(candidate) else os.path.join(repo_root, candidate)
+            if os.path.isfile(abs_path):
+                return "file_hit", abs_path
     return "miss", ""
 
 

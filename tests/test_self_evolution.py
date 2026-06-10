@@ -13,6 +13,7 @@ from code_to_skill.skillopt_loop.proposals import (
     build_failure_proposals,
     build_success_proposals,
     generate_step_proposals,
+    write_proposals,
 )
 from code_to_skill.skillopt_loop.self_evolution_config import SelfEvolutionConfig
 from code_to_skill.skillopt_loop.trace_pool import TracePoolManager
@@ -109,6 +110,31 @@ class TestProposals:
         assert len(edits) == 1
         assert edits[0].op == "append"
         assert "balance" in edits[0].content
+
+    def test_write_proposals_keeps_per_step_history(self, tmp_path):
+        opt = tmp_path / "optimization"
+        opt.mkdir()
+        row = [{"proposal_id": "p1", "status": "ready", "support_count": 2}]
+        write_proposals(
+            str(opt),
+            failure_proposals=row,
+            success_proposals=[],
+            step=2,
+        )
+        write_proposals(
+            str(opt),
+            failure_proposals=[{**row[0], "proposal_id": "p2"}],
+            success_proposals=[],
+            step=6,
+        )
+        step2 = opt / "proposals" / "steps" / "step_0002" / "merged_proposals.jsonl"
+        step6 = opt / "proposals" / "steps" / "step_0006" / "merged_proposals.jsonl"
+        assert step2.is_file()
+        assert step6.is_file()
+        assert json.loads(step2.read_text(encoding="utf-8").strip())["proposal_id"] == "p1"
+        assert json.loads(step6.read_text(encoding="utf-8").strip())["proposal_id"] == "p2"
+        index = (opt / "proposals" / "steps_index.jsonl").read_text(encoding="utf-8").strip().splitlines()
+        assert len(index) == 2
 
     def test_success_proposals_require_trace_id(self):
         cfg = SelfEvolutionConfig(min_support_count=2)
