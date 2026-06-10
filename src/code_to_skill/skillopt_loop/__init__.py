@@ -83,6 +83,7 @@ def run_skillopt_loop(
     run_root: str = "",
     graph_role_hints: dict | None = None,
     reflect_prompts: dict | None = None,
+    context_ref_path_rules: list | None = None,
     skillopt_settings: dict | None = None,
     self_evolution_settings: dict | None = None,
     self_evolve: bool = False,
@@ -154,6 +155,7 @@ def run_skillopt_loop(
         "rollout_workers": rollout_workers,
         "reflect_prompts": reflect_prompts or {},
         "judge_backend": judge_backend,
+        "check_aliases": (skillopt_settings or {}).get("check_aliases"),
     })
     code_tools = getattr(adapter, "code_tools", None)
     if code_tools and getattr(code_tools, "enabled", False):
@@ -229,8 +231,16 @@ def run_skillopt_loop(
 
     if pipe.validate_context_refs:
         all_items = train_items + selection_items + test_items
+        from .code_evidence import context_ref_path_rules_from_config
+
+        path_rules = context_ref_path_rules_from_config(
+            {"context_ref_path_rules": context_ref_path_rules or []},
+        )
         ref_report = validate_context_refs_for_items(
-            all_items, code_tools, repo_root=repo_root or "",
+            all_items,
+            code_tools,
+            repo_root=repo_root or "",
+            path_rules=path_rules or None,
         )
         ref_path = os.path.join(output_dir, "context_ref_report.json")
         with open(ref_path, "w", encoding="utf-8") as f:

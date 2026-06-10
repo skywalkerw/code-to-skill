@@ -33,12 +33,48 @@ def _check_keyword(text: str, check: str) -> bool:
     return norm_check in norm_text
 
 
+def merge_check_aliases(
+    global_aliases: dict[str, list[str]] | None,
+    item_aliases: dict[str, list[str]] | None,
+) -> dict[str, list[str]]:
+    """合并 settings.skillopt.check_aliases 与 benchmark item 级别名。"""
+    merged: dict[str, list[str]] = {}
+    for source in (global_aliases, item_aliases):
+        for key, values in (source or {}).items():
+            norm_key = (key or "").strip().lower()
+            if not norm_key:
+                continue
+            merged.setdefault(norm_key, [])
+            merged[norm_key].extend(str(v) for v in (values or []) if str(v).strip())
+    return merged
+
+
+def _check_aliases(check: str, extra_aliases: dict[str, list[str]] | None = None) -> list[str]:
+    aliases = list((extra_aliases or {}).get((check or "").strip().lower(), []))
+    # Preserve order while removing duplicates.
+    seen: set[str] = set()
+    out: list[str] = []
+    for alias in aliases:
+        norm = _normalize_text_for_check(alias)
+        if norm and norm not in seen:
+            out.append(alias)
+            seen.add(norm)
+    return out
+
+
+def _check_expected(text: str, check: str, aliases: dict[str, list[str]] | None = None) -> bool:
+    if _check_keyword(text, check):
+        return True
+    return any(_check_keyword(text, alias) for alias in _check_aliases(check, aliases))
+
+
 def score_benchmark_item(
     predicted: str,
     item: dict,
     *,
     judge_backend: Any = None,
     hard_threshold: float = 0.8,
+    global_check_aliases: dict[str, list[str]] | None = None,
 ) -> dict:
     """按 benchmark item 的 ``scorer`` 字段路由评分器。"""
     scorer = str(item.get("scorer") or "keyword").strip().lower()
@@ -56,10 +92,16 @@ def score_benchmark_item(
             result["missed_checks"] = []
         return result
     checks = list(item.get("expected_checks") or [])
-    return score_rollout_result(predicted, checks)
+    aliases = merge_check_aliases(global_check_aliases, item.get("check_aliases"))
+    return score_rollout_result(predicted, checks, check_aliases=aliases or None)
 
 
-def score_rollout_result(predicted: str, expected_checks: list[str]) -> dict:
+def score_rollout_result(
+    predicted: str,
+    expected_checks: list[str],
+    *,
+    check_aliases: dict[str, list[str]] | None = None,
+) -> dict:
     """确定性 scorer：keyword/regex 检查 + accuracy/precision/F1。
 
     对齐 external/SkillOpt 的评分机制：
@@ -71,7 +113,7 @@ def score_rollout_result(predicted: str, expected_checks: list[str]) -> dict:
     passed_checks: list[str] = []
     missed_checks: list[str] = []
     for check in expected_checks:
-        if _check_keyword(predicted, check):
+        if _check_expected(predicted, check, check_aliases):
             passed_checks.append(check)
         else:
             missed_checks.append(check)

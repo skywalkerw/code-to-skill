@@ -5,7 +5,7 @@ import json
 import os
 import re
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import Any, Mapping, Sequence
 
 from code_to_skill.time_utils import local_timestamp
 
@@ -60,7 +60,73 @@ def parse_context_ref(ref: str) -> tuple[str, str]:
     return ref, ""
 
 
-def context_ref_path_candidates(file_path: str) -> list[str]:
+@dataclass(frozen=True)
+class ContextRefPathRule:
+    """项目配置的 context_ref 路径展开规则（由 config.yaml 注入）。"""
+
+    prefix: str
+    expansions: tuple[str, ...]
+    skip_if_contains: str = ""
+
+
+def parse_context_ref_path_rules(raw: object) -> list[ContextRefPathRule]:
+    """解析 ``project.code_graph.context_ref_path_rules``。"""
+    if not raw:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("context_ref_path_rules must be a list")
+    rules: list[ContextRefPathRule] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError("each context_ref_path_rule must be a mapping")
+        prefix = str(item.get("prefix") or "").strip()
+        if not prefix:
+            continue
+        expansions = tuple(
+            str(v).strip()
+            for v in (item.get("expansions") or [])
+            if str(v).strip()
+        )
+        rules.append(ContextRefPathRule(
+            prefix=prefix,
+            expansions=expansions,
+            skip_if_contains=str(item.get("skip_if_contains") or "").strip(),
+        ))
+    return rules
+
+
+def context_ref_path_rules_from_config(code_graph_config: Any) -> list[ContextRefPathRule]:
+    """从 ``ProjectCodeGraphConfig`` 或等价 dict 提取路径规则。"""
+    if code_graph_config is None:
+        return []
+    if isinstance(code_graph_config, Mapping):
+        return parse_context_ref_path_rules(code_graph_config.get("context_ref_path_rules"))
+    rules = getattr(code_graph_config, "context_ref_path_rules", None) or []
+    out: list[ContextRefPathRule] = []
+    for rule in rules:
+        if isinstance(rule, ContextRefPathRule):
+            out.append(rule)
+        else:
+            prefix = str(getattr(rule, "prefix", "") or "").strip()
+            if not prefix:
+                continue
+            expansions = tuple(
+                str(v).strip()
+                for v in (getattr(rule, "expansions", None) or [])
+                if str(v).strip()
+            )
+            out.append(ContextRefPathRule(
+                prefix=prefix,
+                expansions=expansions,
+                skip_if_contains=str(getattr(rule, "skip_if_contains", "") or "").strip(),
+            ))
+    return out
+
+
+def context_ref_path_candidates(
+    file_path: str,
+    path_rules: Sequence[ContextRefPathRule] | None = None,
+) -> list[str]:
     """将 benchmark 简写路径展开为仓库内可解析的候选路径。"""
     path = (file_path or "").strip().lstrip("/")
     if not path:
@@ -73,19 +139,16 @@ def context_ref_path_candidates(file_path: str) -> list[str]:
             if v and v not in candidates:
                 candidates.append(v)
 
-    if path.startswith("fineract-provider/") and "src/main/java" not in path:
-        rest = path[len("fineract-provider/"):]
-        _add(f"fineract-provider/src/main/java/org/apache/fineract/{rest}")
-
-    if path.startswith("fineract-accounting/"):
-        rest = path[len("fineract-accounting/"):]
-        _add(f"fineract-accounting/src/main/java/org/apache/fineract/accounting/{rest}")
-        _add(f"fineract-provider/src/main/java/org/apache/fineract/accounting/{rest}")
-
-    if path.startswith("fineract-core/"):
-        rest = path[len("fineract-core/"):]
-        _add(f"fineract-core/src/main/java/org/apache/fineract/{rest}")
-        _add(f"fineract-provider/src/main/java/org/apache/fineract/{rest}")
+    for rule in path_rules or ():
+        if not path.startswith(rule.prefix):
+            continue
+        if rule.skip_if_contains and rule.skip_if_contains in path:
+            continue
+        rest = path[len(rule.prefix):]
+        for template in rule.expansions:
+            expanded = template.format(rest=rest)
+            if expanded:
+                _add(expanded)
 
     basename = path.rsplit("/", 1)[-1]
     if basename and basename != path:
@@ -94,14 +157,19 @@ def context_ref_path_candidates(file_path: str) -> list[str]:
     return candidates
 
 
-def normalize_context_ref(ref: str, *, repo_root: str = "") -> str:
-    """将 benchmark context_ref 规范为仓库内 Maven 源码路径。"""
+def normalize_context_ref(
+    ref: str,
+    *,
+    repo_root: str = "",
+    path_rules: Sequence[ContextRefPathRule] | None = None,
+) -> str:
+    """将 benchmark context_ref 规范为仓库内可解析路径。"""
     ref = (ref or "").strip()
     if not ref:
         return ref
 
     path, symbol = parse_context_ref(ref)
-    candidates = context_ref_path_candidates(path)
+    candidates = context_ref_path_candidates(path, path_rules=path_rules)
     maven = [c for c in candidates if "src/main/java" in c or "src/test/java" in c]
     ordered = maven + [c for c in candidates if c not in maven]
 
@@ -439,6 +507,7 @@ def validate_context_refs_for_items(
     code_tools: Any | None = None,
     *,
     repo_root: str = "",
+    path_rules: Sequence[ContextRefPathRule] | None = None,
 ) -> dict[str, Any]:
     """解析 benchmark context_refs，输出 ``context_ref_report.json`` 载荷。"""
     entries: list[dict[str, Any]] = []
@@ -481,7 +550,9 @@ def validate_context_refs_for_items(
                     resolved += 1
                     detail = data.get("file_path", "")
                 elif file_path:
-                    status, detail = _probe_file_ref(file_path, code_tools, repo_root)
+                    status, detail = _probe_file_ref(
+                        file_path, code_tools, repo_root, path_rules=path_rules,
+                    )
                     if status == "file_hit":
                         file_hits += 1
                         resolved += 1
@@ -490,7 +561,9 @@ def validate_context_refs_for_items(
                 else:
                     misses += 1
             elif file_path:
-                status, detail = _probe_file_ref(file_path, code_tools, repo_root)
+                status, detail = _probe_file_ref(
+                    file_path, code_tools, repo_root, path_rules=path_rules,
+                )
                 if status == "file_hit":
                     file_hits += 1
                     resolved += 1
@@ -530,8 +603,10 @@ def _probe_file_ref(
     file_path: str,
     code_tools: Any | None,
     repo_root: str,
+    *,
+    path_rules: Sequence[ContextRefPathRule] | None = None,
 ) -> tuple[str, str]:
-    for candidate in context_ref_path_candidates(file_path):
+    for candidate in context_ref_path_candidates(file_path, path_rules=path_rules):
         if code_tools is not None and getattr(code_tools, "enabled", False):
             raw = code_tools.execute({
                 "function": {

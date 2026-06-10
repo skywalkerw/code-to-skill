@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from code_to_skill.skillopt_loop.code_evidence import (
+    ContextRefPathRule,
     _fetch_trace_summary,
     build_reflect_code_evidence,
     context_ref_path_candidates,
@@ -17,14 +18,37 @@ from code_to_skill.skillopt_loop.code_evidence import (
 )
 from code_to_skill.codegraph_mcp.handler import CodeToolsHandler, CodeRepoConfig
 
+FINERACT_CONTEXT_REF_PATH_RULES = [
+    ContextRefPathRule(
+        prefix="fineract-provider/",
+        expansions=("fineract-provider/src/main/java/org/apache/fineract/{rest}",),
+        skip_if_contains="src/main/java",
+    ),
+    ContextRefPathRule(
+        prefix="fineract-accounting/",
+        expansions=(
+            "fineract-accounting/src/main/java/org/apache/fineract/accounting/{rest}",
+            "fineract-provider/src/main/java/org/apache/fineract/accounting/{rest}",
+        ),
+    ),
+    ContextRefPathRule(
+        prefix="fineract-core/",
+        expansions=(
+            "fineract-core/src/main/java/org/apache/fineract/{rest}",
+            "fineract-provider/src/main/java/org/apache/fineract/{rest}",
+        ),
+    ),
+]
+
 
 def test_parse_context_ref():
     assert parse_context_ref("a/b/Foo.java#bar") == ("a/b/Foo.java", "bar")
 
 
-def test_normalize_context_ref_fineract_paths():
+def test_normalize_context_ref_with_project_rules():
     ref = normalize_context_ref(
         "fineract-accounting/journalentry/data/JournalEntryDataValidator.java",
+        path_rules=FINERACT_CONTEXT_REF_PATH_RULES,
     )
     assert ref == (
         "fineract-accounting/src/main/java/org/apache/fineract/accounting/"
@@ -32,18 +56,28 @@ def test_normalize_context_ref_fineract_paths():
     )
     sym = normalize_context_ref(
         "fineract-core/accounting/common/AccountingConstants.java#FinancialActivity.LIABILITY_TRANSFER",
+        path_rules=FINERACT_CONTEXT_REF_PATH_RULES,
     )
     assert sym.endswith("#FinancialActivity.LIABILITY_TRANSFER")
     assert "fineract-core/src/main/java" in sym
 
 
-def test_context_ref_path_candidates_fineract_shorthand():
+def test_context_ref_path_candidates_without_rules_only_basename():
+    cands = context_ref_path_candidates("module/foo/Bar.java")
+    assert cands == ["module/foo/Bar.java", "Bar.java"]
+
+
+def test_context_ref_path_candidates_with_project_rules():
     cands = context_ref_path_candidates(
         "fineract-accounting/journalentry/data/JournalEntryDataValidator.java",
+        path_rules=FINERACT_CONTEXT_REF_PATH_RULES,
     )
     assert "fineract-provider/src/main/java/org/apache/fineract/accounting/journalentry/data/JournalEntryDataValidator.java" in cands
 
-    core = context_ref_path_candidates("fineract-core/accounting/common/AccountingConstants.java")
+    core = context_ref_path_candidates(
+        "fineract-core/accounting/common/AccountingConstants.java",
+        path_rules=FINERACT_CONTEXT_REF_PATH_RULES,
+    )
     assert "fineract-core/src/main/java/org/apache/fineract/accounting/common/AccountingConstants.java" in core
 
 

@@ -13,9 +13,17 @@ import yaml
 from pydantic import BaseModel, Field
 
 
+class ContextRefPathRule(BaseModel):
+    """benchmark context_ref 简写路径 → 仓库内候选路径（项目专用）。"""
+    prefix: str
+    expansions: list[str] = Field(default_factory=list)
+    skip_if_contains: str = ""
+
+
 class ProjectCodeGraphConfig(BaseModel):
     """目标项目代码图谱扩展（自定义框架模式等）。"""
     custom_patterns: dict[str, dict[str, str]] = Field(default_factory=dict)
+    context_ref_path_rules: list[ContextRefPathRule] = Field(default_factory=list)
 
 
 class RepoSource(BaseModel):
@@ -155,12 +163,28 @@ def _parse_project(raw: dict) -> ProjectConfig:
             custom_patterns=parse_custom_patterns(
                 code_graph_raw.get("custom_patterns"),
             ),
+            context_ref_path_rules=_parse_context_ref_path_rules(
+                code_graph_raw.get("context_ref_path_rules"),
+            ),
         ),
         repos=repos,
         docs=[DocSource(**d) for d in (sources.get("docs") or [])],
         graph_role_hints=raw.get("graph_role_hints", {}) or {},
         reflect_prompts=raw.get("reflect_prompts", {}) or {},
     )
+
+
+def _parse_context_ref_path_rules(raw: object) -> list[ContextRefPathRule]:
+    if not raw:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("project.code_graph.context_ref_path_rules must be a list")
+    rules: list[ContextRefPathRule] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError("each context_ref_path_rule must be a mapping")
+        rules.append(ContextRefPathRule(**item))
+    return rules
 
 
 def _parse_settings(raw: dict) -> SettingsConfig:

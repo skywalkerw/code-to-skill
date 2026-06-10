@@ -54,6 +54,10 @@ settings:
     max_tool_rounds: 5
     rollout_max_tool_rounds: 2
     rollout_workers: 4        # batch 内 item 并行 rollout（1=串行）
+    # 全局 keyword scorer 别名（项目专用；benchmark item 的 check_aliases 可追加）
+    # check_aliases:
+    #   transfer: [转账, 账户间转账, liability_transfer]
+    #   overdraft: [透支, 透支组合, overdraft_portfolio_control]
     # 各阶段 LLM 输出 token 预算（须 ≤ backend.max_output_tokens）
     token_budgets:
       rollout: 8192
@@ -277,6 +281,22 @@ project:
   #   或完整流水线 skill-lab run --config-path config.yaml
   code_graph:
     custom_patterns: {}
+
+    # benchmark context_refs 简写路径 → 仓库内候选路径（项目专用，框架无内置规则）
+    # {rest} = 去掉 prefix 后的剩余路径；用于 M4 context_ref 校验与文件探测
+    # context_ref_path_rules:
+    #   - prefix: fineract-provider/
+    #     skip_if_contains: src/main/java
+    #     expansions:
+    #       - fineract-provider/src/main/java/org/apache/fineract/{rest}
+    #   - prefix: fineract-accounting/
+    #     expansions:
+    #       - fineract-accounting/src/main/java/org/apache/fineract/accounting/{rest}
+    #       - fineract-provider/src/main/java/org/apache/fineract/accounting/{rest}
+    #   - prefix: fineract-core/
+    #     expansions:
+    #       - fineract-core/src/main/java/org/apache/fineract/{rest}
+    #       - fineract-provider/src/main/java/org/apache/fineract/{rest}
 
     # ── 示例 A：Fineract（取消下行注释并删掉上面的 `{}` 即可启用）────
     # custom_patterns:

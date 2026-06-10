@@ -183,6 +183,7 @@ class DEFAULTAdapter(EnvAdapter):
         self._reflect_prompt_error = ""
         self._reflect_prompt_success = ""
         self._judge_backend = None
+        self._global_check_aliases: dict[str, list[str]] = {}
         self.enable_code_tools = enable_code_tools
         self.max_tool_rounds = max_tool_rounds
         self.rollout_max_tool_rounds = rollout_max_tool_rounds
@@ -217,6 +218,7 @@ class DEFAULTAdapter(EnvAdapter):
             self._reflect_prompt_error = str(prompts.get("error") or "").strip()
             self._reflect_prompt_success = str(prompts.get("success") or "").strip()
             self._judge_backend = cfg.get("judge_backend")
+            self._global_check_aliases = dict(cfg.get("check_aliases") or {})
         if self.use_llm:
             try:
                 from code_to_skill.model_provider.llm_backend import (
@@ -282,6 +284,7 @@ class DEFAULTAdapter(EnvAdapter):
                 extract_rollout_answer,
                 fallback_predicted_from_tools,
                 fallback_skill_answer,
+                looks_like_tool_call_leak,
             )
             try:
                 from ..code_evidence import build_rollout_item_context
@@ -335,6 +338,8 @@ class DEFAULTAdapter(EnvAdapter):
                 else:
                     resp = backend.invoke(request)
                 predicted = extract_rollout_answer((resp.content or "").strip())
+                if looks_like_tool_call_leak(predicted):
+                    predicted = ""
                 if not predicted:
                     tool_snippets = getattr(resp, "tool_snippets", "") or ""
                     if tool_snippets:
@@ -354,7 +359,10 @@ class DEFAULTAdapter(EnvAdapter):
             fail_reason = ""
 
         scores = score_benchmark_item(
-            predicted, item, judge_backend=self._judge_backend,
+            predicted,
+            item,
+            judge_backend=self._judge_backend,
+            global_check_aliases=self._global_check_aliases,
         )
         missed = scores.get("missed_checks", [])
         if not fail_reason and scores["hard"] == 0 and missed:

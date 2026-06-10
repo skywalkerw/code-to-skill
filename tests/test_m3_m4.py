@@ -12,6 +12,7 @@ from code_to_skill.skillopt_loop import (
     score_rollout_result, compute_semantic_hash,
     run_skillopt_loop, save_runtime_state,
 )
+from code_to_skill.skillopt_loop.scoring import score_benchmark_item
 
 
 class TestM3Types:
@@ -95,6 +96,35 @@ class TestM4Scorer:
     def test_partial(self):
         result = score_rollout_result("general answer", ["idempotency", "retry"])
         assert result["soft"] == 0.0
+
+    def test_cn_aliases_pass_transfer_and_overdraft_checks(self):
+        aliases = {
+            "transfer": ["转账", "账户间转账", "liability_transfer"],
+            "overdraft": ["透支", "透支组合", "overdraft_portfolio_control"],
+        }
+        transfer = score_rollout_result(
+            "储蓄账户间转账应生成两侧流水。", ["transfer"], check_aliases=aliases,
+        )
+        overdraft = score_rollout_result(
+            "透支取款应受透支组合控制。", ["overdraft"], check_aliases=aliases,
+        )
+        assert transfer["hard"] == 1
+        assert overdraft["hard"] == 1
+
+    def test_global_check_aliases_merge_with_item(self):
+        result = score_benchmark_item(
+            "储蓄账户间转账应生成两侧流水。",
+            {"expected_checks": ["transfer"]},
+            global_check_aliases={"transfer": ["转账"]},
+        )
+        assert result["hard"] == 1
+
+    def test_item_level_check_aliases(self):
+        result = score_benchmark_item(
+            "必须先做自定义校验。",
+            {"expected_checks": ["custom_check"], "check_aliases": {"custom_check": ["自定义校验"]}},
+        )
+        assert result["hard"] == 1
 
 
 class TestM4Updater:
