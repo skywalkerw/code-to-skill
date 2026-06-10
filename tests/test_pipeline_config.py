@@ -9,8 +9,11 @@ import pytest
 from code_to_skill.cli.config_loader import DocSource, ProjectConfig
 from code_to_skill.cli.pipeline_config import (
     build_artifact_contract,
+    build_runtime_config_report,
     discover_pipeline_artifacts,
+    format_runtime_config_log_lines,
     load_leaf_contexts_from_run,
+    log_runtime_config,
     parse_pipeline_settings,
     should_skip_m2,
     should_skip_m3,
@@ -94,6 +97,52 @@ def test_should_skip_m3_with_benchmark(tmp_path, monkeypatch):
     pipeline = parse_pipeline_settings({})
     assert should_skip_m3(project, pipeline) is True
     assert should_skip_m3(project, pipeline, with_atoms=True) is False
+
+
+def test_runtime_config_log_lines(tmp_path, caplog):
+    import logging
+
+    bench = tmp_path / "benchmark"
+    (bench / "train").mkdir(parents=True)
+    (bench / "train" / "items.json").write_text(
+        json.dumps({"items": [{"id": "t1", "question": "q"}]}),
+    )
+    skill = tmp_path / "skill.md"
+    skill.write_text("# skill")
+
+    class _Settings:
+        code_graph = {}
+        document_normalizer = {}
+        atom_extractor = {}
+        skillopt = {"num_epochs": 2, "batch_size": 5, "use_llm_rollout": True}
+        model_provider = {"backends": {}, "routes": {}}
+        pipeline = {}
+        self_evolution = {"enabled": False}
+
+    class _Project:
+        name = "demo"
+        domain = "fineract"
+        initial_skill_path = str(skill)
+        benchmark_path = str(bench)
+        repos = []
+        docs = []
+
+    report = build_runtime_config_report(
+        _Settings(),
+        _Project(),
+        config_path="config.yaml",
+        output_root=str(tmp_path / "run1"),
+        run_flags={"skip_m3": True},
+    )
+    lines = format_runtime_config_log_lines(report)
+    assert any("config_path=" in line for line in lines)
+    assert any("skillopt:" in line for line in lines)
+    assert any("run_flags:" in line for line in lines)
+
+    with caplog.at_level(logging.INFO):
+        log_runtime_config(report)
+    assert "Effective runtime configuration" in caplog.text
+    assert "num_epochs=2" in caplog.text
 
 
 def test_should_skip_m2_when_m3_skipped(tmp_path):

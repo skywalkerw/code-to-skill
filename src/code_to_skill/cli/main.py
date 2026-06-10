@@ -464,6 +464,28 @@ def _init_run_outputs(settings: SettingsConfig, output_root: str) -> None:
         click.echo(f"   📋 Log 已写入: {log_path}")
 
 
+def _log_run_config(
+    cfg: AppConfig,
+    output_root: str,
+    *,
+    config_path: str = "config.yaml",
+    cli_overrides: dict | None = None,
+    run_flags: dict | None = None,
+) -> None:
+    """将实际生效配置写入 run.log。"""
+    from .pipeline_config import build_runtime_config_report, log_runtime_config
+
+    report = build_runtime_config_report(
+        cfg.settings,
+        cfg.project,
+        config_path=config_path,
+        output_root=output_root,
+        cli_overrides=cli_overrides,
+        run_flags=run_flags,
+    )
+    log_runtime_config(report)
+
+
 def _load_initial_skill(project: ProjectConfig) -> str:
     """从配置文件指定的 initial_skill 路径读取 Skill 内容。"""
     path = project.initial_skill_path
@@ -687,9 +709,11 @@ def run_all(
     configure_token_budgets(s.skillopt.get("token_budgets"))
     _init_run_outputs(s, output_root)
 
-    from .pipeline_config import build_effective_settings_report
+    from .pipeline_config import build_runtime_config_report
 
-    effective_settings = build_effective_settings_report(s, p)
+    effective_settings = build_runtime_config_report(
+        s, p, config_path=config_path, output_root=output_root,
+    )
     recorder = PipelineRunRecorder(
         run_id,
         output_root,
@@ -722,6 +746,18 @@ def run_all(
         click.echo("⏭️  跳过 M3（已有 initial_skill + benchmark train；使用 --with-atoms 强制运行）")
     if skip_m2 and p.docs:
         click.echo("⏭️  跳过 M2（M3 已跳过且文档仅服务 atom 抽取；使用 --with-docs 强制运行）")
+
+    _log_run_config(
+        cfg,
+        output_root,
+        config_path=config_path,
+        run_flags={
+            **recorder.manifest.flags,
+            "skip_m2": skip_m2,
+            "skip_m3": skip_m3,
+            "graph_ready": graph_ready,
+        },
+    )
 
     all_leaf_ctxs: list = []
     total_nodes = 0
@@ -1106,6 +1142,7 @@ def run_extract_atoms(from_dir: str | None, config_path: str):
         click.echo("❌ 请指定 --from <run_dir>（需含 M1/M2 产物）")
         return
     _init_run_outputs(cfg.settings, out_root)
+    _log_run_config(cfg, out_root, config_path=config_path, run_flags={"command": "extract-atoms"})
     leaf_contexts = load_leaf_contexts_from_run(out_root)
     doc_chunks = load_document_chunks_from_run(out_root)
     if not leaf_contexts and not doc_chunks:
@@ -1229,12 +1266,29 @@ def run_optimize_skill(
     configure_token_budgets(s.skillopt.get("token_budgets"))
 
     out_dir = output or "runs/latest/optimization"
-    _init_run_outputs(s, os.path.dirname(out_dir) or "runs/latest")
+    run_root_dir = os.path.dirname(out_dir.rstrip("/")) or "runs/latest"
+    _init_run_outputs(s, run_root_dir)
+    _log_run_config(
+        cfg,
+        run_root_dir,
+        config_path=config_path,
+        cli_overrides={
+            "num_epochs": epochs,
+            "batch_size": batch_size,
+            "accumulation": accumulation,
+            "enable_slow_update": slow_update or s.skillopt.get("enable_slow_update", False),
+            "enable_meta_skill": meta_skill or s.skillopt.get("enable_meta_skill", False),
+            "self_evolve": self_evolve or bool(s.self_evolution.get("enabled")),
+            "trace_merge": trace_merge,
+            "resume": resume,
+            "benchmark": benchmark,
+        },
+        run_flags={"command": "optimize-skill"},
+    )
     splits = _load_benchmark_splits(p, benchmark_dir=benchmark)
     initial_skill = _load_initial_skill(p) or "# Initial Skill\n- Default rule"
 
     code_repos = [{"path": r.path, "include": r.include, "exclude": r.exclude} for r in p.repos]
-    run_root_dir = os.path.dirname(out_dir.rstrip("/")) or "runs/latest"
     graph_db_path, repo_root, graph_sources = _m4_graph_context(p, run_root_dir, s)
 
     skillopt_kwargs = _skillopt_run_kwargs(s.skillopt, s.model_provider)
@@ -1724,6 +1778,13 @@ def resume(run_id: str, config_path: str, from_step: str | None):
     configure_token_budgets(s.skillopt.get("token_budgets"))
     out_dir = str(run_dir / "optimization")
     _init_run_outputs(s, str(run_dir))
+    _log_run_config(
+        cfg,
+        str(run_dir),
+        config_path=config_path,
+        cli_overrides={"resume": True},
+        run_flags={"command": "resume"},
+    )
     splits = _load_benchmark_splits(p)
     initial_skill = _load_initial_skill(p) or "# Initial Skill\n- Default rule"
     code_repos = [{"path": r.path, "include": r.include, "exclude": r.exclude} for r in p.repos]

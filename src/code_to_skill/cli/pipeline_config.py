@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -159,6 +160,94 @@ def build_effective_settings_report(
 def format_effective_settings_lines(report: dict[str, Any]) -> list[str]:
     """可打印的生效配置行。"""
     lines = ["Effective settings (wired to CLI/modules):"]
+    lines.extend(_format_wired_settings_lines(report))
+    return lines
+
+
+def _project_runtime_summary(project: Any | None) -> dict[str, Any]:
+    if project is None:
+        return {}
+    repos = getattr(project, "repos", None) or []
+    docs = getattr(project, "docs", None) or []
+    initial = getattr(project, "initial_skill_path", None) or getattr(project, "initial_skill", "")
+    benchmark = getattr(project, "benchmark_path", None) or getattr(project, "benchmark", "")
+    return {
+        "name": getattr(project, "name", ""),
+        "domain": getattr(project, "domain", ""),
+        "initial_skill": initial,
+        "benchmark": benchmark,
+        "repos": [f"{getattr(r, 'id', '?')}@{getattr(r, 'ref', '?')}" for r in repos],
+        "doc_count": len(docs),
+    }
+
+
+def _skillopt_runtime_summary(
+    settings: Any,
+    cli_overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    from code_to_skill.skillopt_loop.separation import resolve_skillopt_backend_ids
+
+    skillopt = (
+        settings.skillopt if hasattr(settings, "skillopt")
+        else (settings.get("skillopt") if isinstance(settings, dict) else {})
+    ) or {}
+    mp = (
+        settings.model_provider if hasattr(settings, "model_provider")
+        else (settings.get("model_provider") if isinstance(settings, dict) else {})
+    )
+    mp_dump = mp.model_dump() if hasattr(mp, "model_dump") else (mp or {})
+    rollout_id, optimizer_id = resolve_skillopt_backend_ids(skillopt, mp_dump)
+
+    summary: dict[str, Any] = {
+        "num_epochs": skillopt.get("num_epochs", 3),
+        "batch_size": skillopt.get("batch_size", 20),
+        "accumulation": skillopt.get("accumulation", 1),
+        "edit_budget": skillopt.get("edit_budget", 3),
+        "gate_metric": skillopt.get("gate_metric", "soft"),
+        "budget_strategy": skillopt.get("budget_strategy", "constant"),
+        "patience": skillopt.get("patience", 10),
+        "use_llm_rollout": skillopt.get("use_llm_rollout", False),
+        "rollout_workers": skillopt.get("rollout_workers", 4),
+        "rollout_backend": rollout_id,
+        "optimizer_backend": optimizer_id,
+        "enable_slow_update": skillopt.get("enable_slow_update", False),
+        "enable_meta_skill": skillopt.get("enable_meta_skill", False),
+        "enable_code_tools": skillopt.get("enable_code_tools", True),
+        "max_tool_rounds": skillopt.get("max_tool_rounds", 5),
+        "rollout_max_tool_rounds": skillopt.get("rollout_max_tool_rounds", 2),
+    }
+    if cli_overrides:
+        for key, value in cli_overrides.items():
+            if value is not None:
+                summary[key] = value
+    return summary
+
+
+def build_runtime_config_report(
+    settings: Any,
+    project: Any | None = None,
+    *,
+    config_path: str = "",
+    output_root: str = "",
+    cli_overrides: dict[str, Any] | None = None,
+    run_flags: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """汇总实际运行使用的配置（manifest + run.log）。"""
+    base = build_effective_settings_report(settings, project)
+    resolved_config = config_path or os.environ.get("SKILL_LAB_CONFIG_PATH", "config.yaml")
+    base["runtime"] = {
+        "config_path": os.path.abspath(resolved_config) if resolved_config else "",
+        "output_root": output_root,
+        "project": _project_runtime_summary(project),
+        "skillopt": _skillopt_runtime_summary(settings, cli_overrides),
+        "cli_overrides": cli_overrides or {},
+        "run_flags": run_flags or {},
+    }
+    return base
+
+
+def _format_wired_settings_lines(report: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
     wired = report.get("wired") or {}
     for module, fields in wired.items():
         if not isinstance(fields, dict):
@@ -167,10 +256,60 @@ def format_effective_settings_lines(report: dict[str, Any]) -> list[str]:
         lines.append(f"  {module}: {parts}")
     reserved = report.get("reserved") or {}
     if reserved:
-        lines.append("Reserved (YAML present, limited/no wiring):")
+        lines.append("  reserved:")
         for key, note in reserved.items():
-            lines.append(f"  {key}: {note}")
+            lines.append(f"    {key}: {note}")
     return lines
+
+
+def format_runtime_config_log_lines(report: dict[str, Any]) -> list[str]:
+    """写入 run.log 的生效配置行。"""
+    lines: list[str] = []
+    runtime = report.get("runtime") or {}
+
+    if runtime.get("config_path"):
+        lines.append(f"config_path={runtime['config_path']}")
+    if runtime.get("output_root"):
+        lines.append(f"output_root={runtime['output_root']}")
+
+    project = runtime.get("project") or {}
+    if project:
+        parts = ", ".join(f"{k}={v}" for k, v in project.items())
+        lines.append(f"project: {parts}")
+
+    skillopt = runtime.get("skillopt") or {}
+    if skillopt:
+        parts = ", ".join(f"{k}={v}" for k, v in skillopt.items())
+        lines.append(f"skillopt: {parts}")
+
+    run_flags = runtime.get("run_flags") or {}
+    if run_flags:
+        parts = ", ".join(f"{k}={v}" for k, v in run_flags.items())
+        lines.append(f"run_flags: {parts}")
+
+    cli_overrides = runtime.get("cli_overrides") or {}
+    if cli_overrides:
+        parts = ", ".join(f"{k}={v}" for k, v in cli_overrides.items())
+        lines.append(f"cli_overrides: {parts}")
+
+    wired_lines = _format_wired_settings_lines(report)
+    if wired_lines:
+        lines.append("wired_modules:")
+        lines.extend(wired_lines)
+    return lines
+
+
+def log_runtime_config(
+    report: dict[str, Any],
+    *,
+    logger: logging.Logger | None = None,
+    header: str = "Effective runtime configuration",
+) -> None:
+    """将实际生效配置写入 run.log（需已 configure_run_logging）。"""
+    log = logger or logging.getLogger("code_to_skill.runtime_config")
+    log.info("── %s ──", header)
+    for line in format_runtime_config_log_lines(report):
+        log.info(line)
 
 
 @dataclass

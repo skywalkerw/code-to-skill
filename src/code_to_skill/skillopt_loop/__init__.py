@@ -309,7 +309,7 @@ def run_skillopt_loop(
         len(test_items),
     )
 
-    _save_config(output_dir, {
+    m4_runtime_config = {
         "num_epochs": num_epochs, "batch_size": batch_size,
         "edit_budget": edit_budget,
         "use_llm_rollout": use_llm_rollout,
@@ -341,7 +341,9 @@ def run_skillopt_loop(
             "frontier_enabled": se_cfg.frontier_enabled,
             "min_support_count": se_cfg.min_support_count,
         },
-    })
+    }
+    _save_config(output_dir, m4_runtime_config)
+    logger.info("[M4] effective runtime config: %s", json.dumps(m4_runtime_config, ensure_ascii=False))
 
     # selection 较小时自动用 soft gate
     effective_gate_metric = gate_metric
