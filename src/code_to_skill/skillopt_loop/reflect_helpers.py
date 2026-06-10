@@ -233,3 +233,60 @@ def rule_section_heading(focus: str) -> str:
         if focus == PRIMARY_FOCUS
         else RULE_SECTION_HEADING_BOUNDARY
     )
+
+
+def summarize_step_buffer_for_reflect(
+    step_buffer: list[dict] | None,
+    rejected_edits: list | None = None,
+) -> str:
+    """构建 Reflect prompt 用的 step buffer 摘要（含 rejected buffer 落盘记录）。"""
+    parts: list[str] = []
+
+    if rejected_edits:
+        parts.append("Previously REJECTED edits (do NOT propose these again):")
+        for e in rejected_edits[-5:]:
+            op = getattr(e, "op", "?")
+            content = (getattr(e, "content", "") or "")[:80]
+            parts.append(f"  - [{op}] {content}")
+        parts.append("")
+
+    if step_buffer:
+        rejected_buffer_lines: list[str] = []
+        failure_types: dict[str, int] = {}
+        for buf in step_buffer:
+            if not isinstance(buf, dict):
+                continue
+            buf_type = buf.get("type", "")
+            if buf_type == "rejected_buffer":
+                rec = buf.get("record") or {}
+                reason = rec.get("reason", "gate_reject")
+                content = (rec.get("content") or "")[:80]
+                delta = rec.get("after_score", 0) - rec.get("before_score", 0)
+                rejected_buffer_lines.append(
+                    f"  - [{reason}] Δ={delta:+.3f} {content}"
+                )
+            elif buf_type == "rejected_edit":
+                edit = buf.get("edit")
+                if edit is not None:
+                    op = getattr(edit, "op", "?")
+                    content = (getattr(edit, "content", "") or "")[:80]
+                    rejected_buffer_lines.append(f"  - [step_reject] [{op}] {content}")
+            elif buf_type == "failure":
+                ft = buf.get("failure_type", buf_type)
+                failure_types[ft] = failure_types.get(ft, 0) + 1
+
+        if rejected_buffer_lines:
+            parts.append("Gate-rejected edits from buffer (do NOT repeat):")
+            parts.extend(rejected_buffer_lines[-8:])
+            parts.append("")
+
+        if failure_types:
+            parts.append("Previously observed failure patterns:")
+            for ft, count in sorted(failure_types.items(), key=lambda x: -x[1]):
+                parts.append(f"  - {ft}: {count} occurrences")
+            parts.append("")
+
+    if not parts:
+        return "(no prior buffer information — this is the first step)"
+
+    return "\n".join(parts)

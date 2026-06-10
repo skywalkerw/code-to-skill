@@ -1,7 +1,8 @@
 # 从知识库和代码提取并优化 Agent Skill 的总体设计文档
 
 > 本文是项目级总体设计文档，定义从知识库、PDF/Wiki、代码仓库与历史执行轨迹中提取、生成、评测并持续优化 Agent Skill 的整体架构。分模块输入、输出、存储内容与执行细节见本目录下的模块设计文档。  
-> **流水线整合**（Phase -1~P5 已实施，M1–M4 产物贯通、配置接线、可观测性）见 [`07-pipeline-integration-optimization.md`](07-pipeline-integration-optimization.md) §10 实现索引。
+> **流水线整合**（Phase -1~P5 已实施，M1–M4 产物贯通、配置接线、可观测性）见 [`07-pipeline-integration-optimization.md`](07-pipeline-integration-optimization.md) §10 实现索引。  
+> **Skill 自进化**（Design 08，trace pool / proposals / strict gate / hygiene）见 [`08-skill-self-evolution-optimization.md`](08-skill-self-evolution-optimization.md)。
 
 ## 1. 背景与目标
 
@@ -130,7 +131,7 @@ flowchart TB
 | P1 | **初始 Skill 质量** | 劣质起点或 best 未同步会导致 gate 长期拒绝 | `project.initial_skill`、每步 `best_skill.md` |
 | P1 | **Benchmark 可检查性** | 每条 item 须有 `expected_checks`；不完整/约束题用 `response_mode` | item 字段 + deterministic scorer |
 | P2 | **代码证据注入** | Reflect/Rollout 可调用 CodeGraph 工具读真实源码 | `enable_code_tools`、`context_refs` |
-| P2 | **编辑可追溯与去重** | 拒绝无效编辑、场景规则兜底、rejected-edit buffer | `edit_validator`、`step_buffer` |
+| P2 | **编辑可追溯与去重** | 拒绝无效编辑、场景规则兜底、rejected-edit buffer（Design 08 已接线 reflect） | `edit_validator`、`rejected_edit_buffer.jsonl` |
 | P2 | **Edit budget 与 patience** | 控制每步改动幅度；连续 reject 早停 | `edit_budget`、`budget_strategy`、`patience` |
 | P3 | **Slow update / Meta skill** | epoch 级纵向归纳，适合多 epoch 稳定训练 | `enable_slow_update`、`enable_meta_skill` |
 | P3 | **Token 预算** | 防止 reflect 截断或 rollout 空输出 | `skillopt.token_budgets` |
@@ -150,6 +151,7 @@ flowchart TB
 | 2. 知识库/PDF/Wiki 到文档规范化 | [02-knowledge-pdf-wiki-normalization.md](02-knowledge-pdf-wiki-normalization.md) | 统一解析多格式文档，恢复结构、切分 chunk、保留来源锚点 | `document_index.json`、`chunks.jsonl`、`tables.jsonl` |
 | 3. SkillAtom 抽取 | [03-skillatom-extraction.md](03-skillatom-extraction.md) | 将代码证据和文档证据转成可执行、可验证的技能原子 | `raw_atoms.jsonl`、`merged_atoms.jsonl`、`benchmark_seeds.jsonl` |
 | 4. SkillOpt 优化循环 | [04-skillopt-loop.md](04-skillopt-loop.md) | 基于 rollout、反思、聚合、选择、更新、评测循环优化 Skill（**已实现**） | `best_skill.md`、`history.json`、`runtime_state.json`、`final_eval/` |
+| 4b. Skill 自进化（M4 扩展） | [08-skill-self-evolution-optimization.md](08-skill-self-evolution-optimization.md) | 轨迹池归纳、proposal 合并、严格 gate、rejected buffer、规则归因、hygiene、frontier（**核心已实现**） | `trace_pool/`、`proposals/`、`rejected_edit_buffer.jsonl`、`rule_attribution.json` |
 | 5. 模型与智能体交互管理 | [05-model-agent-interaction-manager.md](05-model-agent-interaction-manager.md) | 提供可插拔模型、外部 Agent、路由、预算、追踪和结构化输出能力 | `traces/`、`token_usage.jsonl`、`cost_usage.jsonl` |
 | 6. CLI 人机交互与模块编排 | [06-cli-human-interaction-orchestrator.md](06-cli-human-interaction-orchestrator.md) | 提供命令行入口、运行计划、审批、状态、恢复、发布和报告 | `run_manifest.json`、`run_state.json`、`events.jsonl` |
 
@@ -372,7 +374,9 @@ code-to-skill/
 │       ├── 03-skillatom-extraction.md
 │       ├── 04-skillopt-loop.md
 │       ├── 05-model-agent-interaction-manager.md
-│       └── 06-cli-human-interaction-orchestrator.md
+│       ├── 06-cli-human-interaction-orchestrator.md
+│       ├── 07-pipeline-integration-optimization.md
+│       └── 08-skill-self-evolution-optimization.md
 ├── external/
 │   ├── CodeWiki/
 │   ├── codegraph/
@@ -388,7 +392,11 @@ code-to-skill/
 │       ├── benchmarks/
 │       ├── optimization/
 │       │   ├── runtime_state.json   # M4 断点续训
+│       │   ├── artifact_contract.json
 │       │   ├── best_skill.md
+│       │   ├── trace_pool/          # Design 08（可选）
+│       │   ├── proposals/
+│       │   ├── rejected_edit_buffer.jsonl
 │       │   └── steps/
 │       ├── traces/                  # M5 LLM 调用 trace
 │       └── logs/run.log
@@ -563,7 +571,7 @@ code-to-skill/
 
 ### Phase 0：资料准备
 
-- 固定一个目标仓库（建议选择业务逻辑复杂的项目，如金融支付、ERP 核算、税务引擎等）。当前测试用例为 [Apache Fineract](https://github.com/apache/fineract)（Java，贷款/储蓄/会计分录），但系统设计不绑定任何特定仓库——更换目标只需修改 `project.yaml` 中的 `sources.repos` 配置。
+- 固定一个目标仓库（建议选择业务逻辑复杂的项目，如金融支付、ERP 核算、税务引擎等）。当前测试用例为 [Apache Fineract](https://github.com/apache/fineract)（Java，贷款/储蓄/会计分录），但系统设计不绑定任何特定仓库——更换目标只需修改 **`config.yaml`** 中 `project.sources.repos`。
 - 锁定仓库版本（commit、tag 或 release branch，如 `develop`），确保后续运行可复现。
 - 配置 `include`/`exclude` 聚焦核心业务模块，排除测试和构建产物。以 Fineract 为例：
   ```yaml
@@ -577,8 +585,10 @@ code-to-skill/
   ```
 - 固定一个知识库目录（目标仓库的官方文档 Markdown 导出）和一组相关 PDF。
 - 建立 `config.yaml`、运行目录规范和 `model_provider.routes`。
-- 准备 benchmark 三份 split：train（驱动 rollout）、selection（≥20 条推荐，用于 hard gate）、test（held-out）；任务来自 Issues、PR review、故障工单等真实场景。
+- 准备 benchmark 三份 split：train（驱动 rollout）、selection（≥20 条推荐用于 hard gate；冒烟可用 `fineract-fast` 6 条）、test（held-out）；完整集见 `fineract-full`。
 - 配置 `use_llm_rollout: true`，并按需分离 `routes.target`（flash）与 `routes.optimizer`（pro）。
+- API Key 放在项目根 `.env`；`model_provider.backends` 通过 `${VAR}` 引用。
+- **完整 M1→M4**：`skill-lab run all --config-path config.yaml --with-atoms`（有 `initial_skill` + benchmark 时默认跳过 M2/M3）。
 
 ### Phase 1：离线证据构建
 
@@ -599,9 +609,10 @@ code-to-skill/
 
 ### Phase 4：回流与规模化
 
-- 接入真实 Agent 任务轨迹、CI 日志和人工 review。
+- 接入真实 Agent 任务轨迹、CI 日志和人工 review（Design 08 `trace_pool` 已支持 rollout 轨迹归纳）。
 - 支持多仓库、多 Skill、多模型后端和增量更新。
-- 建立 rejected-edit buffer 与发布回滚策略。
+- **rejected-edit buffer** 与 **strict gate** 已在 Design 08 实现；发布回滚策略仍待产品化。
+- 可选自进化：`run optimize-skill --trace-merge`（仅归纳）或 `--self-evolve`（完整路径）；离线 `run skill-hygiene`。
 
 ## 14. 产物版本兼容性策略
 
@@ -639,7 +650,10 @@ code-to-skill/
 | `tables.jsonl` | 模块 2 | 每行 `schema_version=1.0` | 结构化表格 |
 | `document_index.json` | 模块 2 | 顶层 `schema_version=1.0` | 文档结构索引 |
 | `merged_atoms.jsonl` | 模块 3 | 每行 `schema_version=1.0` | 已合并 SkillAtom |
+| `artifact_quality.json` | 模块 3 | 顶层 `schema_version=1.0` | M3 产物质量与覆盖率摘要 |
 | `benchmark_seeds.jsonl` | 模块 3 | 每行 `schema_version=1.0` | 评测种子 |
+| `rejected_edit_buffer.jsonl` | 模块 4 / 08 | 每行记录 | 被拒绝编辑及原因，供 reflect 去重 |
+| `rule_attribution.json` | 模块 4 / 08 | 顶层 | 规则 ID 与来源归因（发布可 `--strip-rule-ids`） |
 | `skill_bundle.json` | 模块 4 | 顶层 `schema_version=1.0` | 最终 Skill 包元数据 |
 | `history.json` | 模块 4 | 顶层 `schema_version=1.0` | 训练历史 |
 | `runtime_state.json` | 模块 4 | 顶层 `schema_version=1.1` | M4 断点续训状态 |
@@ -676,9 +690,25 @@ code-to-skill/
 - **配置贯通**：`ModuleRunSettings` 接线 M1/M2/M3/M4；`config validate` 打印生效表 + L2 静态分析 + L3 mock 全流程。
 - **工具层**：MCP `search_code`/`read_code_file`；`build_code_tools_handler()`；`context_mode` 三模式。
 
-仍待：**P1-3** role 元数据入 DB、M3 独立 `artifact_quality.json`。实现索引见 07 文档 §10。
+仍待：**P1-3** role 元数据入 DB。实现索引见 07 文档 §10。
 
-## 17. 成功标准
+## 17. Skill 自进化（Design 08，已实施核心）
+
+2026-06 已完成 **[08-skill-self-evolution-optimization.md](08-skill-self-evolution-optimization.md)** Phase 0–4 主路径（配置默认 `settings.self_evolution.enabled: false`）：
+
+| 能力 | CLI / 配置 | 产物 |
+|---|---|---|
+| 轨迹池与 proposal 归纳 | `--trace-merge`、`--self-evolve` | `optimization/trace_pool/`、`proposals/` |
+| 严格 gate（须严格优于 baseline） | `--self-evolve` 或 `self_evolution.strict_improvement` | `steps/step_*/gate.json` |
+| Rejected-edit buffer | 自动（reflect 注入） | `rejected_edit_buffer.jsonl` |
+| 规则归因 | `--self-evolve` | `rule_attribution.json`；`publish --strip-rule-ids` |
+| Hygiene | `run skill-hygiene <run_id>` | 写回 `best_skill.md`（经 selection gate） |
+| Frontier pool | `--self-evolve` | `frontier_pool.json` |
+| 可观测 / 校验 | `inspect run --trace-pool`、`--validate-self-evolution` | 终端摘要 |
+
+与 07 的衔接：`run all` 默认跳过 M2/M3 时仍产出 M4；要生成 `artifact_quality.json` 需 `--with-atoms`。`inspect run` 与 `artifact_contract.json` 统一 run 级可观测入口。
+
+## 18. 成功标准
 
 系统达到可用状态时，应满足以下标准：
 
@@ -687,4 +717,4 @@ code-to-skill/
 3. 候选 Skill 能在 benchmark 上相对基线产生可解释提升。
 4. 发布过程能记录版本、diff、评测报告和回滚路径。
 5. 替换模型或改为调用外部智能体时，不需要修改模块 1 到模块 4 的业务逻辑。
-6. CLI 能支持从初始化到发布的完整人机协作流程。
+6. CLI 能支持从初始化到发布的完整人机协作流程（含 `run all --with-atoms`、`inspect run`、`skill-hygiene`、Design 08 可选路径）。

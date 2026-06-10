@@ -1,7 +1,7 @@
 # Skill 自进化优化设计
 
 > 版本: 0.1  
-> 状态: **方案（待实施）**  
+> 状态: **已实施（Phase 0–4 核心路径）**  
 > 日期: 2026-06-09  
 > 关联: `03-skillatom-extraction.md`、`04-skillopt-loop.md`、`07-pipeline-integration-optimization.md`  
 > 背景: 结合文章《如何更科学、方向可控的实现 Skill 的“自进化”?》中对 Trace2Skill、EvoSkill、SkillOpt 三类范式的分析，补充本项目在 Skill 自动沉淀、批量归纳、验证门控和可控更新上的设计。
@@ -324,6 +324,7 @@ skill-lab run optimize-skill --self-evolve
 skill-lab run optimize-skill --trace-merge
 skill-lab inspect run <run_id> --trace-pool
 skill-lab inspect run <run_id> --rule-attribution
+skill-lab inspect run <run_id> --validate-self-evolution
 skill-lab run skill-hygiene <run_id>
 ```
 

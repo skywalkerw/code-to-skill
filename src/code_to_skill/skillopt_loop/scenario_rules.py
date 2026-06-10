@@ -21,7 +21,7 @@ def _is_amount_check(check: str) -> bool:
 def _scenario_rule_line(failure: dict) -> str:
     """为单条失败 rollout 生成唯一、可执行的场景规则。"""
     rid = failure.get("id") or "unknown"
-    question = (failure.get("question") or failure.get("task_template") or "").strip()
+    question = (failure.get("question") or "").strip()
     missed = [c for c in failure.get("missed_checks", []) if not _is_amount_check(c)][:6]
     checks_hint = ", ".join(missed) if missed else "(see expected_checks)"
     refs = failure.get("context_refs") or failure.get("context", {}).get("refs") or []

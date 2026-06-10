@@ -13,14 +13,6 @@ def test_resolve_from_skillopt_explicit():
     assert optimizer == "deepseek"
 
 
-def test_resolve_target_backend_alias():
-    rollout, _ = resolve_skillopt_backend_ids(
-        {"target_backend": "mock-backend"},
-        None,
-    )
-    assert rollout == "mock-backend"
-
-
 def test_resolve_from_model_provider_routes():
     rollout, optimizer = resolve_skillopt_backend_ids(
         {},

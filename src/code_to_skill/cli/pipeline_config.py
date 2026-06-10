@@ -73,6 +73,21 @@ class ModuleRunSettings:
         }
 
 
+def _self_evolution_wired(settings: Any) -> dict[str, Any]:
+    se = (
+        settings.self_evolution if hasattr(settings, "self_evolution")
+        else (settings.get("self_evolution") if isinstance(settings, dict) else {})
+    ) or {}
+    gate = se.get("gate") or {}
+    return {
+        "enabled": bool(se.get("enabled", False)),
+        "trace_pool": bool((se.get("trace_pool") or {}).get("enabled", True)),
+        "strict_gate": bool(gate.get("strict_improvement", True)),
+        "frontier": bool(gate.get("frontier_enabled", False)),
+        "attribution": bool((se.get("attribution") or {}).get("enabled", True)),
+    }
+
+
 def build_effective_settings_report(
     settings: Any,
     project: Any | None = None,
@@ -131,6 +146,7 @@ def build_effective_settings_report(
             "reflect_prompts_success": reflect_success,
             "graph_role_hints": bool(getattr(project, "graph_role_hints", None)) if project else False,
         },
+        "self_evolution": _self_evolution_wired(settings),
         "pipeline": pipe.model_dump(),
     }
     reserved = {
@@ -192,6 +208,9 @@ class PipelineArtifacts:
     )
     merged_atoms: ArtifactRef = field(
         default_factory=lambda: ArtifactRef("merged_atoms", "", False),
+    )
+    artifact_quality: ArtifactRef = field(
+        default_factory=lambda: ArtifactRef("artifact_quality", "", False),
     )
 
 
@@ -273,6 +292,9 @@ def discover_pipeline_artifacts(
         merged_atoms=_artifact_ref(
             "merged_atoms", os.path.join(atoms_dir, "merged_atoms.jsonl"),
         ),
+        artifact_quality=_artifact_ref(
+            "artifact_quality", os.path.join(atoms_dir, "artifact_quality.json"),
+        ),
     )
 
 
@@ -295,10 +317,18 @@ def build_artifact_contract(
         "atoms": {
             "evidence_index": asdict(artifacts.evidence_index),
             "merged_atoms": asdict(artifacts.merged_atoms),
+            "artifact_quality": asdict(artifacts.artifact_quality),
         },
     }
     if extra:
         contract.update(extra)
+    aq_path = artifacts.artifact_quality.path
+    if aq_path and os.path.isfile(aq_path):
+        try:
+            with open(aq_path, encoding="utf-8") as f:
+                contract["artifact_quality"] = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            contract["artifact_quality"] = {"present": True, "parsed": False}
     return contract
 
 

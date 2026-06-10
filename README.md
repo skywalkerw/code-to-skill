@@ -7,61 +7,150 @@
 ## 快速开始
 
 ```bash
-# 安装
+# 安装（建议在仓库根目录）
 pip install -e .
-# 可选: OCR 支持
+# 可选: OCR
 pip install -e ".[ocr]"
 
-# 初始化项目
-skill-lab init --workspace ./my-project --domain fintech
+# API Key：在项目根目录放置 .env（启动时自动加载）
+#   DEEPSEEK_API_KEY=...
+#   DEEPSEEK_BASE_URL=https://api.deepseek.com
 
-# 编辑 project.yaml 配置数据源后，校验
-skill-lab config --config-path project.yaml
+# 复制并编辑配置
+cp config.template.yaml config.yaml
 
-# 运行全流程
-skill-lab run all --config-path project.yaml
+# 校验配置
+skill-lab config --config-path config.yaml
+
+# 完整流水线 M1→M4（fineract-fast 示例见 config.yaml）
+skill-lab run all --config-path config.yaml --with-atoms
 ```
+
+若已配置 `initial_skill` + benchmark，默认会**跳过 M2/M3**；要跑齐四段模块请加 **`--with-atoms`**。
+
+开发中若 CLI 未重装，可在命令前加 `PYTHONPATH=src`。
 
 ## 流水线
 
 ```
 代码仓库 ─→ M1 代码图谱 ─→ M3 SkillAtom ─→ M4 SkillOpt ─→ SKILL.md
-知识文档 ─→ M2 文档规范化 ─┘                              (best_skill.md)
-  ↑                                                      
-M5 模型/Agent 交互层 (基础设施)
+知识文档 ─→ M2 文档规范化 ─┘         │              (best_skill.md)
+  ↑                                  │
+M5 模型/Agent 交互层 (基础设施)       └─ Design 08 自进化（可选）
 M6 CLI 编排层 (贯穿)
 ```
 
 | 模块 | 职责 | 输入 | 输出 |
 |------|------|------|------|
-| M1 | 代码图谱与模块树 | Git 仓库/本地目录 | `graph.json`、`module_tree.json`、`leaf_contexts/` |
+| M1 | 代码图谱与模块树 | Git 仓库/本地目录 | `graph.db`、`graph.json`、`leaf_contexts/` |
 | M2 | 知识库文档规范化 | Markdown/PDF/HTML/DOCX | `chunks.jsonl`、`tables.jsonl` |
-| M3 | SkillAtom 抽取 | M1 + M2 产物 | `merged_atoms.jsonl`、`benchmark_seeds.jsonl` |
-| M4 | SkillOpt 优化循环 | initial_skill.md + benchmark | `best_skill.md`、`history.json` |
-| M5 | 模型与 Agent 交互 | InteractionRequest | ModelResponse / AgentResponse |
-| M6 | CLI 人机交互 | 命令行 / project.yaml | `run_manifest.json`、`run_state.json` |
+| M3 | SkillAtom 抽取 | M1 + M2 产物 | `merged_atoms.jsonl`、`artifact_quality.json`、`benchmark_seeds.jsonl` |
+| M4 | SkillOpt 优化循环 | initial_skill + benchmark | `best_skill.md`、`history.json`、`trace_pool/`（可选） |
+| M5 | 模型与 Agent 交互 | InteractionRequest | `traces/`、ModelResponse |
+| M6 | CLI 人机交互 | 命令行 / config.yaml | `run_manifest.json`、`logs/run.log` |
 
-## 产出示例
+设计文档见 [`docs/design/`](docs/design/)（含 [07 流水线整合](docs/design/07-pipeline-integration-optimization.md)、[08 Skill 自进化](docs/design/08-skill-self-evolution-optimization.md)）。
 
-对 Apache Fineract（Java 金融核心系统，416 文件）运行后生成的 `SKILL.md`：
+## Fineract 示例（fast benchmark）
 
-```markdown
-# Fineract Agent Skill
-> 来源: Apache Fineract (develop)，416 文件，2197 节点
+仓库内 `config.yaml` 已配置 Apache Fineract 与 **`fineract-fast`**（train/selection/test = 5/6/3，完整集备份在 `fineract-full`）。
 
-## 核心规则
-### ⚡ 必须遵守的约束
-**规则**: 费用/罚金计算 → 确认费用类型、计算基数和上限
-- ✅ Do: 修改费用计算前确认费用类型、计算基数和上限
-- ❌ Do NOT: 不得新增未授权的费用类型或修改罚金上限
-- 📁 来源: 201 个文件 (conf=0.90)
+```bash
+# 环境变量
+export SKILL_LAB_CONFIG_PATH=$PWD/config.yaml   # 可选
 
-### 📋 操作流程
-**规则**: 利率/计提计算 → 确认计息方式和精度
-- ✅ Do: 确认计息方式（declining balance/flat/等额本息）和精度要求
-- ❌ Do NOT: 不得随意修改利率精度而不更新相关摊销逻辑
-- 📁 来源: 298 个文件 (conf=0.90)
+# 完整 M1→M4（推荐首次冒烟）
+skill-lab run all --config-path config.yaml --with-atoms
+
+# 仅 M4 重训（需 run 目录内已有 graph.db）
+skill-lab run optimize-skill \
+  --config-path config.yaml \
+  -o test-data/runs/<run_id>/optimization
+
+# M4 + 轨迹归纳（Design 08，不改严格 gate）
+skill-lab run optimize-skill --trace-merge ...
+
+# M4 + 完整自进化（严格 gate、归因、hygiene）
+skill-lab run optimize-skill --self-evolve ...
 ```
+
+产物目录：`settings.output.root/<run_id>/`（默认 `test-data/runs/`）。
+
+## CLI 命令
+
+```bash
+skill-lab init                  # 初始化项目与 config.yaml 模板
+skill-lab doctor                # 环境诊断
+skill-lab config                # 校验 config.yaml（L1）
+skill-lab run all               # 完整流水线 M1→M4
+skill-lab run code-graph        # 仅 M1
+skill-lab run normalize-docs    # 仅 M2
+skill-lab run extract-atoms     # 仅 M3
+skill-lab run optimize-skill    # 仅 M4（支持 --resume、--trace-merge、--self-evolve）
+skill-lab run skill-hygiene     # 离线 hygiene + gate
+skill-lab run bootstrap-benchmark  # M3 种子 → benchmark train
+skill-lab status [run_id]       # 运行状态
+skill-lab inspect run <run_id>  # run 摘要（--trace-pool、--validate-self-evolution 等）
+skill-lab inspect file <path>   # 单文件产物预览
+skill-lab eval <run_id>         # 独立评测 best_skill
+skill-lab publish <run_id>      # 发布 SKILL.md（--strip-rule-ids 可选）
+skill-lab resume <run_id>       # M4 断点续训
+skill-lab codegraph             # 图谱查询（MCP / CLI）
+```
+
+## 配置
+
+主配置文件为 **`config.yaml`**（模板：`config.template.yaml`）。两段结构：
+
+```yaml
+settings:
+  output:
+    root: test-data/runs/
+  skillopt:
+    num_epochs: 2
+    batch_size: 5
+    rollout_workers: 4
+    use_llm_rollout: true
+  self_evolution:          # Design 08，默认关闭
+    enabled: false
+  model_provider:
+    backends: { ... }
+    routes:
+      target: { primary: deepseek-flash }    # rollout
+      optimizer: { primary: deepseek }       # reflect/select
+
+project:
+  name: fineract-finance-skill
+  initial_skill: test-data/initial_skill.md
+  benchmark: test-data/benchmarks/fineract-fast
+  sources:
+    repos: [ ... ]
+    docs: [ ... ]
+```
+
+## 准备指南
+
+### 1. 代码仓库
+
+`project.sources.repos` 指向本地 clone（示例：`test-data/sources/repos/fineract`）。
+
+### 2. 知识文档
+
+置于 `test-data/sources/docs/<project>/` 并在 `config.yaml` 的 `sources.docs` 注册。
+
+### 3. 初始 Skill
+
+`test-data/initial_skill.md`：Workflow / Constraint / Failure Mode / Checklist。
+
+### 4. Benchmark
+
+`benchmarks/<name>/{train,selection,test}/items.json`，每条含 `id`、`question`、`expected_checks`、`context_refs`（可选）。
+
+快速子集生成：`python test-data/benchmarks/build_fast_subset.py`（产出 `fineract-fast`）。
+
+### 5. API 与 `.env`
+
+在项目根目录配置 `.env`；`model_provider` 通过 `${VAR}` 引用。勿将 key 提交到 git。
 
 ## 技术栈
 
@@ -74,125 +163,29 @@ M6 CLI 编排层 (贯穿)
 
 ```
 code-to-skill/
-├── docs/
-│   ├── design/           # 6 模块详细设计文档
-│   └── implementation-plan.md
-├── src/code_to_skill/    # 主代码
-│   ├── model_provider/    # M5 模型交互层
-│   ├── cli/              # M6 CLI 编排
-│   ├── code_graph/       # M1 代码图谱
-│   ├── document_normalizer/ # M2 文档规范化
-│   ├── atom_extractor/   # M3 SkillAtom 抽取
-│   └── skillopt_loop/    # M4 SkillOpt 优化
-├── tests/                # 53 个测试
-├── project.yaml          # 项目配置模板 (Fineract 示例)
-├── pyproject.toml
-└── requirements.txt
+├── docs/design/          # 00–08 模块与整合设计
+├── docs/references/      # 论文 PDF
+├── config.template.yaml
+├── config.yaml           # 本地配置（Fineract 示例）
+├── src/code_to_skill/
+│   ├── cli/              # M6
+│   ├── code_graph/       # M1
+│   ├── document_normalizer/
+│   ├── atom_extractor/   # M3
+│   ├── skillopt_loop/    # M4 + Design 08
+│   └── model_provider/   # M5
+├── test-data/            # 示例数据与 runs（通常 gitignore）
+└── tests/
 ```
-
-## CLI 命令
-
-```bash
-skill-lab init                  # 初始化项目
-skill-lab config                # 校验配置
-skill-lab run all               # 运行全流程
-skill-lab run code-graph        # 仅代码图谱
-skill-lab run normalize-docs    # 仅文档规范化
-skill-lab run extract-atoms     # 仅 Atom 抽取
-skill-lab run optimize-skill    # 仅 Skill 优化
-skill-lab status <run_id>       # 查看状态
-skill-lab inspect <artifact>    # 查看产物
-skill-lab eval <skill>          # 评测 Skill
-skill-lab publish <run_id>      # 发布 Skill
-skill-lab resume <run_id>       # 恢复运行
-```
-
-## 配置
-
-`project.yaml` 完整示例见 `test-data/project.yaml`。核心配置项：
-
-```yaml
-project:
-  name: my-project
-  domain: fintech
-
-sources:
-  repos:
-    - id: my-repo
-      path: /path/to/repo
-      ref: main
-      include: ["src/**"]
-      exclude: ["**/test/**"]
-  docs:
-    - id: my-docs
-      path: docs/readme.md
-      provider: local_file
-
-skillopt:
-  num_epochs: 3
-  batch_size: 20
-  edit_budget: 3
-```
-
-## 准备指南
-
-开始新项目前，准备 code-to-skill 流水线需要的最小输入。
-
-### 知识库
-
-从代码仓库和知识文档两个来源提取 SkillAtom。代码仓库通过 `config.yaml` 配置，知识文档置于 `test-data/sources/docs/<project>/` 目录：
-
-```bash
-mkdir -p test-data/sources/docs/fineract
-cp docs/fineract/README.md test-data/sources/docs/fineract/
-cp docs/fineract/CONTRIBUTING.md test-data/sources/docs/fineract/
-```
-
-然后在 `config.yaml` 中注册：
-
-```yaml
-project:
-  sources:
-    docs:
-      - id: fineract-readme
-        path: test-data/sources/docs/fineract/README.md
-      provider: local_file
-```
-
-文档类型优先级：编码规范 > 故障手册 > README/架构文档 > FAQ/讨论帖。
-
-### 草稿 SKILL
-
-手写一份 `initial_skill.md` 作为优化起点，覆盖 4 类规则：
-- **Workflow**：按步骤描述关键业务流程
-- **Constraint**：必须遵守的约束（带 `MUST/MUST NOT`）
-- **Failure Mode**：常见失败模式 + 症状 + 根因 + 修复方向
-- **Checklist**：验证清单
-
-### 测评案例
-
-`benchmarks/<project>/train/items.json`，每条包含：
-- `question`：给 Agent 的任务描述
-- `expected_checks`：验证关键词列表
-- `task_type`：`code_review` 或 `qa`
-
-推荐从目标仓库的 Issues/PR 中抽取 10-20 条真实场景。
 
 ## 开发
 
 ```bash
-# 安装开发依赖
 pip install -e ".[lxml]"
-pip install pytest
+python -m pytest tests/ -q
 
-# 运行测试
-python -m pytest tests/ -v
-
-# 全流程端到端测试 (需要 Fineract 在 external/ 下)
-python -c "
-from code_to_skill.code_graph import run_code_graph_pipeline
-# ... 见 tests/ 和 runs/ 目录
-"
+# 使用源码 CLI
+PYTHONPATH=src skill-lab run all --config-path config.yaml --dry-run
 ```
 
 ## License

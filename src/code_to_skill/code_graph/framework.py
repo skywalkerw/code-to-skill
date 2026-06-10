@@ -199,19 +199,6 @@ def extract_framework_metadata(
     return nodes, edges
 
 
-def extract_spring_metadata(
-    file_paths: list[str],
-    repo_root: str,
-    graph: CodeGraph | None = None,
-    *,
-    custom_patterns: CustomFrameworkPatterns | None = None,
-) -> tuple[list[GraphNode], list[GraphEdge]]:
-    """兼容旧名；等价于 :func:`extract_framework_metadata`。"""
-    return extract_framework_metadata(
-        file_paths, repo_root, graph, custom_patterns=custom_patterns,
-    )
-
-
 def _extract_custom_framework_nodes(
     content: str,
     rel_path: str,

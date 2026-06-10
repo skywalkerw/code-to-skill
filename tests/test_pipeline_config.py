@@ -51,6 +51,22 @@ def test_load_leaf_contexts_from_run(tmp_path):
     assert loaded[0]["leaf_id"] == "a"
 
 
+def test_artifact_contract_includes_quality(tmp_path):
+    atoms = tmp_path / "atoms"
+    atoms.mkdir()
+    aq = {
+        "passed": True,
+        "seeds_total": 5,
+        "source_ref_resolve_rate": 0.95,
+    }
+    (atoms / "artifact_quality.json").write_text(
+        __import__("json").dumps(aq), encoding="utf-8",
+    )
+    artifacts = discover_pipeline_artifacts(str(tmp_path))
+    contract = build_artifact_contract(artifacts)
+    assert contract.get("artifact_quality", {}).get("passed") is True
+
+
 def test_artifact_contract_write(tmp_path):
     artifacts = discover_pipeline_artifacts(str(tmp_path))
     contract = build_artifact_contract(artifacts)

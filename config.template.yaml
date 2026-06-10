@@ -146,6 +146,37 @@ settings:
       max_timeout_seconds: 900
       structured_output_fallback: true
 
+  # ── Skill 自进化（Design 08，默认关闭）────────────────────
+  self_evolution:
+    enabled: false
+    trace_pool:
+      enabled: true
+      min_support_count: 2
+      cluster_by: ["task_type", "missed_checks", "context_refs"]
+    proposals:
+      include_success: true
+      include_failure: true
+      hierarchical_merge: true
+      max_merge_fan_in: 8
+    gate:
+      strict_improvement: true
+      reject_ties: true
+      allowed_regressions: 0
+      frontier_enabled: false
+      frontier_size: 3
+    edits:
+      max_edits_per_step: 3
+      max_new_rules_per_step: 2
+      max_skill_tokens: 2000
+    hygiene:
+      enabled: true
+      run_each_epoch: true
+      min_rule_use_count: 1
+      max_rules: 40
+    attribution:
+      enabled: true
+      inject_rule_ids: true
+
   # ── 流水线编排（M1–M4 产物契约与 skip 策略）────────────────
   pipeline:
     write_artifact_contract: true

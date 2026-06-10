@@ -97,6 +97,7 @@ class SettingsConfig(BaseModel):
     document_normalizer: dict[str, Any] = Field(default_factory=dict)
     atom_extractor: dict[str, Any] = Field(default_factory=dict)
     skillopt: dict[str, Any] = Field(default_factory=dict)
+    self_evolution: dict[str, Any] = Field(default_factory=dict)
     pipeline: dict[str, Any] = Field(default_factory=dict)
     model_provider: ModelProviderSettings = Field(default_factory=ModelProviderSettings)
     output_root: str = "runs"
@@ -175,6 +176,7 @@ def _parse_settings(raw: dict) -> SettingsConfig:
         document_normalizer=raw.get("document_normalizer", {}),
         atom_extractor=raw.get("atom_extractor", {}),
         skillopt=raw.get("skillopt", {}),
+        self_evolution=raw.get("self_evolution", {}),
         pipeline=raw.get("pipeline", {}),
         model_provider=_parse_model_provider(mp_raw),
         output_root=output.get("root", "runs"),

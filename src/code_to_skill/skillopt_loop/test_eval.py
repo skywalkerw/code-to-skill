@@ -59,7 +59,7 @@ def evaluate_test_split(
         results = []
         for item in test_items:
             checks = item.get("expected_checks", [])
-            question = item.get("task_template", item.get("question", ""))
+            question = item.get("question", "")
             # Rule-based prediction
             relevant = [
                 l for l in best_skill.split("\n")

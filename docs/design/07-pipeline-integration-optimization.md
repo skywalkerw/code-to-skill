@@ -1,7 +1,7 @@
 # 流水线整合与代码利用率优化方案
 
 > 版本: 1.2  
-> 状态: **已实施（Phase -1 ~ P5，2026-06）**；P1-3（role 元数据入库）与 M3 `artifact_quality.json` 仍为后续项  
+> 状态: **已实施（Phase -1 ~ P5 + Design 08，2026-06）**；P1-3（role 元数据入库）仍为后续项  
 > 关联: `00-overall-design.md`、`01`–`06` 模块设计、`config.template.yaml`  
 > 背景: 2026-06 审计发现 M1–M5 各子系统已实现，但 Fineract 典型路径下大量产物**只写不读**。  
 > 修订: 2026-06-08 方案定稿；2026-06 实施 Phase -1~P5 并同步本文档 §10 实现索引。
@@ -102,7 +102,7 @@ flowchart LR
 | `publish_target` | `cli/main.py` | 硬编码路径 | ✅ 读 config + `--force`（P0-4） |
 | `context_mode` 三模式 | `envs/base.py` | rollout 未分支 | ✅ inline / agent_read / none（P5-3） |
 | `run extract-atoms` | `cli/main.py` | 空 leaf_contexts | ✅ 必须 `--from <run_dir>`（P0-5） |
-| M3 `artifact_quality.json` | `03` 设计 | 质量摘要 | ⚠️ 未实现；由 `artifact_contract` + `context_ref_report` 部分替代 |
+| M3 `artifact_quality.json` | `03` 设计 | 质量摘要 | ✅ `atom_extractor/artifact_quality.py` |
 | Role 元数据入 `graph.db` | `code_graph/db.py` | 仅 sidecar | ⚠️ 待 P1-3 |
 
 ### 2.3 最近 runs 证据（2026-06-08 审计）

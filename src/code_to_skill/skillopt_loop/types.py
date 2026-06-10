@@ -16,7 +16,6 @@ class BenchmarkItem(BaseModel):
     id: str
     question: str = ""
     task_type: str = ""
-    task_template: str = ""
     context_refs: list[str] = Field(default_factory=list)
     context_mode: Literal["inline", "agent_read", "none"] = "inline"
     expected_checks: list[str] = Field(default_factory=list)

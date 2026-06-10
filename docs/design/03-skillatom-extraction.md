@@ -1,6 +1,6 @@
 # 模块 3：从代码图谱/模块树与规范化文档到 SkillAtom 抽取
 
-> 状态: **已实现（核心路径）；`artifact_quality.json` 待补**  
+> 状态: **已实现（含 `artifact_quality.json`，Design 08 Phase 0）**  
 > 关联: `07-pipeline-integration-optimization.md` §8/§10、M1 sidecar、M4 `evidence_index` 消费、`run bootstrap-benchmark`
 
 ## 1. 模块目标
@@ -526,7 +526,7 @@ M3 落地顺序见 `07-pipeline-integration-optimization.md` Phase 2。实施状
 
 | # | 动作 | 状态 | 代码 / CLI |
 |---|------|------|------------|
-| 1 | `artifact_quality.json` 与 seed/evidence 质量摘要 | ⚠️ 未单独落盘 | 部分由 `artifact_contract.json`、`context_ref_report.json` 替代 |
+| 1 | `artifact_quality.json` 与 seed/evidence 质量摘要 | ✅ 已落盘 | `atom_extractor/artifact_quality.py`；M4 contract 内嵌摘要 |
 | 2 | `generate_benchmark_seeds()` 输出 M4 兼容 `id`/`question`/`context_refs` | ✅ | `atom_extractor/merger.py` |
 | 3 | 收紧 atom 合并，避免污染 `evidence_index` | ✅ | `merger.py` / `scorer.py`（持续迭代） |
 | 4 | `evidence_index` 纳入 artifact contract，M4 精确读取 | ✅ | `pipeline_config.py`、`code_evidence.py` |

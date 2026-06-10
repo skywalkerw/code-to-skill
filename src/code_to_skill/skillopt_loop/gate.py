@@ -72,11 +72,16 @@ class GateManager:
         delta: float = 0.01,
         metric: GateMetric = "hard",
         mixed_weight: float = 0.5,
+        *,
+        strict_improvement: bool = False,
+        reject_ties: bool = False,
     ):
         self.patience = patience
         self.delta = delta
         self.metric: GateMetric = metric
         self.mixed_weight = mixed_weight
+        self.strict_improvement = strict_improvement
+        self.reject_ties = reject_ties
         self._consecutive_rejects = 0
         self._total_accepts = 0
         self._total_rejects = 0
@@ -103,7 +108,10 @@ class GateManager:
             candidate_hard, candidate_soft,
             metric=self.metric, mixed_weight=self.mixed_weight,
         )
-        if candidate > best_score + self.delta:
+        min_delta = self.delta if self.strict_improvement else 0.0
+        tie_eps = 1e-9 if self.reject_ties else -1.0
+
+        if candidate > best_score + min_delta:
             self._consecutive_rejects = 0
             self._total_accepts += 1
             return GateDecision(
@@ -114,7 +122,7 @@ class GateManager:
                 reason=f"new_best ({best_score:.3f} → {candidate:.3f}) [{self.metric}]",
             )
 
-        if candidate > current_score:
+        if candidate > current_score + min_delta:
             self._consecutive_rejects = 0
             self._total_accepts += 1
             return GateDecision(
@@ -126,7 +134,8 @@ class GateManager:
             )
 
         if (
-            train_rollout is not None
+            not self.strict_improvement
+            and train_rollout is not None
             and prev_train_rollout is not None
             and train_rollout >= prev_train_rollout + train_delta
             and candidate >= current_score - 1e-9
@@ -146,12 +155,18 @@ class GateManager:
 
         self._consecutive_rejects += 1
         self._total_rejects += 1
+        if self.reject_ties and abs(candidate - current_score) <= tie_eps:
+            reason = f"tie_rejected ({candidate:.3f} ≈ {current_score:.3f}) [{self.metric}]"
+        elif self.strict_improvement and candidate > current_score:
+            reason = f"delta_insufficient ({candidate:.3f} vs {current_score:.3f}, need +{min_delta}) [{self.metric}]"
+        else:
+            reason = f"no_improvement ({candidate:.3f} ≤ {current_score:.3f}) [{self.metric}]"
         return GateDecision(
             action="reject",
             candidate_score=candidate,
             best_score=best_score,
             current_score=current_score,
-            reason=f"no_improvement ({candidate:.3f} ≤ {current_score:.3f}) [{self.metric}]",
+            reason=reason,
         )
 
     @property

@@ -571,7 +571,7 @@ def build_rollout_item_context(
         for ref in refs[:2]:
             for hit in store.lookup_ref(ref):
                 parts.append(store.format_hit(hit))
-        for atom_id in item.get("atom_ids") or []:
+        for atom_id in item.get("source_atom_ids") or []:
             for hit in store.lookup_atom(atom_id):
                 parts.append(store.format_hit(hit))
 

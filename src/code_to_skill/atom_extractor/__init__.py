@@ -87,6 +87,16 @@ def run_atom_extraction(
         "evidence_index": evidence_index,
     }
 
+    from .artifact_quality import compute_artifact_quality
+
+    quality = compute_artifact_quality(
+        results["merged_atoms"],
+        results["benchmark_seeds"],
+        results.get("evidence_index"),
+        atom_settings=atom_extractor_settings,
+    )
+    results["artifact_quality"] = quality
+
     # 写文件
     if output_root:
         _write_outputs(results, output_root)
@@ -121,10 +131,17 @@ def _write_outputs(results: dict, output_root: str):
                 f, indent=2, ensure_ascii=False,
             )
 
+    if results.get("artifact_quality"):
+        with open(os.path.join(output_root, "artifact_quality.json"), "w", encoding="utf-8") as f:
+            json.dump(results["artifact_quality"], f, indent=2, ensure_ascii=False)
+
     accepted_count = sum(1 for a in results["merged_atoms"] if a.status in ("accepted", "candidate"))
     ev_count = len(results.get("evidence_index") or [])
+    q = results.get("artifact_quality") or {}
+    q_flag = "✓" if q.get("passed") else "✗"
     print(
         f"[M3] Atom 抽取完成: {len(results['raw_atoms'])} raw → "
         f"{len(results['merged_atoms'])} merged → {accepted_count} accepted"
         + (f" | evidence={ev_count}" if ev_count else "")
+        + f" | artifact_quality={q_flag}"
     )

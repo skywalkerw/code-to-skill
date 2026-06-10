@@ -11,7 +11,7 @@ from pathlib import Path
 
 from .scanner import scan_repo
 from .parser import parse_files
-from .framework import extract_framework_metadata, extract_spring_metadata, merge_custom_patterns
+from .framework import extract_framework_metadata, merge_custom_patterns
 from .resolver import resolve_references
 from .callback_synthesis import synthesize_interface_dispatch
 from .mybatis_xml import extract_mybatis_xml

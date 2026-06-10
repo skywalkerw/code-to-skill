@@ -7,15 +7,17 @@ MAIN_EPILOG = """
   skill-lab run -h              流水线子命令列表
   skill-lab run all -h          完整流水线参数说明
   skill-lab codegraph -h        代码图谱查询子命令
+  skill-lab inspect run -h      run 产物摘要与 Design 08 校验
 
 \b
 示例:
   skill-lab init --name my-skill
   skill-lab doctor --config-path config.yaml
   skill-lab config --config-path config.yaml
-  skill-lab run all --config-path config.yaml
-  skill-lab run optimize-skill -o runs/latest/optimization --epochs 3
-  skill-lab resume 20260607-120000 --config-path config.yaml
+  skill-lab run all --config-path config.yaml --with-atoms
+  skill-lab run optimize-skill --trace-merge -o test-data/runs/xxx/optimization
+  skill-lab inspect run <run_id> --trace-pool --validate-self-evolution
+  skill-lab resume <run_id> --config-path config.yaml
   skill-lab eval <run_id> --split test
 """
 
@@ -27,12 +29,13 @@ RUN_EPILOG = """
 
 \b
 示例:
-  skill-lab run all --config-path config.yaml
+  skill-lab run all --config-path config.yaml --with-atoms
   skill-lab run all --dry-run
-  skill-lab run all --resume-run-id 20260607-120000
+  skill-lab run all --resume-run-id 20260608-213005
   skill-lab run code-graph --repo fineract
-  skill-lab run optimize-skill -o test-data/runs/xxx/optimization \\
-      --epochs 1 --batch-size 15 --resume
+  skill-lab run optimize-skill --self-evolve \\
+      -o test-data/runs/xxx/optimization --epochs 2 --batch-size 5
+  skill-lab run skill-hygiene <run_id> --force
 """
 
 RUN_ALL_DOC = """\b
@@ -46,12 +49,19 @@ RUN_ALL_DOC = """\b
   [4/4] optimize-skill  SkillOpt 训练（initial_skill + benchmark）
 
 \b
+跳过策略（默认）:
+  已配置 initial_skill + benchmark train 时，默认跳过 M2/M3，只跑 M1+M4。
+  要跑齐四段请加: --with-atoms
+  跳过 M3 但仍跑 M2: --with-docs
+
+\b
 产物目录:
   <settings.output.root>/<run_id>/
     sources/code/<repo_id>/<ref>/graph.db
-    atoms/
-    optimization/best_skill.md
-    logs/run.log
+    sources/docs/<doc_id>/
+    atoms/merged_atoms.jsonl, artifact_quality.json
+    optimization/best_skill.md, artifact_contract.json
+    logs/run.log, traces/
 
 \b
 续训:
@@ -86,7 +96,8 @@ RUN_NORMALIZE_DOCS_DOC = """\b
 RUN_EXTRACT_ATOMS_DOC = """\b
 仅运行 M3：从 leaf_contexts + document_chunks 抽取 SkillAtom。
 
-通常需先完成 M1/M2；``--from`` 指定含 sources/ 与 atoms/ 的 run 目录。
+通常需先完成 M1/M2；``--from-run`` 指定含 sources/ 的 run 目录。
+产出含 merged_atoms.jsonl、artifact_quality.json、benchmark_seeds.jsonl。
 """
 
 RUN_CODE_GRAPH_DAEMON_DOC = """\b
@@ -115,13 +126,46 @@ RUN_OPTIMIZE_SKILL_DOC = """\b
 
 \b
 常用参数:
-  -o / --output     训练目录（含 runtime_state.json 时可 --resume 续训）
-  --epochs          覆盖 config.settings.skillopt.num_epochs
-  --batch-size      每 epoch 训练 batch 大小
-  --benchmark       覆盖 config.project.benchmark 目录
+  -o / --output       训练目录（含 runtime_state.json 时可 --resume 续训）
+  --epochs            覆盖 config.settings.skillopt.num_epochs
+  --batch-size        每 epoch 训练 batch 大小
+  --benchmark         覆盖 config.project.benchmark 目录
+  --trace-merge       Design 08：仅 trace 聚类归纳（不改严格 gate）
+  --self-evolve       Design 08：完整自进化（严格 gate、归因、hygiene）
+  --slow-update       启用 epoch 级 slow update
+  --meta-skill        启用 meta skill
 
 \b
 依赖:
-  graph.db（run all 或 run code-graph 产出，或 run 目录内 sources/code/...）
+  graph.db（run all 或 run code-graph 产出；run 目录内 sources/code/...）
   config.project.initial_skill 与 benchmark（train/selection/test）
+
+\b
+Design 08 产物（--trace-merge / --self-evolve）:
+  optimization/trace_pool/, proposals/, rejected_edit_buffer.jsonl
+  rule_attribution.json（--self-evolve）
+"""
+
+RUN_SKILL_HYGIENE_DOC = """\b
+对已有 run 的 optimization/best_skill.md 执行 hygiene pass。
+
+经 selection gate 验证通过后才写回 best_skill.md。
+
+\b
+常用参数:
+  --force     忽略 token/规则阈值，强制执行 hygiene
+"""
+
+INSPECT_RUN_DOC = """\b
+汇总 run 目录：manifest、gate、test、context refs、训练曲线。
+
+\b
+Design 08 扩展:
+  --trace-pool                 trace pool / proposals 摘要
+  --rule-attribution           规则归因摘要
+  --frontier                   前沿 Skill 池摘要
+  --validate-self-evolution    校验 Design 08 产物完整性
+
+\b
+单文件查看: skill-lab inspect file <path>
 """

@@ -53,10 +53,11 @@ class RawAtom(BaseModel):
 # ── BenchmarkSeed ────────────────────────────────────────────
 
 class BenchmarkSeed(BaseModel):
-    """评测种子。"""
-    seed_id: str
-    atom_ids: list[str] = Field(default_factory=list)
-    task_template: str = ""
+    """评测种子（对齐 benchmark items.json 子集）。"""
+    id: str
+    question: str = ""
+    source_atom_ids: list[str] = Field(default_factory=list)
+    context_refs: list[str] = Field(default_factory=list)
     expected_checks: list[str] = Field(default_factory=list)
     risk: str = "medium"
 

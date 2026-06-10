@@ -1,8 +1,6 @@
 """Module 5 配置加载与 Provider 工厂。
 
-支持两种配置来源：
-1. 独立 interaction_config.yaml（向后兼容 + 测试用）
-2. 内嵌在 config.yaml 的 model_provider 段（推荐，各模块统一配置）
+配置来源：内嵌在 config.yaml 的 ``settings.model_provider`` 段。
 
 名词约定（对齐设计文档 §5-§6）：
 - backend_type：高层类别（llm_api, agent_cli, mock 等）
@@ -15,8 +13,6 @@ import os
 import logging
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
-
-import yaml
 
 from .backends import InteractionBackend
 from .router import Router
@@ -82,7 +78,6 @@ def create_backend_from_config(backend_id: str, backend_config: dict) -> Interac
     Returns:
         已实例化的 InteractionBackend
     """
-    # 兼容 pydantic model（有 model_dump）和原生 dict
     if hasattr(backend_config, 'model_dump'):
         backend_config = backend_config.model_dump()
 
@@ -180,122 +175,3 @@ def build_router_from_app_config(cfg: "AppConfig") -> tuple[Router, dict[str, In
     """
     mp = cfg.settings.model_provider
     return build_router_from_dict(mp.model_dump())
-
-
-# ── 独立 YAML 文件加载（向后兼容）──────────────────────────────────
-
-
-def load_interaction_config(config_path: str | Path) -> dict[str, Any]:
-    """加载独立的 interaction_config.yaml，返回解析后的配置字典。"""
-    path = Path(config_path)
-    if not path.exists():
-        raise FileNotFoundError(f"Interaction config not found: {path}")
-
-    with open(path, encoding="utf-8") as f:
-        raw = yaml.safe_load(f)
-
-    if raw is None:
-        raise ValueError(f"Empty config: {path}")
-
-    return raw
-
-
-def build_router_from_config(config_path: str | Path) -> tuple[Router, dict[str, InteractionBackend]]:
-    """从独立 interaction_config.yaml 构建 Router 和所有 Backend 实例。
-
-    推荐改用 build_router_from_dict() 配合 config.yaml 内嵌配置。
-    """
-    raw = load_interaction_config(config_path)
-    return build_router_from_dict(raw)
-
-
-def create_llm_backend_from_yaml(
-    config_path: str | Path,
-    backend_id: str | None = None,
-) -> InteractionBackend:
-    """从独立 YAML 配置创建单个 LLM Backend（便捷函数）。"""
-    raw = load_interaction_config(config_path)
-    backend_configs = raw.get("backends", {})
-
-    if backend_id and backend_id in backend_configs:
-        return create_backend_from_config(backend_id, backend_configs[backend_id])
-
-    routes = raw.get("routes", {})
-    default_route = routes.get("default", {}).get("primary")
-    if default_route and default_route in backend_configs:
-        return create_backend_from_config(default_route, backend_configs[default_route])
-
-    if backend_configs:
-        first_id = next(iter(backend_configs))
-        return create_backend_from_config(first_id, backend_configs[first_id])
-
-    raise ValueError(f"No backends found in {config_path}")
-
-
-# ── 配置校验 ─────────────────────────────────────────────────────
-
-
-def validate_interaction_config(config_path: str | Path) -> list[str]:
-    """校验独立 interaction_config.yaml 的完整性和合法性。
-
-    Returns:
-        警告信息列表（空列表表示通过）
-    """
-    warnings: list[str] = []
-
-    try:
-        raw = load_interaction_config(config_path)
-    except FileNotFoundError:
-        return [f"Config file not found: {config_path}"]
-    except Exception as e:
-        return [f"Config parse error: {e}"]
-
-    backend_configs = raw.get("backends", {})
-    if not backend_configs:
-        warnings.append("No backends defined in config")
-
-    for backend_id, cfg in backend_configs.items():
-        provider_name = cfg.get("provider", "openai_compatible")
-        providers = _get_builtin_providers()
-        if provider_name not in providers:
-            warnings.append(
-                f"Backend '{backend_id}': unknown provider '{provider_name}'. "
-                f"Available: {list(providers.keys())}"
-            )
-
-        backend_type = cfg.get("type", "")
-        valid_types = {"llm_api", "local_llm", "agent_cli", "agent_service", "mock"}
-        if backend_type not in valid_types:
-            warnings.append(
-                f"Backend '{backend_id}': unknown type '{backend_type}'. "
-                f"Valid: {valid_types}"
-            )
-
-        if provider_name == "openai_compatible":
-            has_key = cfg.get("api_key_env") or cfg.get("api_key")
-            if not has_key:
-                warnings.append(
-                    f"Backend '{backend_id}': no api_key_env or api_key configured"
-                )
-
-    routes = raw.get("routes", {})
-    known_backend_ids = set(backend_configs.keys())
-    for role, route_cfg in routes.items():
-        if isinstance(route_cfg, dict):
-            primary = route_cfg.get("primary", "")
-            if primary and primary not in known_backend_ids:
-                warnings.append(
-                    f"Route '{role}': primary backend '{primary}' not found in backends"
-                )
-            for fb in route_cfg.get("fallback", []):
-                if fb not in known_backend_ids:
-                    warnings.append(
-                        f"Route '{role}': fallback backend '{fb}' not found in backends"
-                    )
-
-    policies = raw.get("policies", {})
-    max_cost = policies.get("max_cost_per_run_usd")
-    if max_cost is not None and not isinstance(max_cost, (int, float)):
-        warnings.append(f"policies.max_cost_per_run_usd must be numeric, got {type(max_cost)}")
-
-    return warnings

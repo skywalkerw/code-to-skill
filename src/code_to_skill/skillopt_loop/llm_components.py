@@ -77,7 +77,7 @@ PATCH_SCHEMA = {
 
 
 def _parse_reflect_response(response) -> dict | None:
-    """从 LLM 响应提取 patch JSON（兼容 parsed 字段与纯 content）。"""
+    """从 LLM 响应提取 patch JSON（structured ``parsed`` 或文本 ``content``）。"""
     if response.parsed and isinstance(response.parsed, dict):
         return response.parsed
     if response.content:
@@ -658,29 +658,6 @@ def _build_buffer_summary(
     rejected_edits: list | None,
 ) -> str:
     """构建 step buffer 摘要字符串，供 Reflect prompt 使用。"""
-    parts: list[str] = []
+    from .reflect_helpers import summarize_step_buffer_for_reflect
 
-    if rejected_edits:
-        parts.append("Previously REJECTED edits (do NOT propose these again):")
-        for i, e in enumerate(rejected_edits[-5:]):  # 最近 5 条
-            op = getattr(e, "op", "?")
-            content = (getattr(e, "content", "") or "")[:80]
-            parts.append(f"  - [{op}] {content}")
-        parts.append("")
-
-    if step_buffer:
-        failure_types: dict[str, int] = {}
-        for buf in step_buffer:
-            if isinstance(buf, dict) and buf.get("type") == "failure":
-                ft = buf.get("failure_type", buf.get("type", "unknown"))
-                failure_types[ft] = failure_types.get(ft, 0) + 1
-        if failure_types:
-            parts.append("Previously observed failure patterns:")
-            for ft, count in sorted(failure_types.items(), key=lambda x: -x[1]):
-                parts.append(f"  - {ft}: {count} occurrences")
-            parts.append("")
-
-    if not parts:
-        return "(no prior buffer information — this is the first step)"
-
-    return "\n".join(parts)
+    return summarize_step_buffer_for_reflect(step_buffer, rejected_edits)

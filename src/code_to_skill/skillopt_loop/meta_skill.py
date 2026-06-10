@@ -49,6 +49,7 @@ class MetaSkill:
         curr_skill: str = "",
         accepted_edits: list | None = None,
         rejected_edits: list | None = None,
+        rejected_buffer_records: list[dict] | None = None,
         comparison_pairs: dict | None = None,
         optimizer_backend: Any = None,
     ) -> None:
@@ -65,6 +66,7 @@ class MetaSkill:
         entry = {
             "accepted_count": len(accepted_edits or []),
             "rejected_count": len(rejected_edits or []),
+            "rejected_buffer_count": len(rejected_buffer_records or []),
             "improved": (comparison_pairs or {}).get("improved", 0),
             "regressed": (comparison_pairs or {}).get("regressed", 0),
         }
@@ -86,7 +88,8 @@ class MetaSkill:
 
         # 降级：规则生成
         self._content = _rule_based_meta_skill(
-            accepted_edits, rejected_edits, comparison_pairs
+            accepted_edits, rejected_edits, comparison_pairs,
+            rejected_buffer_records=rejected_buffer_records,
         )
         logger.info("[MetaSkill] Updated via rules: %d chars", len(self._content))
 
@@ -110,6 +113,8 @@ def _rule_based_meta_skill(
     accepted_edits: list | None,
     rejected_edits: list | None,
     comparison_pairs: dict | None,
+    *,
+    rejected_buffer_records: list[dict] | None = None,
 ) -> str:
     """规则生成 meta skill（LLM 不可用时的降级）。"""
     lines: list[str] = []
@@ -127,6 +132,16 @@ def _rule_based_meta_skill(
             op = getattr(e, "op", "?")
             content = (getattr(e, "content", "") or "")[:80]
             lines.append(f"  - [{op}] {content}")
+
+    if rejected_buffer_records:
+        lines.append(
+            f"\nPersisted rejected buffer ({len(rejected_buffer_records)} entries) — "
+            "do not repeat gate-failed edits:"
+        )
+        for rec in rejected_buffer_records[-5:]:
+            reason = rec.get("reason", "?")
+            content = (rec.get("content") or "")[:80]
+            lines.append(f"  - [{reason}] {content}")
 
     if comparison_pairs:
         improved = comparison_pairs.get("improved", 0)

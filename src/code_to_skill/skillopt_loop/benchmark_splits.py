@@ -15,7 +15,7 @@ class ResolvedBenchmarkSplits:
     selection: list[dict]
     test: list[dict]
     use_explicit_splits: bool
-    source: str  # "explicit_files" | "ratio"
+    source: str  # "explicit_files" | "train_only"
 
 
 @dataclass
@@ -45,33 +45,14 @@ class BenchmarkSplits:
             data = json.load(f)
         return data.get("items", [])
 
-    def resolve(
-        self,
-        *,
-        selection_split_ratio: float = 0.3,
-        test_split_ratio: float = 0.0,
-    ) -> ResolvedBenchmarkSplits:
-        """显式 split 文件存在时直接使用；否则从 train 池按 ratio 切分。"""
-        if self.has_explicit_splits:
-            return ResolvedBenchmarkSplits(
-                train=self.train,
-                selection=self.selection,
-                test=self.test,
-                use_explicit_splits=True,
-                source="explicit_files",
-            )
-
-        total = len(self.train)
-        n_sel = int(total * selection_split_ratio)
-        n_test = int(total * test_split_ratio) if test_split_ratio > 0 else 0
-        n_train = max(0, total - n_sel - n_test)
-
+    def resolve(self) -> ResolvedBenchmarkSplits:
+        """使用 benchmark 目录中的显式 split 文件；无 selection/test 时仅 train。"""
         return ResolvedBenchmarkSplits(
-            train=self.train[:n_train],
-            selection=self.train[n_train:n_train + n_sel],
-            test=self.train[n_train + n_sel:n_train + n_sel + n_test],
-            use_explicit_splits=False,
-            source="ratio",
+            train=self.train,
+            selection=self.selection,
+            test=self.test,
+            use_explicit_splits=self.has_explicit_splits,
+            source="explicit_files" if self.has_explicit_splits else "train_only",
         )
 
     def validate_splits(self) -> list[str]:

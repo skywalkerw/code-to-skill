@@ -141,7 +141,7 @@ class EnvAdapter(ABC):
     @staticmethod
     def _build_context_from_item(item: dict, context_mode: str = "inline") -> str:
         """根据 context_mode 从 item 中提取任务文本（不含 inline 代码片段）。"""
-        question = item.get("task_template", item.get("question", ""))
+        question = item.get("question", "")
         refs = item.get("context_refs", [])
         mode = EnvAdapter._item_context_mode(item, context_mode)
 
@@ -161,7 +161,7 @@ class DEFAULTAdapter(EnvAdapter):
     """内置默认适配器。
 
     适配当前仓库的 benchmark 格式：
-    - items: [{id, question/task_template, expected_checks, task_type}]
+    - items: [{id, question, expected_checks, task_type}]
     - rollout: 用 M5 model_provider 或关键词规则模拟
     - evaluate: 用确定性 keyword scorer
 
@@ -209,9 +209,8 @@ class DEFAULTAdapter(EnvAdapter):
             self.rollout_max_tool_rounds = int(
                 cfg.get("rollout_max_tool_rounds", self.rollout_max_tool_rounds)
             )
-            if "rollout_workers" in cfg or "workers" in cfg:
-                workers = cfg.get("rollout_workers", cfg.get("workers", self.rollout_workers))
-                self.rollout_workers = max(1, int(workers or 1))
+            if "rollout_workers" in cfg:
+                self.rollout_workers = max(1, int(cfg.get("rollout_workers") or 1))
             self.enable_code_tools = bool(cfg.get("enable_code_tools", self.enable_code_tools))
             self.graph_sidecars = cfg.get("graph_sidecars")
             prompts = cfg.get("reflect_prompts") or {}
@@ -361,7 +360,7 @@ class DEFAULTAdapter(EnvAdapter):
 
         return {
             "id": item.get("id", ""),
-            "question": item.get("question", item.get("task_template", "")),
+            "question": item.get("question", ""),
             "response_mode": item.get("response_mode", "answer"),
             "reflect_focus": item.get("reflect_focus", ""),
             "context_refs": list(item.get("context_refs") or []),

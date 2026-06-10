@@ -13,7 +13,14 @@ def _read_json(path: Path) -> dict | list | None:
         return json.load(f)
 
 
-def summarize_run(run_dir: Path) -> list[str]:
+def summarize_run(
+    run_dir: Path,
+    *,
+    trace_pool: bool = False,
+    rule_attribution: bool = False,
+    frontier: bool = False,
+    validate_self_evolution: bool = False,
+) -> list[str]:
     """生成 run 目录的人类可读摘要行。"""
     lines: list[str] = []
     opt = run_dir / "optimization"
@@ -118,5 +125,79 @@ def summarize_run(run_dir: Path) -> list[str]:
     best_skill = opt / "best_skill.md"
     if best_skill.is_file():
         lines.append(f"best_skill.md: {best_skill.stat().st_size} bytes")
+
+    atoms_dir = run_dir / "atoms"
+    aq = _read_json(atoms_dir / "artifact_quality.json")
+    if isinstance(aq, dict):
+        flag = "✓" if aq.get("passed") else "✗"
+        lines.append(
+            f"M3 artifact_quality: {flag} seeds={aq.get('seeds_total', 0)} "
+            f"resolve_rate={aq.get('source_ref_resolve_rate', 0):.2f}"
+        )
+        if aq.get("failures"):
+            lines.append(f"  failures: {', '.join(aq['failures'])}")
+
+    if trace_pool:
+        tp = opt / "trace_pool"
+        traces = tp / "traces.jsonl"
+        clusters = _read_json(tp / "clusters.json")
+        if traces.is_file():
+            n = sum(1 for _ in open(traces, encoding="utf-8"))
+            lines.append(f"Trace pool: {n} traces")
+        if isinstance(clusters, dict):
+            summary = clusters.get("summary") or {}
+            lines.append(
+                f"  clusters={summary.get('clusters', 0)} "
+                f"failures={summary.get('failure_traces', 0)}"
+            )
+        prop_q = _read_json(tp.parent / "proposals" / "proposal_quality.json")
+        if isinstance(prop_q, dict):
+            lines.append(
+                f"  proposals: ready={prop_q.get('ready_count', 0)} "
+                f"avg_support={prop_q.get('avg_support_count', 0):.1f}"
+            )
+
+    if rule_attribution:
+        attr = _read_json(opt / "rule_attribution.json")
+        if isinstance(attr, dict):
+            rules = attr.get("rules") or {}
+            lines.append(f"Rule attribution: {len(rules)} rules")
+            for rid, entry in list(rules.items())[:5]:
+                if isinstance(entry, dict):
+                    lines.append(
+                        f"  {rid}: used={entry.get('rule_used_count', 0)} "
+                        f"regressions={entry.get('rule_regression_count', 0)}"
+                    )
+
+    rej_buf = opt / "rejected_edit_buffer.jsonl"
+    if rej_buf.is_file():
+        n_rej = sum(1 for _ in open(rej_buf, encoding="utf-8"))
+        lines.append(f"Rejected edit buffer: {n_rej} entries")
+
+    if frontier:
+        fdata = _read_json(opt / "frontier" / "frontier.json")
+        if isinstance(fdata, dict):
+            entries = fdata.get("entries") or []
+            lines.append(f"Frontier pool: {len(entries)}/{fdata.get('max_size', '?')}")
+            for e in entries[:5]:
+                if isinstance(e, dict):
+                    lines.append(
+                        f"  step {e.get('step', '?')}: score={e.get('score', 0):.3f} "
+                        f"hash={(e.get('skill_hash') or '')[:8]}"
+                    )
+
+    if validate_self_evolution:
+        from code_to_skill.skillopt_loop.self_evolution_validate import (
+            validate_self_evolution_run,
+        )
+        report = validate_self_evolution_run(opt)
+        flag = "PASS" if report.get("passed") else "FAIL"
+        lines.append(f"Self-evolution validation: {flag}")
+        for chk in report.get("checks") or []:
+            if not isinstance(chk, dict):
+                continue
+            mark = "✓" if chk.get("ok") else "✗"
+            detail = chk.get("detail", "")
+            lines.append(f"  {mark} {chk.get('name', '?')}: {detail}")
 
     return lines

@@ -33,7 +33,7 @@ def resolve_skillopt_backend_ids(
     """解析 rollout(target) 与 optimizer 的 backend ID。
 
     优先级（各自独立）：
-    1. ``settings.skillopt.rollout_backend`` / ``target_backend``
+    1. ``settings.skillopt.rollout_backend``
     2. ``settings.skillopt.optimizer_backend``
     3. ``model_provider.routes.target.primary`` / ``optimizer.primary``
     4. 环境变量 ``SKILL_LAB_TARGET_BACKEND`` / ``SKILL_LAB_OPTIMIZER_BACKEND``
@@ -56,7 +56,6 @@ def resolve_skillopt_backend_ids(
 
     rollout = (
         skillopt.get("rollout_backend")
-        or skillopt.get("target_backend")
         or _route_primary("target")
         or os.environ.get("SKILL_LAB_TARGET_BACKEND")
     )

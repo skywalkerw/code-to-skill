@@ -109,20 +109,6 @@ class GraphDB:
                 tokenize='porter'
             );
         """)
-        self._migrate_schema()
-
-    def _migrate_schema(self):
-        """为旧版 graph.db 补充新列。"""
-        conn = self._connect()
-        for ddl in (
-            "ALTER TABLE nodes ADD COLUMN qualified_name TEXT",
-            "ALTER TABLE nodes ADD COLUMN signature TEXT",
-            "ALTER TABLE nodes ADD COLUMN docstring TEXT",
-        ):
-            try:
-                conn.execute(ddl)
-            except sqlite3.OperationalError:
-                pass
 
     # ── 写入 ────────────────────────────────────────────────
 

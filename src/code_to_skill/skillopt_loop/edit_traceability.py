@@ -27,7 +27,7 @@ def rollout_failure_records(results: list[dict]) -> list[dict]:
         records.append({
             "id": r.get("id", ""),
             "task_type": r.get("task_type", ""),
-            "question": (r.get("question") or r.get("task_template") or "")[:300],
+            "question": (r.get("question") or "")[:300],
             "context_refs": list(r.get("context_refs") or []),
             "missed_checks": list(r.get("missed_checks", [])),
             "passed_checks": list(r.get("passed_checks", [])),

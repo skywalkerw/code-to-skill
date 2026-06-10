@@ -101,7 +101,6 @@ def build_simulate_skillopt(skillopt: dict | Any | None) -> dict:
         "enable_code_tools": False,
         "enable_slow_update": False,
         "enable_meta_skill": False,
-        "test_split_ratio": 0.0,
     })
     return out
 
@@ -336,7 +335,6 @@ def run_full_simulate(
                 enable_code_tools=False,
                 enable_slow_update=False,
                 enable_meta_skill=False,
-                test_split_ratio=0.0,
                 token_budgets=sim_skillopt.get("token_budgets"),
             )
             report.phases.append({

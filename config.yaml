@@ -53,6 +53,17 @@ settings:
       meta_skill: 2048
       atom_extract: 8192
 
+  # Design 08 自进化（默认关闭；快速验证用 --trace-merge 或 --self-evolve）
+  self_evolution:
+    enabled: false
+    trace_pool:
+      enabled: true
+      min_support_count: 2
+    gate:
+      strict_improvement: true
+      reject_ties: true
+      frontier_enabled: false
+
   model_provider:
     backends:
       deepseek:

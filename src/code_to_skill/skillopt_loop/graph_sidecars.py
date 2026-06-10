@@ -169,7 +169,7 @@ class EvidenceIndexStore:
                 evidence_id=item.get("evidence_id", ""),
                 type=item.get("type", ""),
                 source_ref=item.get("source_ref", ""),
-                atom_ids=list(item.get("atom_ids") or []),
+                atom_ids=list(item.get("source_atom_ids") or []),
             )
             for item in raw
             if isinstance(item, dict)

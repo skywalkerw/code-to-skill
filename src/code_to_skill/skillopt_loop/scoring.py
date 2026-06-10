@@ -45,7 +45,7 @@ def score_benchmark_item(
     if scorer in ("llm_judge", "judge", "llm"):
         result = score_with_llm_judge(
             predicted,
-            item.get("question") or item.get("task_template", ""),
+            item.get("question", ""),
             rubric=item.get("rubric"),
             backend=judge_backend,
             hard_threshold=hard_threshold,

@@ -42,15 +42,15 @@ class TestBenchmarkSplits:
         assert len(resolved.selection) == 22
         assert len(resolved.test) == 8
 
-    def test_resolve_ratio_fallback(self):
+    def test_resolve_train_only(self):
         items = [{"id": f"t{i}", "expected_checks": ["a"]} for i in range(10)]
         splits = BenchmarkSplits(train=items, selection=[], test=[])
-        resolved = splits.resolve(selection_split_ratio=0.3, test_split_ratio=0.2)
+        resolved = splits.resolve()
         assert not resolved.use_explicit_splits
-        assert resolved.source == "ratio"
-        assert len(resolved.train) == 5
-        assert len(resolved.selection) == 3
-        assert len(resolved.test) == 2
+        assert resolved.source == "train_only"
+        assert len(resolved.train) == 10
+        assert resolved.selection == []
+        assert resolved.test == []
 
     def test_validate_no_overlap(self):
         path = Path("test-data/benchmarks/fineract")

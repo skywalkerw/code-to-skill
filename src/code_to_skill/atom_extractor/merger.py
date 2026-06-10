@@ -92,9 +92,7 @@ def generate_benchmark_seeds(atoms: list[SkillAtom]) -> list[dict]:
             "question": atom.claim[:200],
             "expected_checks": checks[:5],
             "context_refs": _context_refs_from_atom(atom),
-            "seed_id": item_id,
-            "atom_ids": [atom.atom_id],
-            "task_template": atom.claim[:120],
+            "source_atom_ids": [atom.atom_id],
             "risk": atom.risk,
         })
     return seeds

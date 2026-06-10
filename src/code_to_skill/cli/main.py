@@ -6,7 +6,7 @@
   skill-lab codegraph      查询代码图谱（search/context/trace 等）
   skill-lab run             运行模块或全流程
   skill-lab status          查看运行状态
-  skill-lab inspect         查看产物
+  skill-lab inspect         查看产物（run / file）
   skill-lab approve         审批动作
   skill-lab eval            评测 Skill
   skill-lab publish         发布 Skill
@@ -31,6 +31,7 @@ from .types import RunManifest, RunState, RunStatus, ModuleEvent
 from .config_loader import load_config, AppConfig, SettingsConfig, ProjectConfig
 from .codegraph_cmds import codegraph_group
 from .help_text import (
+    INSPECT_RUN_DOC,
     MAIN_EPILOG,
     RUN_ALL_DOC,
     RUN_CODE_GRAPH_DAEMON_DOC,
@@ -41,22 +42,13 @@ from .help_text import (
     RUN_EXTRACT_ATOMS_DOC,
     RUN_NORMALIZE_DOCS_DOC,
     RUN_OPTIMIZE_SKILL_DOC,
+    RUN_SKILL_HYGIENE_DOC,
 )
 
 
 def _new_run_id() -> str:
     """生成 runs 子目录 ID（YYYYMMDD-HHMMSS，系统本地时区）。"""
     return local_timestamp_compact()
-
-
-def _skillopt_get(skillopt: dict, key: str, *aliases: str, default=None):
-    """读取 skillopt 配置，支持新旧键名别名。"""
-    if key in skillopt:
-        return skillopt[key]
-    for alias in aliases:
-        if alias in skillopt:
-            return skillopt[alias]
-    return default
 
 
 def _skillopt_run_kwargs(
@@ -76,31 +68,22 @@ def _skillopt_run_kwargs(
         skillopt, mp_dump,
     )
     kwargs = {
-        "num_epochs": _skillopt_get(skillopt, "num_epochs", default=3),
-        "batch_size": _skillopt_get(skillopt, "batch_size", default=20),
-        "accumulation": _skillopt_get(skillopt, "accumulation", default=1),
-        "edit_budget": _skillopt_get(skillopt, "edit_budget", default=3),
-        "gate_metric": _skillopt_get(skillopt, "gate_metric", default="soft"),
-        "budget_strategy": _skillopt_get(skillopt, "budget_strategy", default="cosine"),
-        "patience": _skillopt_get(skillopt, "patience", default=10),
-        "enable_slow_update": _skillopt_get(
-            skillopt, "enable_slow_update", "use_slow_update", default=False,
-        ),
-        "enable_meta_skill": _skillopt_get(
-            skillopt, "enable_meta_skill", "use_meta_skill", default=False,
-        ),
-        "slow_update_gate": _skillopt_get(skillopt, "slow_update_gate", default=True),
-        "test_split_ratio": _skillopt_get(skillopt, "test_split_ratio", default=0.0),
+        "num_epochs": skillopt.get("num_epochs", 3),
+        "batch_size": skillopt.get("batch_size", 20),
+        "accumulation": skillopt.get("accumulation", 1),
+        "edit_budget": skillopt.get("edit_budget", 3),
+        "gate_metric": skillopt.get("gate_metric", "soft"),
+        "budget_strategy": skillopt.get("budget_strategy", "cosine"),
+        "patience": skillopt.get("patience", 10),
+        "enable_slow_update": skillopt.get("enable_slow_update", False),
+        "enable_meta_skill": skillopt.get("enable_meta_skill", False),
+        "slow_update_gate": skillopt.get("slow_update_gate", True),
         "token_budgets": skillopt.get("token_budgets"),
-        "enable_code_tools": _skillopt_get(skillopt, "enable_code_tools", default=True),
-        "max_tool_rounds": _skillopt_get(skillopt, "max_tool_rounds", default=5),
-        "rollout_max_tool_rounds": _skillopt_get(
-            skillopt, "rollout_max_tool_rounds", default=2,
-        ),
-        "rollout_workers": _skillopt_get(
-            skillopt, "rollout_workers", "workers", default=4,
-        ),
-        "use_llm_rollout": _skillopt_get(skillopt, "use_llm_rollout", default=False),
+        "enable_code_tools": skillopt.get("enable_code_tools", True),
+        "max_tool_rounds": skillopt.get("max_tool_rounds", 5),
+        "rollout_max_tool_rounds": skillopt.get("rollout_max_tool_rounds", 2),
+        "rollout_workers": skillopt.get("rollout_workers", 4),
+        "use_llm_rollout": skillopt.get("use_llm_rollout", False),
         "rollout_backend_id": rollout_backend_id,
         "optimizer_backend_id": optimizer_backend_id,
         "model_provider": mp_dump,
@@ -831,6 +814,7 @@ def run_all(
                 f"   Atom: {len(m3['raw_atoms'])} raw → {len(m3['merged_atoms'])} merged "
                 f"({accepted} accepted)"
             )
+            aq = m3.get("artifact_quality") or {}
             recorder.end_phase(
                 "m3_atoms",
                 metrics={
@@ -838,9 +822,12 @@ def run_all(
                     "merged": len(m3["merged_atoms"]),
                     "accepted": accepted,
                     "seeds": len(m3["benchmark_seeds"]),
+                    "artifact_quality_passed": aq.get("passed"),
                 },
                 artifacts={"atoms_dir": os.path.join(output_root, "atoms")},
             )
+            if aq and not aq.get("passed"):
+                click.echo(f"   ⚠️  M3 artifact_quality: {aq.get('failures', [])}")
         elif not skip_prefix:
             click.echo("🧩 [3/4] 跳过 M3")
             recorder.skip_phase(
@@ -917,6 +904,8 @@ def run_all(
             graph_role_hints=p.graph_role_hints,
             reflect_prompts=p.reflect_prompts,
             skillopt_settings=s.skillopt,
+            self_evolution_settings=s.self_evolution,
+            self_evolve=bool(s.self_evolution.get("enabled")),
             **_skillopt_run_kwargs(s.skillopt, s.model_provider),
         )
         click.echo(f"   最优分数: {m4['best_score']:.3f}")
@@ -942,11 +931,13 @@ def run_all(
             )
         recorder.set_summary(error=str(exc)[:300])
         click.echo(f"\n❌ 流水线失败: {exc}", err=True)
-        recorder.finalize(pipeline_status).write()
+        recorder.finalize(pipeline_status)
+        recorder.write()
         click.echo(f"   📋 run_manifest: {os.path.join(output_root, 'run_manifest.json')}")
         raise
 
-    manifest_path = recorder.finalize(pipeline_status).write()
+    recorder.finalize(pipeline_status)
+    manifest_path = recorder.write()
     click.echo(f"\n✅ 流水线完成！产物: {output_root}")
     click.echo(f"   📋 run_manifest: {manifest_path}")
 
@@ -1213,6 +1204,8 @@ def run_bootstrap_benchmark(
 @click.option("--slow-update", is_flag=True, help="启用 epoch 级 slow update（默认读 config）")
 @click.option("--meta-skill", is_flag=True, help="启用 meta skill 重写（默认读 config）")
 @click.option("--resume", is_flag=True, help="从 --output 目录 runtime_state.json 断点续训")
+@click.option("--self-evolve", is_flag=True, help="启用 Design 08 Skill 自进化（trace pool + proposals + 严格 gate）")
+@click.option("--trace-merge", is_flag=True, help="仅启用 trace 聚类归纳（不启用严格 gate / 归因）")
 def run_optimize_skill(
     benchmark: str | None,
     output: str | None,
@@ -1223,6 +1216,8 @@ def run_optimize_skill(
     slow_update: bool,
     meta_skill: bool,
     resume: bool,
+    self_evolve: bool,
+    trace_merge: bool,
 ):
     from code_to_skill.skillopt_loop import run_skillopt_loop
     from code_to_skill.skillopt_loop.token_budgets import configure_token_budgets
@@ -1239,8 +1234,8 @@ def run_optimize_skill(
     initial_skill = _load_initial_skill(p) or "# Initial Skill\n- Default rule"
 
     code_repos = [{"path": r.path, "include": r.include, "exclude": r.exclude} for r in p.repos]
-    run_root = os.path.dirname(out_dir.rstrip("/")) if resume else None
-    graph_db_path, repo_root, graph_sources = _m4_graph_context(p, run_root, s)
+    run_root_dir = os.path.dirname(out_dir.rstrip("/")) or "runs/latest"
+    graph_db_path, repo_root, graph_sources = _m4_graph_context(p, run_root_dir, s)
 
     skillopt_kwargs = _skillopt_run_kwargs(s.skillopt, s.model_provider)
     if skillopt_kwargs.get("rollout_backend_id"):
@@ -1254,7 +1249,6 @@ def run_optimize_skill(
 
     from .pipeline_config import parse_pipeline_settings
     pipeline = parse_pipeline_settings(s.pipeline)
-    run_root_dir = os.path.dirname(out_dir.rstrip("/"))
 
     result = run_skillopt_loop(
         initial_skill=initial_skill,
@@ -1272,23 +1266,82 @@ def run_optimize_skill(
         graph_role_hints=p.graph_role_hints,
         reflect_prompts=p.reflect_prompts,
         skillopt_settings=s.skillopt,
+        self_evolution_settings=s.self_evolution,
+        self_evolve=self_evolve or bool(s.self_evolution.get("enabled")),
+        trace_merge=trace_merge,
         **{
             **skillopt_kwargs,
             "num_epochs": epochs,
             "batch_size": batch_size,
             "accumulation": accumulation,
-            "enable_slow_update": slow_update or _skillopt_get(
-                s.skillopt, "enable_slow_update", "use_slow_update", default=False,
-            ),
-            "enable_meta_skill": meta_skill or _skillopt_get(
-                s.skillopt, "enable_meta_skill", "use_meta_skill", default=False,
-            ),
+            "enable_slow_update": slow_update or s.skillopt.get("enable_slow_update", False),
+            "enable_meta_skill": meta_skill or s.skillopt.get("enable_meta_skill", False),
         },
     )
     click.echo(f"✅ best_score={result['best_score']:.3f}")
     if result.get("test_report"):
         tr = result["test_report"]
         click.echo(f"   test_score={tr.get('test_score', 0):.3f} n={tr.get('n_items', 0)}")
+
+
+@run.command(name="skill-hygiene", help=RUN_SKILL_HYGIENE_DOC, short_help="Design 08：离线 hygiene + gate")
+@click.argument("run_id")
+@click.option("--config-path", default="config.yaml", help="配置文件路径")
+@click.option("--force", is_flag=True, help="忽略 token/规则阈值，强制执行 hygiene")
+def run_skill_hygiene(run_id: str, config_path: str, force: bool):
+    """Design 08：离线 Skill hygiene（合并/删除冗余规则）。"""
+    from code_to_skill.skillopt_loop.envs import DEFAULTAdapter
+    from code_to_skill.skillopt_loop.hygiene import apply_hygiene_with_gate
+    from code_to_skill.skillopt_loop.self_evolution_config import SelfEvolutionConfig
+
+    cfg = load_config(config_path)
+    s = cfg.settings
+    p = cfg.project
+    run_dir = _resolve_run_dir(run_id, s.output_root) or Path(s.output_root) / run_id
+    opt_dir = run_dir / "optimization"
+    best_path = opt_dir / "best_skill.md"
+    if not best_path.is_file():
+        click.echo(f"❌ 未找到 {best_path}")
+        return
+
+    with open(best_path, encoding="utf-8") as f:
+        skill = f.read()
+
+    splits = _load_benchmark_splits(p)
+    if not splits.selection:
+        click.echo("❌ 无 selection split，无法 gate 验证")
+        return
+
+    se_cfg = SelfEvolutionConfig.from_dict(s.self_evolution)
+    skillopt = s.skillopt
+    adapter = DEFAULTAdapter(
+        use_llm=skillopt.get("use_llm_rollout", False),
+        enable_code_tools=skillopt.get("enable_code_tools", True),
+    )
+    from code_to_skill.skillopt_loop.separation import BackendManager
+    backend_mgr = BackendManager.from_skillopt(
+        use_llm_rollout=skillopt.get("use_llm_rollout", False),
+        use_llm_optimizer=False,
+        model_provider=s.model_provider.model_dump() if hasattr(s.model_provider, "model_dump") else {},
+    )
+
+    result = apply_hygiene_with_gate(
+        skill,
+        str(opt_dir),
+        adapter=adapter,
+        selection_items=splits.selection,
+        target_backend=backend_mgr.target,
+        gate_metric=skillopt.get("gate_metric", "soft"),
+        config=se_cfg,
+        force=force,
+    )
+    if result.get("applied"):
+        click.echo(
+            f"✅ hygiene 已应用: {result.get('edit_count', 0)} edits, "
+            f"gate {result.get('before_score', 0):.3f} → {result.get('after_score', 0):.3f}"
+        )
+    else:
+        click.echo(f"ℹ️  hygiene 未应用: {result.get('reason', '?')}")
 
 
 @run.group(name="training-curve", help="训练曲线：从 run 产物绘图或回填。")
@@ -1416,24 +1469,35 @@ def _inspect_artifact_file(artifact: str) -> None:
         click.echo(f"🔍 {artifact}: {path.stat().st_size} bytes")
 
 
-@main.group(invoke_without_command=True)
-@click.argument("artifact", required=False)
-@click.pass_context
-def inspect(ctx, artifact: str | None):
+@main.group()
+def inspect():
     """\b
-    查看产物：``inspect run <run_id>`` 或 ``inspect <文件路径>``。
+    查看产物：``inspect run <run_id>`` 或 ``inspect file <路径>``。
     """
-    if ctx.invoked_subcommand is None:
-        if not artifact:
-            click.echo(ctx.get_help())
-            return
-        _inspect_artifact_file(artifact)
 
 
-@inspect.command(name="run")
+@inspect.command(name="file")
+@click.argument("artifact")
+def inspect_file(artifact: str):
+    """查看单个产物文件（JSON/JSONL/文本）。"""
+    _inspect_artifact_file(artifact)
+
+
+@inspect.command(name="run", help=INSPECT_RUN_DOC, short_help="run 目录摘要与 Design 08 校验")
 @click.argument("run_id")
 @click.option("--config-path", default="config.yaml", help="配置文件路径")
-def inspect_run(run_id: str, config_path: str):
+@click.option("--trace-pool", is_flag=True, help="展示 trace pool / proposals 摘要")
+@click.option("--rule-attribution", is_flag=True, help="展示 rule attribution 摘要")
+@click.option("--frontier", is_flag=True, help="展示 frontier pool 摘要")
+@click.option("--validate-self-evolution", is_flag=True, help="校验 Design 08 产物完整性")
+def inspect_run(
+    run_id: str,
+    config_path: str,
+    trace_pool: bool,
+    rule_attribution: bool,
+    frontier: bool,
+    validate_self_evolution: bool,
+):
     """汇总 run 目录：manifest、gate、test、context refs、训练曲线。"""
     from .inspect_run import summarize_run
 
@@ -1444,7 +1508,13 @@ def inspect_run(run_id: str, config_path: str):
     if not run_dir.is_dir():
         click.echo(f"❌ 未找到 run: {run_id}")
         return
-    for line in summarize_run(run_dir):
+    for line in summarize_run(
+        run_dir,
+        trace_pool=trace_pool,
+        rule_attribution=rule_attribution,
+        frontier=frontier,
+        validate_self_evolution=validate_self_evolution,
+    ):
         click.echo(line)
 
 
@@ -1492,12 +1562,12 @@ def eval_skill(run_id: str, split: str, config_path: str, benchmark: str | None)
     mp_dump = cfg.settings.model_provider.model_dump() if hasattr(cfg.settings.model_provider, "model_dump") else dict(cfg.settings.model_provider or {})
     rollout_id, optimizer_id = resolve_skillopt_backend_ids(skillopt, mp_dump)
     backend_mgr = BackendManager.from_skillopt(
-        use_llm_rollout=_skillopt_get(skillopt, "use_llm_rollout", default=True),
+        use_llm_rollout=skillopt.get("use_llm_rollout", True),
         rollout_backend_id=rollout_id,
         optimizer_backend_id=optimizer_id,
         model_provider=mp_dump,
     )
-    adapter = DEFAULTAdapter(use_llm=_skillopt_get(skillopt, "use_llm_rollout", default=True))
+    adapter = DEFAULTAdapter(use_llm=skillopt.get("use_llm_rollout", True))
     adapter.setup()
 
     report = evaluate_test_split(
@@ -1552,7 +1622,8 @@ def approve(approval_id: str, deny: bool):
 @click.option("--target", default=None, help="发布目标目录")
 @click.option("--config-path", default="config.yaml", help="配置文件路径（读取 publish_target）")
 @click.option("--force", is_flag=True, help="门禁未 accept 时仍发布")
-def publish(run_id: str, target: str | None, config_path: str, force: bool):
+@click.option("--strip-rule-ids", is_flag=True, help="发布前移除 rule_id HTML 注释（Design 08 归因元数据）")
+def publish(run_id: str, target: str | None, config_path: str, force: bool, strip_rule_ids: bool):
     """\b
     将 runs/<run_id>/optimization/best_skill.md 复制为 SKILL.md。
 
@@ -1588,9 +1659,16 @@ def publish(run_id: str, target: str | None, config_path: str, force: bool):
     target_dir = Path(publish_target)
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    import shutil
-    shutil.copy2(best_skill, target_dir / "SKILL.md")
-    click.echo(f"📦 已发布: {target_dir}/SKILL.md")
+    dest = target_dir / "SKILL.md"
+    if strip_rule_ids:
+        from code_to_skill.skillopt_loop.skill_rules import strip_rule_comments
+        content = strip_rule_comments(best_skill.read_text(encoding="utf-8"))
+        dest.write_text(content, encoding="utf-8")
+        click.echo("   🧹 已剥离 rule_id 注释")
+    else:
+        import shutil
+        shutil.copy2(best_skill, dest)
+    click.echo(f"📦 已发布: {dest}")
 
 
 # ── resume ───────────────────────────────────────────────────
@@ -1669,6 +1747,8 @@ def resume(run_id: str, config_path: str, from_step: str | None):
         graph_role_hints=p.graph_role_hints,
         reflect_prompts=p.reflect_prompts,
         skillopt_settings=s.skillopt,
+        self_evolution_settings=s.self_evolution,
+        self_evolve=bool(s.self_evolution.get("enabled")),
         **_skillopt_run_kwargs(s.skillopt, s.model_provider),
     )
     click.echo(f"✅ 续训完成: best_score={result['best_score']:.3f}")

@@ -55,7 +55,6 @@ def run_skillopt_loop(
     num_epochs: int = 3,
     batch_size: int = 20,
     edit_budget: int = 3,
-    selection_split_ratio: float = 0.3,
     use_llm_rollout: bool = False,
     rollout_backend_id: str | None = None,
     optimizer_backend_id: str | None = None,
@@ -67,7 +66,6 @@ def run_skillopt_loop(
     enable_slow_update: bool = False,
     enable_meta_skill: bool = False,
     slow_update_gate: bool = True,
-    test_split_ratio: float = 0.0,
     selection_items: list[dict] | None = None,
     test_items: list[dict] | None = None,
     adapter: Any = None,
@@ -86,6 +84,9 @@ def run_skillopt_loop(
     graph_role_hints: dict | None = None,
     reflect_prompts: dict | None = None,
     skillopt_settings: dict | None = None,
+    self_evolution_settings: dict | None = None,
+    self_evolve: bool = False,
+    trace_merge: bool = False,
 ) -> dict:
     """运行 SkillOpt 优化循环（完整版）。
 
@@ -173,10 +174,7 @@ def run_skillopt_loop(
         selection=selection_items or [],
         test=test_items or [],
     )
-    resolved = splits.resolve(
-        selection_split_ratio=selection_split_ratio,
-        test_split_ratio=test_split_ratio,
-    )
+    resolved = splits.resolve()
     train_items = resolved.train
     selection_items = resolved.selection
     test_items = resolved.test
@@ -260,17 +258,60 @@ def run_skillopt_loop(
     if sidecar_flags:
         logger.info("[M4] graph sidecars loaded: %s", ", ".join(sidecar_flags))
 
-    if resolved.use_explicit_splits:
-        logger.info("[M4] 使用显式 benchmark split: train=%d selection=%d test=%d",
-                     len(train_items), len(selection_items), len(test_items))
-    else:
-        logger.info("[M4] 使用 ratio split: train=%d selection=%d test=%d (ratio=%.2f/%.2f)",
-                     len(train_items), len(selection_items), len(test_items),
-                     selection_split_ratio, test_split_ratio)
+    from .self_evolution_config import SelfEvolutionConfig
+    se_raw = self_evolution_settings or (
+        (skillopt_settings or {}).get("self_evolution")
+        if isinstance(skillopt_settings, dict) else None
+    )
+    se_cfg = SelfEvolutionConfig.from_dict(
+        se_raw if isinstance(se_raw, dict) else None,
+        cli_enabled=self_evolve,
+        trace_merge_only=trace_merge and not self_evolve,
+    )
+    trace_pool = None
+    rejected_buf = None
+    rule_attr = None
+    frontier_pool = None
+    if se_cfg.enabled:
+        from .trace_pool import TracePoolManager
+        from .rejected_buffer import RejectedEditBuffer
+        from .skill_rules import RuleAttributionTracker
+
+        trace_pool = TracePoolManager(output_dir, se_cfg)
+        rejected_buf = RejectedEditBuffer(output_dir)
+        rule_attr = RuleAttributionTracker(output_dir)
+        if se_cfg.frontier_enabled:
+            from .frontier import FrontierPool
+            frontier_pool = FrontierPool(output_dir, max_size=se_cfg.frontier_size)
+            logger.info("[M4] frontier pool: size=%d", se_cfg.frontier_size)
+        mode = "full" if self_evolve or (se_raw or {}).get("enabled") else "trace_merge"
+        logger.info("[M4] self_evolution: %s (min_support=%d)", mode, se_cfg.min_support_count)
+        aq_path = artifacts.artifact_quality.path
+        if aq_path and os.path.isfile(aq_path):
+            with open(aq_path, encoding="utf-8") as f:
+                aq = json.load(f)
+            if not aq.get("passed", True):
+                logger.warning(
+                    "[M4] M3 artifact_quality failed: %s — M3 仅作诊断，不注入 evidence",
+                    aq.get("failures", []),
+                )
+                graph_sidecars = GraphSidecarContext.from_artifacts(
+                    artifacts, pipe, graph_role_hints=graph_role_hints,
+                )
+                graph_sidecars.evidence_index = None
+                adapter.graph_sidecars = graph_sidecars
+
+    logger.info(
+        "[M4] benchmark split (%s): train=%d selection=%d test=%d",
+        resolved.source,
+        len(train_items),
+        len(selection_items),
+        len(test_items),
+    )
 
     _save_config(output_dir, {
         "num_epochs": num_epochs, "batch_size": batch_size,
-        "edit_budget": edit_budget, "selection_split_ratio": selection_split_ratio,
+        "edit_budget": edit_budget,
         "use_llm_rollout": use_llm_rollout,
         "rollout_backend": rollout_backend_id,
         "optimizer_backend": optimizer_backend_id,
@@ -279,7 +320,6 @@ def run_skillopt_loop(
         "accumulation": accumulation, "enable_slow_update": enable_slow_update,
         "enable_meta_skill": enable_meta_skill,
         "slow_update_gate": slow_update_gate,
-        "test_split_ratio": test_split_ratio,
         "use_explicit_splits": resolved.use_explicit_splits,
         "split_source": resolved.source,
         "initial_skill_chars": len(initial_skill),
@@ -291,6 +331,16 @@ def run_skillopt_loop(
         "rollout_max_tool_rounds": rollout_max_tool_rounds,
         "rollout_workers": rollout_workers,
         "code_repos": len(code_repos or []),
+        "self_evolution": {
+            "enabled": se_cfg.enabled,
+            "mode": (
+                "full" if self_evolve or (isinstance(se_raw, dict) and se_raw.get("enabled"))
+                else ("trace_merge" if trace_merge else "off")
+            ),
+            "strict_improvement": se_cfg.strict_improvement,
+            "frontier_enabled": se_cfg.frontier_enabled,
+            "min_support_count": se_cfg.min_support_count,
+        },
     })
 
     # selection 较小时自动用 soft gate
@@ -338,7 +388,12 @@ def run_skillopt_loop(
     # ── 组件初始化 ─────────────────────────────────────────
     total_steps = num_epochs * max(1, len(train_items) // max(1, batch_size))
     from .gate import select_gate_score
-    gate = GateManager(patience=patience, metric=effective_gate_metric)  # type: ignore[arg-type]
+    gate = GateManager(
+        patience=patience,
+        metric=effective_gate_metric,  # type: ignore[arg-type]
+        strict_improvement=se_cfg.strict_improvement if se_cfg.enabled else False,
+        reject_ties=se_cfg.reject_ties if se_cfg.enabled else False,
+    )
     scheduler = EditBudgetScheduler(
         initial_budget=edit_budget, min_budget=1,
         total_steps=total_steps, strategy=budget_strategy,
@@ -383,6 +438,11 @@ def run_skillopt_loop(
 
     for epoch in range(start_epoch, num_epochs):
         logger.info("[M4] === Epoch %d/%d ===", epoch + 1, num_epochs)
+        if frontier_pool is not None and epoch > start_epoch:
+            parent_skill, parent_src = frontier_pool.select_parent(current_skill, best_score)
+            if parent_src != "current":
+                logger.info("[M4] frontier parent: %s", parent_src)
+                current_skill = parent_skill
         batch_begin = start_batch_start if epoch == start_epoch else 0
         for batch_start in range(batch_begin, len(train_items), batch_size):
             batch = train_items[batch_start:batch_start + batch_size]
@@ -409,12 +469,46 @@ def run_skillopt_loop(
                 if r["hard"] == 0:
                     logger.info("  ✗ %s: soft=%.2f reason=%s", r["id"], r["soft"], r.get("fail_reason", "")[:60])
 
+            skill_version = f"v{step_counter:04d}"
+            proposal_patches: list[dict] = []
+            if trace_pool is not None:
+                trace_pool.record_batch(step_counter, all_results, skill_version)
+                clusters, cluster_summary = trace_pool.cluster_traces(step=step_counter)
+                trace_pool.persist_clusters(clusters, cluster_summary, step=step_counter)
+                if clusters:
+                    from .proposals import generate_step_proposals, write_proposals
+                    from .proposal_merge import proposals_to_patches
+
+                    ev_refs: list[str] = []
+                    if graph_sidecars and graph_sidecars.evidence_index:
+                        ev_refs = ["evidence_index"]
+                    fail_props, succ_props = generate_step_proposals(
+                        clusters, all_results, se_cfg, step=step_counter, evidence_refs=ev_refs,
+                    )
+                    write_proposals(
+                        output_dir,
+                        failure_proposals=fail_props,
+                        success_proposals=succ_props,
+                    )
+                    proposal_patches = proposals_to_patches(
+                        fail_props + succ_props, se_cfg, current_skill=current_skill,
+                    )
+                    logger.info(
+                        "[M4] trace proposals: failure=%d success=%d patches=%d",
+                        len(fail_props), len(succ_props), len(proposal_patches),
+                    )
+                if rule_attr is not None:
+                    rule_attr.record_rollout_usage(current_skill, all_results, step=step_counter)
+
             # 2. Reflect（通过 adapter prompt + buffer→reflect 闭环）
             from .llm_components import reflect_llm
             rejected_edits = buffer.get_rejected_edits()
-            # 构建 step_buffer（从 buffer 中提取该 step 已记录的失败模式）
-            step_buf_entries = buffer.get_rejected_edits()  # rejected edits 作为 step buffer 的廉价近似
+            step_buf_entries = buffer.get_rejected_edits()
             step_buffer = [{"type": "rejected_edit", "edit": e} for e in step_buf_entries] if step_buf_entries else None
+            if rejected_buf is not None:
+                for rec in rejected_buf.load_recent(15):
+                    step_buffer = step_buffer or []
+                    step_buffer.append({"type": "rejected_buffer", "record": rec})
             reflect_result = reflect_llm(
                 all_results, current_skill,
                 rejected_edits=rejected_edits,
@@ -427,6 +521,9 @@ def run_skillopt_loop(
                 adapter=adapter,
             )
             patches = reflect_result.patches
+            if proposal_patches:
+                from .proposal_merge import merge_proposal_patches_with_reflect
+                patches = merge_proposal_patches_with_reflect(patches, proposal_patches, se_cfg)
             logger.info("[M4] reflect: %d patches", len(patches))
 
             # 3. Aggregate（分层 merge）
@@ -562,12 +659,37 @@ def run_skillopt_loop(
             else:
                 for r in ranked:
                     buffer.record_rejected_edit(step_counter, r.edit)
+                if rejected_buf is not None:
+                    for r in ranked:
+                        rejected_buf.append(
+                            edit=r.edit,
+                            step=step_counter,
+                            reason=decision.reason,
+                            before_score=current_score,
+                            after_score=candidate_gate,
+                        )
 
             current_hard = candidate_hard if action != "reject" else current_hard
             current_soft = candidate_soft if action != "reject" else current_soft
             current_score = candidate_gate if action != "reject" else current_score
             if action != "reject":
                 current_skill = candidate_content
+                if (
+                    rule_attr is not None
+                    and se_cfg.attribution_enabled
+                    and se_cfg.inject_rule_ids
+                ):
+                    from .skill_rules import inject_rule_ids_into_skill
+                    current_skill, _ = inject_rule_ids_into_skill(
+                        current_skill,
+                        proposal_id=f"step-{step_counter:04d}",
+                    )
+                    rule_attr.sync_from_skill(current_skill, step=step_counter)
+                    rule_attr.save()
+                if action in ("accept_new_best", "accept"):
+                    best_skill = current_skill
+                if frontier_pool is not None:
+                    frontier_pool.try_add(current_skill, candidate_gate, step_counter)
 
             # 记录 rollout 中的失败/成功任务
             for r in all_results:
@@ -587,6 +709,10 @@ def run_skillopt_loop(
                 "rollout_score": round(rollout_avg, 3),
                 "selection_score": round(candidate_gate, 3),
                 "gate_action": action,
+                "gate_reason": decision.reason,
+                "before_score": round(current_score, 3),
+                "after_score": round(candidate_gate, 3),
+                "candidate_hash": candidate_hash,
                 "best_score": round(best_score, 3),
                 "edit_count": len(ranked),
             }
@@ -727,14 +853,41 @@ def run_skillopt_loop(
             if slow_result.get("comparison_pairs"):
                 epoch_comparison = slow_result["comparison_pairs"]
 
+        if (
+            se_cfg.enabled
+            and se_cfg.hygiene_enabled
+            and se_cfg.hygiene_each_epoch
+            and rule_attr is not None
+        ):
+            from .hygiene import apply_hygiene_with_gate, should_run_hygiene
+
+            if should_run_hygiene(current_skill, se_cfg, rule_attr._data):
+                hyg = apply_hygiene_with_gate(
+                    current_skill,
+                    output_dir,
+                    adapter=adapter,
+                    selection_items=selection_items,
+                    target_backend=backend_mgr.target,
+                    gate_metric=gate.metric,
+                    gate_mixed_weight=gate.mixed_weight,
+                    gate_delta=gate.delta,
+                    config=se_cfg,
+                )
+                if hyg.get("applied"):
+                    current_skill = hyg["skill"]
+                    best_skill = current_skill
+                    best_score = float(hyg.get("after_score", best_score))
+
         # Meta Skill（与 slow_update 解耦：仅依赖 enable_meta_skill）
         if enable_meta_skill:
             logger.info("[M4] === Meta Skill epoch %d ===", epoch + 1)
+            rej_buffer_records = rejected_buf.load_recent(20) if rejected_buf else []
             meta_skill.update(
                 prev_skill=prev_epoch_skill,
                 curr_skill=current_skill,
                 accepted_edits=buffer.get_accepted_edits(),
                 rejected_edits=buffer.get_rejected_edits(),
+                rejected_buffer_records=rej_buffer_records,
                 comparison_pairs=epoch_comparison or slow_result.get("comparison_pairs", {}),
                 optimizer_backend=backend_mgr.optimizer,
             )
