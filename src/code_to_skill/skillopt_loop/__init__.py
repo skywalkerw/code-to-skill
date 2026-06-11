@@ -661,6 +661,7 @@ def run_skillopt_loop(
                 logger.info("[M4] evaluate: CACHED hard=%.3f soft=%.3f (epoch=%d step=%d)",
                              candidate_hard, candidate_soft, cached.get("epoch", 0), cached.get("step", 0))
             else:
+                # selection rollout → score_benchmark_item（每条 item）→ compute_scores 得 hard/soft。
                 eval_result = adapter.evaluate(candidate_content, selection_items, target_backend=backend_mgr.target)
                 candidate_hard = eval_result.get("accuracy", 0.0)
                 candidate_soft = eval_result["soft"]

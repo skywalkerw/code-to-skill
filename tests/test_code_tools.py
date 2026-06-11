@@ -7,7 +7,7 @@ import pytest
 from code_to_skill.codegraph_mcp.handler import CodeToolsHandler, CodeRepoConfig
 
 
-REPO = "test-data/sources/repos/fineract"
+REPO = "demo-project/sources/repos/fineract"
 ACCOUNTING_INCLUDE = ["fineract-provider/src/main/java/org/apache/fineract/accounting/**"]
 
 

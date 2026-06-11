@@ -20,7 +20,7 @@ from code_to_skill.skillopt_loop.types import EditOp
 
 class TestBenchmarkSplits:
     def test_from_dir(self):
-        path = Path("test-data/benchmarks/fineract")
+        path = Path("demo-project/benchmarks/fineract")
         splits = BenchmarkSplits.from_dir(str(path))
         assert len(splits.train) == 15
         assert len(splits.selection) == 22
@@ -33,7 +33,7 @@ class TestBenchmarkSplits:
         assert not splits.has_explicit_splits
 
     def test_resolve_explicit(self):
-        path = Path("test-data/benchmarks/fineract")
+        path = Path("demo-project/benchmarks/fineract")
         splits = BenchmarkSplits.from_dir(str(path))
         resolved = splits.resolve()
         assert resolved.use_explicit_splits
@@ -53,18 +53,26 @@ class TestBenchmarkSplits:
         assert resolved.test == []
 
     def test_validate_no_overlap(self):
-        path = Path("test-data/benchmarks/fineract")
+        path = Path("demo-project/benchmarks/fineract")
         splits = BenchmarkSplits.from_dir(str(path))
         warnings = splits.validate_splits()
         assert warnings == []
 
     def test_fast_subset_from_dir(self):
-        path = Path("test-data/benchmarks/fineract-fast")
+        path = Path("demo-project/benchmarks/fineract-fast")
         splits = BenchmarkSplits.from_dir(str(path))
         assert len(splits.train) == 5
         assert len(splits.selection) == 6
         assert len(splits.test) == 3
         assert splits.validate_splits() == []
+
+    def test_from_dir_injects_benchmark_dir_and_python_scorer(self):
+        path = Path("demo-project/benchmarks/fineract-fast").resolve()
+        splits = BenchmarkSplits.from_dir(str(path))
+        item = splits.train[0]
+        assert item["_benchmark_dir"] == str(path)
+        assert item["scorer"] == "python_script"
+        assert item["scorer_config"]["script"] == "../score_expected_checks.py"
 
     def test_validate_detects_overlap(self):
         item = {"id": "dup", "expected_checks": ["a"]}
@@ -139,6 +147,27 @@ class TestScoringChecks:
         assert result["soft"] == 0.5
         assert result["passed"] == 1
         assert result["missed_checks"] == ["a", "b"]
+
+    def test_shared_benchmark_score_script(self):
+        from pathlib import Path
+
+        script = (
+            Path(__file__).resolve().parents[1]
+            / "demo-project/benchmarks/score_expected_checks.py"
+        )
+        item = {
+            "scorer": "python_script",
+            "scorer_config": {"script": "../score_expected_checks.py"},
+            "_benchmark_dir": str(script.parent / "fineract-fast"),
+            "expected_checks": ["借方", "贷方", "平衡"],
+        }
+        result = score_benchmark_item(
+            "凭证含借方 100 与贷方 100，借贷平衡。",
+            item,
+        )
+        assert result["hard"] == 1
+        assert result["score_type"] == "python_script"
+        assert set(result["passed_checks"]) == {"借方", "贷方", "平衡"}
 
     def test_python_script_scorer_resolves_config_base_dir(self, tmp_path):
         script = tmp_path / "score_relative.py"

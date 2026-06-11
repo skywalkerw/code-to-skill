@@ -15,7 +15,7 @@ MAIN_EPILOG = """
   skill-lab doctor --config-path config.yaml
   skill-lab config --config-path config.yaml
   skill-lab run all --config-path config.yaml --with-atoms
-  skill-lab run optimize-skill --trace-merge -o test-data/runs/xxx/optimization
+  skill-lab run optimize-skill --trace-merge -o demo-project/runs/xxx/optimization
   skill-lab inspect run <run_id> --trace-pool --validate-self-evolution
   skill-lab resume <run_id> --config-path config.yaml
   skill-lab eval <run_id> --split test
@@ -34,7 +34,7 @@ RUN_EPILOG = """
   skill-lab run all --resume-run-id 20260608-213005
   skill-lab run code-graph --repo fineract
   skill-lab run optimize-skill --self-evolve \\
-      -o test-data/runs/xxx/optimization --epochs 2 --batch-size 5
+      -o demo-project/runs/xxx/optimization --epochs 2 --batch-size 5
   skill-lab run skill-hygiene <run_id> --force
 """
 

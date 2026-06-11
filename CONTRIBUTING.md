@@ -41,7 +41,7 @@ python -m pytest tests/ -v
 # 单模块
 python -m pytest tests/test_m3_m4.py -v
 
-# 需要 Fineract 的集成测试（test-data/fineract-develop 存在时自动运行）
+# 需要 Fineract 的集成测试（demo-project/sources/repos/fineract 存在时自动运行）
 ```
 
 ## 添加新模块

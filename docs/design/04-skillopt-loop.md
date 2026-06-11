@@ -147,7 +147,7 @@ Token 预算（`token_budgets`）：
 
 ## 3. 输出与存储内容
 
-实际产物目录（以 `test-data/runs/<run_id>/optimization/` 为例）：
+实际产物目录（以 `demo-project/runs/<run_id>/optimization/` 为例）：
 
 ```text
 runs/<run_id>/

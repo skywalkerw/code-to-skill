@@ -21,6 +21,9 @@ pip install -e ".[ocr]"
 # 复制并编辑配置（完整注释模板见 config.template.yaml）
 cp config.template.yaml config.yaml
 
+# 拉取示例源码（Fineract clone，不纳入 git）
+./demo-project/fetch-sources.sh
+
 # 环境诊断 + 配置校验
 skill-lab doctor --config-path config.yaml
 skill-lab config --config-path config.yaml
@@ -136,11 +139,11 @@ skill-lab run code-graph-watch --config-path config.yaml
 skill-lab run normalize-docs --config-path config.yaml [--docs path/to/doc.md]
 
 # M3：需已有 M1/M2 产物的 run 目录
-skill-lab run extract-atoms --from test-data/runs/<run_id> --config-path config.yaml
+skill-lab run extract-atoms --from demo-project/runs/<run_id> --config-path config.yaml
 
 # M3 种子 → benchmark train
-skill-lab run bootstrap-benchmark --from-run test-data/runs/<run_id> \
-  --benchmark test-data/benchmarks/fineract-fast [--merge] [--dry-run]
+skill-lab run bootstrap-benchmark --from-run demo-project/runs/<run_id> \
+  --benchmark demo-project/benchmarks/fineract-fast [--merge] [--dry-run]
 ```
 
 #### `run optimize-skill` — M4 SkillOpt
@@ -160,8 +163,8 @@ skill-lab run bootstrap-benchmark --from-run test-data/runs/<run_id> \
 ```bash
 skill-lab run optimize-skill \
   --config-path config.yaml \
-  --benchmark test-data/benchmarks/fineract-fast \
-  -o test-data/runs/<run_id>/optimization \
+  --benchmark demo-project/benchmarks/fineract-fast \
+  -o demo-project/runs/<run_id>/optimization \
   --epochs 3 --batch-size 5 \
   --self-evolve
 ```
@@ -181,7 +184,7 @@ skill-lab inspect run <run_id> [--trace-pool] [--rule-attribution] [--frontier] 
   [--validate-self-evolution]
 
 # 单文件预览
-skill-lab inspect file test-data/runs/<run_id>/optimization/best_skill.md
+skill-lab inspect file demo-project/runs/<run_id>/optimization/best_skill.md
 
 # 独立评测（不训练）；默认 test split
 skill-lab eval <run_id> --split test [--benchmark path]
@@ -222,8 +225,8 @@ skill-lab eval <run_id> --split test
 # 需 run 目录内已有 graph.db（或单独跑过 M1）
 skill-lab run optimize-skill \
   --config-path config.yaml \
-  -o test-data/runs/<run_id>/optimization \
-  --benchmark test-data/benchmarks/fineract-fast
+  -o demo-project/runs/<run_id>/optimization \
+  --benchmark demo-project/benchmarks/fineract-fast
 ```
 
 **断点续训**
@@ -232,7 +235,7 @@ skill-lab run optimize-skill \
 skill-lab status <run_id>
 skill-lab resume <run_id> --config-path config.yaml
 # 或
-skill-lab run optimize-skill --resume -o test-data/runs/<run_id>/optimization --config-path config.yaml
+skill-lab run optimize-skill --resume -o demo-project/runs/<run_id>/optimization --config-path config.yaml
 ```
 
 **独立 test 评测**
@@ -610,7 +613,7 @@ skill-lab run all --config-path config.yaml --with-atoms
 # 仅 M4 重训（需 run 目录内已有 graph.db）
 skill-lab run optimize-skill \
   --config-path config.yaml \
-  -o test-data/runs/<run_id>/optimization
+  -o demo-project/runs/<run_id>/optimization
 
 # M4 + 轨迹归纳（--trace-merge，不改严格 gate）
 skill-lab run optimize-skill --trace-merge ...
@@ -619,27 +622,33 @@ skill-lab run optimize-skill --trace-merge ...
 skill-lab run optimize-skill --self-evolve ...
 ```
 
-产物目录：`settings.output.root/<run_id>/`（示例 `test-data/runs/`）。
+产物目录：`settings.output.root/<run_id>/`（示例 `demo-project/runs/`）。
 
 ## 准备指南
 
 ### 1. 代码仓库
 
-`project.sources.repos` 指向本地 clone（示例：`test-data/sources/repos/fineract`）。
+`project.sources.repos` 指向本地 clone（示例：`demo-project/sources/repos/fineract`）。源码**不纳入 git**，首次或更新时执行：
+
+```bash
+./demo-project/fetch-sources.sh
+```
+
+仓库 URL 见 [`demo-project/sources/repos.manifest.yaml`](demo-project/sources/repos.manifest.yaml)。
 
 ### 2. 知识文档
 
-置于 `test-data/sources/docs/<project>/` 并在 `config.yaml` 的 `sources.docs` 注册。
+置于 `demo-project/sources/docs/<project>/` 并在 `config.yaml` 的 `sources.docs` 注册。
 
 ### 3. 初始 Skill
 
-`test-data/initial_skill.md`：Workflow / Constraint / Failure Mode / Checklist。
+`demo-project/initial_skill.md`：Workflow / Constraint / Failure Mode / Checklist。
 
 ### 4. Benchmark
 
 `benchmarks/<name>/{train,selection,test}/items.json`，每条含 `id`、`question`、`expected_checks`、`context_refs`（可选）。
 
-快速子集生成：`python test-data/benchmarks/build_fast_subset.py`（产出 `fineract-fast`）。
+快速子集生成：`python demo-project/benchmarks/build_fast_subset.py`（产出 `fineract-fast`）。
 
 ### 5. API 与 `.env`
 
@@ -667,7 +676,7 @@ code-to-skill/
 │   ├── atom_extractor/   # M3
 │   ├── skillopt_loop/    # M4（含 self_evolution）
 │   └── model_provider/   # M5
-├── test-data/            # 示例数据与 runs（通常 gitignore）
+├── demo-project/            # Fineract 示例（benchmark/docs 入库；runs/repos clone 忽略）
 └── tests/
 ```
 

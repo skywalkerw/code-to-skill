@@ -395,6 +395,7 @@ class DEFAULTAdapter(EnvAdapter):
             )
             fail_reason = ""
 
+        # 评分入口：predicted 与 item.scorer 决定 keyword / python_script / llm_judge。
         scores = score_benchmark_item(
             predicted,
             item,

@@ -94,7 +94,7 @@ skill-lab resume <run_id>
 from code_to_skill.code_graph import run_code_graph_pipeline
 
 results = run_code_graph_pipeline(
-    repo_root="test-data/fineract-develop",
+    repo_root="demo-project/sources/repos/fineract",
     include=["fineract-provider/.../**"],
     exclude=["**/test/**"],
     max_leaf_tokens=8000,

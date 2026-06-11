@@ -163,7 +163,7 @@ def test_build_reflect_code_evidence_without_graph():
 
 
 @pytest.mark.skipif(
-    not Path("test-data/sources/repos/fineract").is_dir(),
+    not Path("demo-project/sources/repos/fineract").is_dir(),
     reason="fineract repo missing",
 )
 def test_build_reflect_code_evidence_with_graph(tmp_path):
@@ -171,7 +171,7 @@ def test_build_reflect_code_evidence_with_graph(tmp_path):
 
     out_root = tmp_path / "graph"
     run_code_graph_pipeline(
-        repo_root="test-data/sources/repos/fineract",
+        repo_root="demo-project/sources/repos/fineract",
         include=["fineract-provider/src/main/java/org/apache/fineract/accounting/**"],
         exclude=["**/test/**", "**/target/**"],
         output_root=str(out_root),
@@ -183,11 +183,11 @@ def test_build_reflect_code_evidence_with_graph(tmp_path):
 
     handler = CodeToolsHandler(
         repos=[CodeRepoConfig(
-            path="test-data/sources/repos/fineract",
+            path="demo-project/sources/repos/fineract",
             include=["fineract-provider/src/main/java/org/apache/fineract/accounting/**"],
         )],
         graph_db_path=str(db),
-        repo_root="test-data/sources/repos/fineract",
+        repo_root="demo-project/sources/repos/fineract",
     )
     failed = [{
         "id": "jv_purchase_001",

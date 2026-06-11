@@ -30,20 +30,26 @@ class BenchmarkSplits:
 
     @classmethod
     def from_dir(cls, path: str) -> "BenchmarkSplits":
-        root = Path(path)
+        root = Path(path).resolve()
+        benchmark_dir = str(root)
         return cls(
-            train=cls._load_split(root / "train" / "items.json"),
-            selection=cls._load_split(root / "selection" / "items.json"),
-            test=cls._load_split(root / "test" / "items.json"),
+            train=cls._load_split(root / "train" / "items.json", benchmark_dir),
+            selection=cls._load_split(root / "selection" / "items.json", benchmark_dir),
+            test=cls._load_split(root / "test" / "items.json", benchmark_dir),
         )
 
     @staticmethod
-    def _load_split(file_path: Path) -> list[dict]:
+    def _load_split(file_path: Path, benchmark_dir: str = "") -> list[dict]:
         if not file_path.exists():
             return []
         with open(file_path, encoding="utf-8") as f:
             data = json.load(f)
-        return data.get("items", [])
+        items = data.get("items", [])
+        # python_script scorer 解析 ../score_expected_checks.py 等相对路径时依赖此字段。
+        if benchmark_dir:
+            for item in items:
+                item["_benchmark_dir"] = benchmark_dir
+        return items
 
     def resolve(self) -> ResolvedBenchmarkSplits:
         """使用 benchmark 目录中的显式 split 文件；无 selection/test 时仅 train。"""

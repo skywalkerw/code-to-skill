@@ -198,7 +198,7 @@ settings:
       structured_output_fallback: true
 
   output:
-    root: test-data/runs/
+    root: demo-project/runs/
     publish_target: ~/.codex/skills/fineract-agent
 
   approvals:
@@ -212,10 +212,10 @@ project:
   domain: fintech
   description: "Apache Fineract 金融核心系统 Agent Skill——贷款/储蓄/会计/费用/互操作"
 
-  initial_skill: test-data/initial_skill.md
-  benchmark: test-data/benchmarks/fineract      # 完整集 15/22/8
-  # benchmark: test-data/benchmarks/fineract-fast # 快速冒烟 5/6/3
-  # benchmark: test-data/benchmarks/fineract-full # 与 fineract 相同（备份）
+  initial_skill: demo-project/initial_skill.md
+  benchmark: demo-project/benchmarks/fineract      # 完整集 15/22/8
+  # benchmark: demo-project/benchmarks/fineract-fast # 快速冒烟 5/6/3
+  # benchmark: demo-project/benchmarks/fineract-full # 与 fineract 相同（备份）
 
   graph_role_hints: {}
   reflect_prompts: {}
@@ -233,7 +233,7 @@ project:
   sources:
     repos:
       - id: fineract
-        path: test-data/sources/repos/fineract
+        path: demo-project/sources/repos/fineract
         ref: develop
         include:
           - "fineract-provider/src/main/java/org/apache/fineract/accounting/**"
@@ -250,7 +250,7 @@ project:
 
     docs:
       - id: fineract-readme
-        path: test-data/sources/docs/fineract/README.md
+        path: demo-project/sources/docs/fineract/README.md
         provider: local_file
         type: markdown
         version: develop
@@ -258,7 +258,7 @@ project:
         domain_tags: [fineract, architecture, setup]
         ocr_enabled: false
       - id: fineract-contrib
-        path: test-data/sources/docs/fineract/CONTRIBUTING.md
+        path: demo-project/sources/docs/fineract/CONTRIBUTING.md
         provider: local_file
         type: markdown
         version: develop

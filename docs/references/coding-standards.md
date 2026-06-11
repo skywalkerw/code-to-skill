@@ -252,7 +252,7 @@ class Test<Module><Feature>:
 ### 7.3 外部依赖
 
 ```python
-FINERACT_ROOT = "test-data/fineract-develop"
+FINERACT_ROOT = "demo-project/sources/repos/fineract"
 HAS_FINERACT = Path(FINERACT_ROOT).exists()
 
 @pytest.mark.skipif(not HAS_FINERACT, reason="Fineract not available")

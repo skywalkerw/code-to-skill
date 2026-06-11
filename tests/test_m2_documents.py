@@ -17,7 +17,7 @@ from code_to_skill.document_normalizer.chunker import chunk_blocks
 from code_to_skill.document_normalizer import normalize_document
 
 
-FINERACT_ROOT = "test-data/fineract-develop"
+FINERACT_ROOT = "demo-project/sources/repos/fineract"
 HAS_FINERACT = Path(FINERACT_ROOT).exists()
 
 
@@ -109,7 +109,7 @@ class TestFullPipeline:
     @pytest.mark.skipif(not HAS_FINERACT, reason="Fineract not available")
     def test_fineract_readme(self):
         result = normalize_document(
-            source_uri="test-data/fineract-develop/README.md",
+            source_uri="demo-project/sources/repos/fineract/README.md",
             source_id="fineract-readme",
         )
         assert result["manifest"].source_type == "markdown"

@@ -21,11 +21,13 @@ def select_gate_score(
 
     对齐 external/SkillOpt select_gate_score。
     """
+    # 将单条 rollout 的 (hard, soft) 投影为 gate 比较的标量分数。
     if metric == "hard":
         return float(hard)
     if metric == "soft":
         return float(soft)
     if metric == "mixed":
+        # mixed：小 selection 集时常用，兼顾全通过与部分通过。
         w = max(0.0, min(1.0, float(mixed_weight)))
         return (1.0 - w) * float(hard) + w * float(soft)
     return float(soft)
@@ -113,6 +115,7 @@ class GateManager:
         min_delta = self.delta if self.strict_improvement else 0.0
         tie_eps = 1e-9 if self.reject_ties else -1.0
 
+        # accept_new_best：刷新 best_skill；accept：仅推进 current_skill。
         if candidate > best_score + min_delta:
             self._consecutive_rejects = 0
             self._total_accepts += 1
@@ -135,6 +138,7 @@ class GateManager:
                 reason=f"improved ({current_score:.3f} → {candidate:.3f}) [{self.metric}]",
             )
 
+        # selection 持平时，train rollout 显著提升仍可 accept（小 validation 集降噪）。
         if (
             not self.strict_improvement
             and train_rollout is not None

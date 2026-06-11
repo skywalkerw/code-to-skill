@@ -80,8 +80,12 @@ def score_benchmark_item(
     hard_threshold: float = 0.8,
     global_check_aliases: dict[str, list[str]] | None = None,
 ) -> dict:
-    """按 benchmark item 的 ``scorer`` 字段路由评分器。"""
+    """按 benchmark item 的 ``scorer`` 字段路由评分器。
+
+    调用链：rollout 产出 predicted → 本函数 → gate 用 hard/soft 做 accept/reject。
+    """
     scorer = str(item.get("scorer") or "keyword").strip().lower()
+    # llm_judge：语义 rubric 打分，走 routes.judge。
     if scorer in ("llm_judge", "judge", "llm"):
         result = score_with_llm_judge(
             predicted,
@@ -95,12 +99,15 @@ def score_benchmark_item(
         if result.get("hard") == 1:
             result["missed_checks"] = []
         return result
+    # python_script：benchmark 外挂脚本（如 score_expected_checks.py），可扩展领域校验。
     if scorer in ("python", "py", "python_script", "script"):
         return score_with_python_script(
             predicted,
             item,
             hard_threshold=hard_threshold,
+            global_check_aliases=global_check_aliases,
         )
+    # keyword / deterministic（默认）：内置 keyword 匹配，无子进程开销。
     checks = list(item.get("expected_checks") or [])
     aliases = merge_check_aliases(global_check_aliases, item.get("check_aliases"))
     return score_rollout_result(predicted, checks, check_aliases=aliases or None)
@@ -131,6 +138,7 @@ def score_rollout_result(
     passed = len(passed_checks)
     total = len(expected_checks) if expected_checks else 1
     soft = passed / total
+    # hard=1 当且仅当全部 expected_checks 命中；gate metric=hard 时直接比较此字段。
     hard = 1 if soft == 1.0 else 0
 
     # Precision/Recall/F1（简单版本：expected checks 作为 ground truth）
@@ -174,6 +182,7 @@ def compute_scores(results: list[dict]) -> dict[str, float]:
     def _f1(r):
         return float(r.get("f1", 0.0))
 
+    # split 级均值：train/selection/test 汇总后写入 history.json 与 gate 输入。
     return {
         "hard": round(sum(_hard(r) for r in results) / n, 3),
         "soft": round(sum(_soft(r) for r in results) / n, 3),
@@ -258,8 +267,10 @@ def _normalize_script_score(
     if "hard" in raw:
         hard = 1 if int(raw.get("hard") or 0) == 1 else 0
     else:
+        # 脚本未返回 hard 时，按 soft 与 hard_threshold（默认 0.8）推导。
         hard = 1 if soft >= hard_threshold else 0
 
+    # 脚本只返回 soft 时，从 expected_checks 反推 missed_checks 供 reflect 使用。
     if not missed_checks and checks and hard == 0:
         seen = {str(c) for c in passed_checks}
         missed_checks = [c for c in checks if str(c) not in seen]
@@ -294,11 +305,12 @@ def score_with_python_script(
     item: dict,
     *,
     hard_threshold: float = 0.8,
+    global_check_aliases: dict[str, list[str]] | None = None,
 ) -> dict:
     """Run a benchmark-provided Python scorer script.
 
     The script receives JSON on stdin:
-    ``{"predicted": str, "item": dict}``
+    ``{"predicted": str, "item": dict, "global_check_aliases": dict | optional}``
 
     It must print a JSON object. Supported fields include:
     ``hard``, ``soft``, ``passed_checks``, ``missed_checks``, ``precision``,
@@ -322,6 +334,7 @@ def score_with_python_script(
             "error": "missing_score_script",
         }
 
+    # 相对路径基于 item._benchmark_dir（BenchmarkSplits.from_dir 注入）或 scorer_config.base_dir。
     script_path = _resolve_script_path(script_path, item)
     scorer_config = item.get("scorer_config") or {}
     timeout = float(
@@ -329,7 +342,11 @@ def score_with_python_script(
         or scorer_config.get("timeout_seconds")
         or 10
     )
-    payload = {"predicted": predicted, "item": item}
+    payload = {
+        "predicted": predicted,
+        "item": item,
+        "global_check_aliases": global_check_aliases or {},
+    }
     try:
         proc = subprocess.run(
             [sys.executable, script_path],

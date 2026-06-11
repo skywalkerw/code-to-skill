@@ -7,4 +7,10 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .env
-test-data/
+
+# demo-project：版本库保留 benchmark/initial_skill/docs；runs 与源码 clone 本地生成
+demo-project/runs/*
+!demo-project/runs/.gitkeep
+demo-project/sources/repos/*
+!demo-project/sources/repos/.gitkeep
+!demo-project/sources/repos.manifest.yaml
