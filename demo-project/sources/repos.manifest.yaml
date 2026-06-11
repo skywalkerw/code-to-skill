@@ -1,0 +1,7 @@
+# demo-project 源码仓库拉取清单（与 config.yaml project.sources.repos 对应）
+#
+# fetch-sources 按 id 匹配；path/ref 以 config.yaml 为准（ref 可覆盖下方 default_ref）。
+repos:
+  fineract:
+    url: https://github.com/apache/fineract.git
+    default_ref: develop

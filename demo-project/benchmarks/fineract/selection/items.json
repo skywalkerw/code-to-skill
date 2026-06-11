@@ -1,0 +1,445 @@
+{
+  "schema_version": "1.0",
+  "items": [
+    {
+      "id": "jv_incomplete_001",
+      "question": "购买办公用品",
+      "task_type": "journal_entry",
+      "context_refs": [
+        "fineract-accounting/src/main/java/org/apache/fineract/accounting/journalentry/data/JournalEntryDataValidator.java"
+      ],
+      "expected_checks": [
+        "待确认",
+        "缺少",
+        "金额",
+        "补充"
+      ],
+      "scorer": "python_script",
+      "response_mode": "clarify",
+      "scorer_config": {
+        "script": "../score_expected_checks.py"
+      }
+    },
+    {
+      "id": "jv_incomplete_002",
+      "question": "客户还款 8000.00",
+      "task_type": "journal_entry",
+      "context_refs": [
+        "fineract-provider/src/main/java/org/apache/fineract/accounting/journalentry/service/CashBasedAccountingProcessorForLoan.java#createJournalEntriesForRepayments"
+      ],
+      "expected_checks": [
+        "待确认",
+        "会计口径",
+        "产品",
+        "拆分"
+      ],
+      "scorer": "python_script",
+      "response_mode": "clarify",
+      "scorer_config": {
+        "script": "../score_expected_checks.py"
+      }
+    },
+    {
+      "id": "jv_constraint_001",
+      "question": "请为以下交易生成凭证：借方 100.00，贷方 99.00",
+      "task_type": "journal_entry",
+      "context_refs": [
+        "fineract-accounting/src/main/java/org/apache/fineract/accounting/journalentry/domain/JournalEntry.java"
+      ],
+      "expected_checks": [
+        "借贷平衡",
+        "不得",
+        "不平",
+        "isBalanced"
+      ],
+      "scorer": "python_script",
+      "response_mode": "reject",
+      "scorer_config": {
+        "script": "../score_expected_checks.py"
+      }
+    },
+    {
+      "id": "jv_incomplete_003",
+      "question": "向客户发放贷款",
+      "task_type": "journal_entry",
+      "context_refs": [
+        "fineract-provider/src/main/java/org/apache/fineract/accounting/journalentry/service/CashBasedAccountingProcessorForLoan.java#createJournalEntriesForDisbursements"
+      ],
+      "expected_checks": [
+        "待确认",
+        "缺少",
+        "金额",
+        "客户"
+      ],
+      "scorer": "python_script",
+      "response_mode": "clarify",
+      "scorer_config": {
+        "script": "../score_expected_checks.py"
+      }
+    },
+    {
+      "id": "jv_closure_001",
+      "question": "在已关账分支过账一笔 100.00 的调账凭证",
+      "task_type": "journal_entry",
+      "context_refs": [
+        "fineract-accounting/src/main/java/org/apache/fineract/accounting/closure/domain/GLClosure.java",
+        "fineract-provider/src/main/java/org/apache/fineract/accounting/journalentry/service/AccountingProcessorHelper.java#checkForBranchClosures"
+      ],
+      "expected_checks": [
+        "关账",
+        "不得",
+        "GLClosure",
+        "closure"
+      ],
+      "scorer": "python_script",
+      "response_mode": "reject",
+      "scorer_config": {
+        "script": "../score_expected_checks.py"
+      }
+    },
+    {
+      "id": "jv_ambiguous_repay_001",
+      "question": "客户赵六还款 5000.00（未说明本金/利息拆分）",
+      "task_type": "journal_entry",
+      "context_refs": [
+        "fineract-provider/src/main/java/org/apache/fineract/accounting/journalentry/service/CashBasedAccountingProcessorForLoan.java#createJournalEntriesForRepayments"
+      ],
+      "expected_checks": [
+        "待确认",
+        "本金",
+        "利息",
+        "拆分"
+      ],
+      "scorer": "python_script",
+      "response_mode": "clarify",
+      "scorer_config": {
+        "script": "../score_expected_checks.py"
+      }
+    },
+    {
+      "id": "jv_incomplete_004",
+      "question": "销售商品给客户",
+      "task_type": "journal_entry",
+      "context_refs": [
+        "fineract-accounting/src/main/java/org/apache/fineract/accounting/journalentry/domain/JournalEntry.java"
+      ],
+      "expected_checks": [
+        "待确认",
+        "缺少",
+        "金额",
+        "销售"
+      ],
+      "scorer": "python_script",
+      "response_mode": "clarify",
+      "scorer_config": {
+        "script": "../score_expected_checks.py"
+      }
+    },
+    {
+      "id": "jv_incomplete_005",
+      "question": "客户存入储蓄",
+      "task_type": "journal_entry",
+      "context_refs": [
+        "fineract-provider/src/main/java/org/apache/fineract/accounting/journalentry/service/CashBasedAccountingProcessorForSavings.java#isDeposit"
+      ],
+      "expected_checks": [
+        "待确认",
+        "缺少",
+        "金额",
+        "储蓄"
+      ],
+      "scorer": "python_script",
+      "response_mode": "clarify",
+      "scorer_config": {
+        "script": "../score_expected_checks.py"
+      }
+    },
+    {
+      "id": "jv_constraint_002",
+      "question": "请为以下交易生成凭证：借方 50.00，贷方 50.01",
+      "task_type": "journal_entry",
+      "context_refs": [
+        "fineract-accounting/src/main/java/org/apache/fineract/accounting/journalentry/domain/JournalEntry.java"
+      ],
+      "expected_checks": [
+        "借贷平衡",
+        "不得",
+        "不平",
+        "isBalanced"
+      ],
+      "scorer": "python_script",
+      "response_mode": "reject",
+      "scorer_config": {
+        "script": "../score_expected_checks.py"
+      }
+    },
+    {
+      "id": "jv_sel_disburse_001",
+      "question": "向客户王七发放贷款 12000.00",
+      "task_type": "journal_entry",
+      "context_refs": [
+        "fineract-provider/src/main/java/org/apache/fineract/accounting/journalentry/service/CashBasedAccountingProcessorForLoan.java#createJournalEntriesForDisbursements"
+      ],
+      "expected_checks": [
+        "会计凭证",
+        "借",
+        "贷",
+        "贷款",
+        "现金",
+        "12000",
+        "发放"
+      ],
+      "scorer": "python_script",
+      "scorer_config": {
+        "script": "../score_expected_checks.py"
+      }
+    },
+    {
+      "id": "jv_sel_repay_split_001",
+      "question": "客户还款 本金 2800.00 利息 120.00",
+      "task_type": "journal_entry",
+      "context_refs": [
+        "fineract-provider/src/main/java/org/apache/fineract/accounting/journalentry/service/CashBasedAccountingProcessorForLoan.java#createJournalEntriesForRepayments"
+      ],
+      "expected_checks": [
+        "会计凭证",
+        "借",
+        "贷",
+        "现金",
+        "贷款",
+        "利息",
+        "还款"
+      ],
+      "scorer": "python_script",
+      "scorer_config": {
+        "script": "../score_expected_checks.py"
+      }
+    },
+    {
+      "id": "jv_sel_chargeoff_001",
+      "question": "贷款 Charge-Off 本金 800.00",
+      "task_type": "journal_entry",
+      "context_refs": [
+        "fineract-provider/src/main/java/org/apache/fineract/accounting/journalentry/service/CashBasedAccountingProcessorForLoan.java#createJournalEntriesForChargeOff"
+      ],
+      "expected_checks": [
+        "会计凭证",
+        "借",
+        "贷",
+        "Charge",
+        "贷款",
+        "Portfolio",
+        "800"
+      ],
+      "scorer": "python_script",
+      "rollout_hint": "Charge-Off 贷方科目须同时含「贷款组合」与英文 Portfolio。",
+      "scorer_config": {
+        "script": "../score_expected_checks.py"
+      }
+    },
+    {
+      "id": "jv_sel_penalty_001",
+      "question": "储蓄账户罚息扣款 42.00",
+      "task_type": "journal_entry",
+      "context_refs": [
+        "fineract-provider/src/main/java/org/apache/fineract/accounting/journalentry/service/CashBasedAccountingProcessorForSavings.java#isFeeDeduction"
+      ],
+      "expected_checks": [
+        "会计凭证",
+        "借",
+        "贷",
+        "penalty",
+        "罚息",
+        "42",
+        "储蓄"
+      ],
+      "scorer": "python_script",
+      "rollout_hint": "罚息凭证摘要行须含英文 penalty。",
+      "scorer_config": {
+        "script": "../score_expected_checks.py"
+      }
+    },
+    {
+      "id": "jv_sel_purchase_001",
+      "question": "买入原材料 花费 350.00",
+      "task_type": "journal_entry",
+      "context_refs": [
+        "fineract-accounting/src/main/java/org/apache/fineract/accounting/journalentry/data/JournalEntryDataValidator.java"
+      ],
+      "expected_checks": [
+        "会计凭证",
+        "借",
+        "贷",
+        "库存",
+        "银行",
+        "350",
+        "借贷校验"
+      ],
+      "scorer": "python_script",
+      "scorer_config": {
+        "script": "../score_expected_checks.py"
+      }
+    },
+    {
+      "id": "jv_sel_writeoff_001",
+      "question": "贷款本金核销 3200.00",
+      "task_type": "journal_entry",
+      "context_refs": [
+        "fineract-provider/src/main/java/org/apache/fineract/accounting/journalentry/service/CashBasedAccountingProcessorForLoan.java#writeOff"
+      ],
+      "expected_checks": [
+        "会计凭证",
+        "借",
+        "贷",
+        "核销",
+        "贷款",
+        "损失",
+        "3200"
+      ],
+      "scorer": "python_script",
+      "scorer_config": {
+        "script": "../score_expected_checks.py"
+      }
+    },
+    {
+      "id": "jv_sel_accrual_001",
+      "question": "本月贷款利息计提 560.00",
+      "task_type": "journal_entry",
+      "context_refs": [
+        "fineract-provider/src/main/java/org/apache/fineract/accounting/journalentry/service/AccrualBasedAccountingProcessorForLoan.java#createJournalEntriesForAccruals"
+      ],
+      "expected_checks": [
+        "会计凭证",
+        "借",
+        "贷",
+        "计提",
+        "应收利息",
+        "560"
+      ],
+      "scorer": "python_script",
+      "scorer_config": {
+        "script": "../score_expected_checks.py"
+      }
+    },
+    {
+      "id": "jv_sel_savings_dep_001",
+      "question": "客户存入储蓄 900.00",
+      "task_type": "journal_entry",
+      "context_refs": [
+        "fineract-provider/src/main/java/org/apache/fineract/accounting/journalentry/service/CashBasedAccountingProcessorForSavings.java#isDeposit"
+      ],
+      "expected_checks": [
+        "会计凭证",
+        "借",
+        "贷",
+        "储蓄",
+        "900",
+        "存入"
+      ],
+      "scorer": "python_script",
+      "scorer_config": {
+        "script": "../score_expected_checks.py"
+      }
+    },
+    {
+      "id": "jv_sel_savings_wd_001",
+      "question": "客户储蓄取款 400.00",
+      "task_type": "journal_entry",
+      "context_refs": [
+        "fineract-provider/src/main/java/org/apache/fineract/accounting/journalentry/service/CashBasedAccountingProcessorForSavings.java#isWithdrawal"
+      ],
+      "expected_checks": [
+        "会计凭证",
+        "借",
+        "贷",
+        "储蓄",
+        "400",
+        "取款"
+      ],
+      "scorer": "python_script",
+      "scorer_config": {
+        "script": "../score_expected_checks.py"
+      }
+    },
+    {
+      "id": "jv_sel_recovery_001",
+      "question": "已核销贷款回收还款 1800.00",
+      "task_type": "journal_entry",
+      "context_refs": [
+        "fineract-provider/src/main/java/org/apache/fineract/accounting/journalentry/service/CashBasedAccountingProcessorForLoan.java#createJournalEntriesForRecoveryRepayments"
+      ],
+      "expected_checks": [
+        "会计凭证",
+        "借",
+        "贷",
+        "回收",
+        "1800",
+        "收入"
+      ],
+      "scorer": "python_script",
+      "scorer_config": {
+        "script": "../score_expected_checks.py"
+      }
+    },
+    {
+      "id": "jv_sel_fee_001",
+      "question": "收取客户逾期手续费 88.00",
+      "task_type": "journal_entry",
+      "context_refs": [
+        "fineract-provider/src/main/java/org/apache/fineract/accounting/journalentry/service/CashBasedAccountingProcessorForLoan.java#createJournalEntriesForRepayments"
+      ],
+      "expected_checks": [
+        "会计凭证",
+        "借",
+        "贷",
+        "费用",
+        "88",
+        "Charge"
+      ],
+      "scorer": "python_script",
+      "scorer_config": {
+        "script": "../score_expected_checks.py"
+      }
+    },
+    {
+      "id": "jv_sel_interest_repay_001",
+      "question": "客户支付贷款利息 95.25",
+      "task_type": "journal_entry",
+      "context_refs": [
+        "fineract-provider/src/main/java/org/apache/fineract/accounting/journalentry/service/CashBasedAccountingProcessorForLoan.java#createJournalEntriesForRepayments"
+      ],
+      "expected_checks": [
+        "会计凭证",
+        "借",
+        "贷",
+        "利息",
+        "95.25",
+        "收入"
+      ],
+      "scorer": "python_script",
+      "scorer_config": {
+        "script": "../score_expected_checks.py"
+      }
+    },
+    {
+      "id": "jv_sel_escheat_001",
+      "question": "储蓄账户 escheat 转无人认领负债 120.00",
+      "task_type": "journal_entry",
+      "context_refs": [
+        "fineract-provider/src/main/java/org/apache/fineract/accounting/journalentry/service/CashBasedAccountingProcessorForSavings.java#isEscheat"
+      ],
+      "expected_checks": [
+        "会计凭证",
+        "借",
+        "贷",
+        "escheat",
+        "储蓄",
+        "120"
+      ],
+      "scorer": "python_script",
+      "scorer_config": {
+        "script": "../score_expected_checks.py"
+      }
+    }
+  ]
+}

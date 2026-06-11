@@ -1,0 +1,108 @@
+{
+  "schema_version": "1.0",
+  "items": [
+    {
+      "id": "jv_purchase_001",
+      "question": "买入 A物品 花费 100.00",
+      "task_type": "journal_entry",
+      "context_refs": [
+        "fineract-accounting/src/main/java/org/apache/fineract/accounting/journalentry/data/JournalEntryDataValidator.java"
+      ],
+      "expected_checks": [
+        "会计凭证",
+        "借",
+        "贷",
+        "库存",
+        "银行",
+        "100.00",
+        "借贷校验"
+      ],
+      "scorer": "python_script",
+      "scorer_config": {
+        "script": "../score_expected_checks.py"
+      }
+    },
+    {
+      "id": "jv_loan_disburse_001",
+      "question": "向客户张三发放贷款 50000.00",
+      "task_type": "journal_entry",
+      "context_refs": [
+        "fineract-provider/src/main/java/org/apache/fineract/accounting/journalentry/service/CashBasedAccountingProcessorForLoan.java#createJournalEntriesForDisbursements"
+      ],
+      "expected_checks": [
+        "会计凭证",
+        "借",
+        "贷",
+        "贷款",
+        "现金",
+        "50000",
+        "发放"
+      ],
+      "scorer": "python_script",
+      "scorer_config": {
+        "script": "../score_expected_checks.py"
+      }
+    },
+    {
+      "id": "jv_repayment_principal_001",
+      "question": "客户李四还款本金 3000.00",
+      "task_type": "journal_entry",
+      "context_refs": [
+        "fineract-provider/src/main/java/org/apache/fineract/accounting/journalentry/service/CashBasedAccountingProcessorForLoan.java#createJournalEntriesForRepayments"
+      ],
+      "expected_checks": [
+        "会计凭证",
+        "借",
+        "贷",
+        "现金",
+        "贷款",
+        "3000",
+        "还款"
+      ],
+      "scorer": "python_script",
+      "scorer_config": {
+        "script": "../score_expected_checks.py"
+      }
+    },
+    {
+      "id": "jv_repayment_interest_001",
+      "question": "客户王五支付贷款利息 150.50",
+      "task_type": "journal_entry",
+      "context_refs": [
+        "fineract-provider/src/main/java/org/apache/fineract/accounting/journalentry/service/CashBasedAccountingProcessorForLoan.java#createJournalEntriesForRepayments"
+      ],
+      "expected_checks": [
+        "会计凭证",
+        "借",
+        "贷",
+        "利息",
+        "150.50",
+        "收入"
+      ],
+      "scorer": "python_script",
+      "scorer_config": {
+        "script": "../score_expected_checks.py"
+      }
+    },
+    {
+      "id": "jv_savings_interest_001",
+      "question": "储蓄利息入账 12.75",
+      "task_type": "journal_entry",
+      "context_refs": [
+        "fineract-provider/src/main/java/org/apache/fineract/accounting/journalentry/service/CashBasedAccountingProcessorForSavings.java#isInterestPosting"
+      ],
+      "expected_checks": [
+        "会计凭证",
+        "借",
+        "贷",
+        "利息",
+        "储蓄",
+        "12.75"
+      ],
+      "scorer": "python_script",
+      "scorer_config": {
+        "script": "../score_expected_checks.py"
+      }
+    }
+  ]
+}
