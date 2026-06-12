@@ -189,7 +189,7 @@ class DEFAULTAdapter(EnvAdapter):
         self.max_tool_rounds = max_tool_rounds
         self.rollout_max_tool_rounds = rollout_max_tool_rounds
         self.rollout_workers = max(1, int(rollout_workers or 1))
-        from code_to_skill.codegraph_mcp.handler import build_code_tools_handler
+        from code_to_skill.tool.code_tools import build_code_tools_handler
         self.code_tools = build_code_tools_handler(
             code_repos, enable_code_tools=enable_code_tools,
         )
@@ -199,7 +199,7 @@ class DEFAULTAdapter(EnvAdapter):
         self._reflect_prompt_success = ""
         self._judge_backend = None
         if cfg:
-            from code_to_skill.codegraph_mcp.handler import build_code_tools_handler
+            from code_to_skill.tool.code_tools import build_code_tools_handler
             self.code_tools = build_code_tools_handler(
                 cfg.get("code_repos"),
                 enable_code_tools=self.enable_code_tools,
@@ -242,9 +242,31 @@ class DEFAULTAdapter(EnvAdapter):
         target_backend: Any = None,
         out_dir: str = "",
     ) -> list[dict]:
-        """默认 rollout：LLM 优先，降级关键词规则。"""
+        """默认 rollout：LLM 优先，降级关键词规则。
+
+        设计 09 Phase 4：rollout 前预取代码事实，减少 LLM 自由工具搜索。
+        """
         if not items:
             return []
+
+        # 设计 09 Phase 4：预取 CodeFact，写入 item['_code_facts']
+        if (
+            self.enable_code_tools
+            and self.code_tools.enabled
+            and self.code_tools.graph_enabled
+        ):
+            try:
+                from ..code_evidence import prefetch_code_facts_for_items
+
+                sidecars = getattr(self, "graph_sidecars", None)
+                prefetch_code_facts_for_items(
+                    items,
+                    self.code_tools,
+                    sidecars=sidecars,
+                    max_candidates=8,
+                )
+            except Exception:
+                logger.debug("prefetch_code_facts_for_items failed", exc_info=True)
 
         backend = target_backend or self._backend
         workers = min(self.rollout_workers, len(items))
@@ -349,6 +371,9 @@ class DEFAULTAdapter(EnvAdapter):
                 tool_rounds = (
                     self.rollout_max_tool_rounds if code_tools_enabled else 0
                 )
+                # 设计 09 Phase 4：有预取代码事实时减少工具搜索轮次
+                if tool_rounds > 1 and (item.get("_code_facts") or item.get("_code_candidates")):
+                    tool_rounds = max(1, tool_rounds - 2)  # 最少保留 1 轮验证
                 logger.debug(
                     "[rollout] item=%s context_mode=%s tool_rounds=%d (max_reflect=%d)",
                     item.get("id", "?"),

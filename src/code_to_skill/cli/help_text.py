@@ -6,6 +6,7 @@ MAIN_EPILOG = """
   skill-lab -h                  本页：顶层命令
   skill-lab run -h              流水线子命令列表
   skill-lab run all -h          完整流水线参数说明
+  skill-lab tool code -h        直接调用代码工具
   skill-lab codegraph -h        代码图谱查询子命令
   skill-lab inspect run -h      run 产物摘要与自进化校验
 
@@ -14,6 +15,7 @@ MAIN_EPILOG = """
   skill-lab init --name my-skill
   skill-lab doctor --config-path config.yaml
   skill-lab config --config-path config.yaml
+  skill-lab tool code search-code JournalEntry --config-path config.yaml
   skill-lab run all --config-path config.yaml --with-atoms
   skill-lab run optimize-skill --trace-merge -o demo-project/runs/xxx/optimization
   skill-lab inspect run <run_id> --trace-pool --validate-self-evolution

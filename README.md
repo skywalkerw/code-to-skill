@@ -87,6 +87,7 @@ M6 CLI 编排层 (贯穿)
 | `publish`                     | 发布 SKILL.md                     | `--target`, `--strip-rule-ids`, `--force`      |
 | `resume`                      | M4 断点续训                         | `<run_id>`                                     |
 | `approve`                     | 审批高风险动作                         | `<approval_id>`, `--deny`                      |
+| `tool code`                   | 直接调用纯代码工具                      | `search-code`, `read-code-file`, `search-symbol` |
 | `codegraph`                   | 图谱查询 CLI                        | 见 `skill-lab codegraph -h`                     |
 
 
@@ -219,6 +220,17 @@ skill-lab approve <approval_id> [--deny]
 ```bash
 skill-lab codegraph -h
 skill-lab codegraph search -h
+```
+
+### `tool code` 子命令
+
+纯代码工具 CLI，不依赖 M4，可直接用于脚本或人工排查。文件工具支持 `search-code`、`read-code-file`、`list-code-files`；图谱工具支持 `search-symbol`、`context`、`trace`。M4 只负责把这些工具产出的代码事实接入 SkillOpt-loop。
+
+```bash
+skill-lab tool code -h
+skill-lab tool code search-code JournalEntry --config-path config.yaml
+skill-lab tool code read-code-file path/to/Foo.java --repo-root /path/to/repo
+skill-lab tool code search-symbol JournalEntry --db /path/to/graph.db --repo-root /path/to/repo
 ```
 
 ### 典型工作流

@@ -10,6 +10,7 @@ def test_main_help_lists_top_level_commands():
     result = CliRunner().invoke(main, ["-h"])
     assert result.exit_code == 0
     assert "run" in result.output
+    assert "tool" in result.output
     assert "codegraph" in result.output
     assert "skill-lab run all -h" in result.output
 
@@ -36,3 +37,10 @@ def test_codegraph_help_lists_tools():
     assert result.exit_code == 0
     assert "search" in result.output
     assert "trace" in result.output
+
+
+def test_tool_code_help_lists_tools():
+    result = CliRunner().invoke(main, ["tool", "code", "-h"])
+    assert result.exit_code == 0
+    assert "search-code" in result.output
+    assert "read-code-file" in result.output

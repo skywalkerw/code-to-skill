@@ -34,7 +34,7 @@ class CodeDiagnosisConfig:
     max_snippet_chars: int = 800
     max_cases_per_step: int = 8
     write_jsonl: bool = True
-    require_code_facts_for_rules: bool = False
+    require_code_facts_for_rules: bool = True  # 设计 09 §9：默认强制代码证据
 
     @classmethod
     def from_skillopt_settings(cls, skillopt_settings: dict[str, Any] | None) -> "CodeDiagnosisConfig":
@@ -45,7 +45,7 @@ class CodeDiagnosisConfig:
             max_snippet_chars=int(raw.get("max_snippet_chars", 800) or 800),
             max_cases_per_step=int(raw.get("max_cases_per_step", 8) or 8),
             write_jsonl=bool(raw.get("write_jsonl", True)),
-            require_code_facts_for_rules=bool(raw.get("require_code_facts_for_rules", False)),
+            require_code_facts_for_rules=bool(raw.get("require_code_facts_for_rules", True)),
         )
 
 
@@ -199,7 +199,39 @@ def _collect_code_facts(
     max_files: int = 2,
     max_chars: int = 800,
 ) -> tuple[list[dict[str, str]], str]:
-    """Evidence order: context_refs → evidence_index → role/entrypoint → code read."""
+    """代码事实收集（设计 09 Phase 3 升级版）。
+
+    优先使用确定性检索管线 (CodeQueryPlan → find_relevant_code)；
+    回退到旧版 context_refs → evidence_index → role/entrypoint → code read。
+    """
+    # 尝试新检索管线
+    if code_tools is not None and hasattr(code_tools, "execute"):
+        try:
+            from code_to_skill.tool.code_retrieval import find_relevant_code
+
+            retrieval = find_relevant_code(
+                result,
+                code_tools,
+                graph_sidecars=graph_sidecars,
+                max_candidates=8,
+                max_snippet_chars=max_chars,
+            )
+            if retrieval.facts:
+                facts: list[dict[str, str]] = []
+                for fact in retrieval.facts:
+                    facts.append({
+                        "ref": fact.evidence_refs[0] if fact.evidence_refs else "",
+                        "snippet": fact.evidence_quotes[0] if fact.evidence_quotes else "",
+                        "fact": fact.statement,
+                        "source": f"code_retrieval:{fact.source}",
+                        "confidence": str(fact.confidence),
+                        "role": fact.role,
+                    })
+                return facts, "code_retrieval"
+        except Exception:
+            logger.debug("code_retrieval fallback to legacy collection", exc_info=True)
+
+    # 回退：旧版收集
     facts: list[dict[str, str]] = []
     diagnosis_source = ""
     refs = [str(r) for r in (result.get("context_refs") or []) if r][:max_files]
@@ -385,7 +417,10 @@ def sort_diagnoses_for_reflect(diagnoses: list[dict]) -> list[dict]:
 
 
 def collect_diagnosis_run_metrics(output_dir: str | Path) -> dict[str, Any]:
-    """Aggregate diagnosis coverage from code_diagnosis/step_*/ artifacts."""
+    """Aggregate diagnosis coverage from code_diagnosis/step_*/ artifacts.
+
+    含 code_retrieval_metrics（设计 09 §12）。
+    """
     root = Path(output_dir) / "code_diagnosis"
     steps_root = Path(output_dir) / "steps"
     if not root.is_dir():
@@ -396,13 +431,24 @@ def collect_diagnosis_run_metrics(output_dir: str | Path) -> dict[str, Any]:
             "hard_failure_coverage": 0.0,
             "code_facts_rate": 0.0,
             "needs_review_count": 0,
+            "code_retrieval_metrics": {},
         }
+
     total = 0
     with_facts = 0
     needs_review = 0
     steps = 0
     diagnosed_ids: set[str] = set()
     hard_failure_ids: set[str] = set()
+
+    # code_retrieval_metrics aggregation
+    retrieval_cases_with_facts = 0
+    retrieval_cases_total = 0
+    retrieval_fact_sources: dict[str, int] = {}
+    retrieval_glue_top1 = 0
+    retrieval_scores: list[float] = []
+    retrieval_top_roles: list[str] = []
+
     for summary_path in sorted(root.glob("step_*/summary.json")):
         steps += 1
         try:
@@ -411,6 +457,7 @@ def collect_diagnosis_run_metrics(output_dir: str | Path) -> dict[str, Any]:
             continue
         total += int(row.get("diagnosis_count", 0) or 0)
         needs_review += int(row.get("needs_review_count", 0) or 0)
+
     for jsonl_path in sorted(root.glob("step_*/code_diagnosis.jsonl")):
         try:
             for line in jsonl_path.read_text(encoding="utf-8").splitlines():
@@ -419,10 +466,30 @@ def collect_diagnosis_run_metrics(output_dir: str | Path) -> dict[str, Any]:
                 row = json.loads(line)
                 if row.get("item_id"):
                     diagnosed_ids.add(str(row.get("item_id")))
-                if row.get("code_facts"):
+                code_facts = row.get("code_facts") or []
+                if code_facts:
                     with_facts += 1
+                    retrieval_cases_with_facts += 1
+                retrieval_cases_total += 1
+
+                # per-fact metrics
+                for fact in code_facts:
+                    src = str(fact.get("source") or "")
+                    retrieval_fact_sources[src] = retrieval_fact_sources.get(src, 0) + 1
+                    role = str(fact.get("role") or "")
+                    retrieval_top_roles.append(role)
+                    try:
+                        conf = float(fact.get("confidence") or 0)
+                        retrieval_scores.append(conf)
+                    except (ValueError, TypeError):
+                        pass
+                    if fact is code_facts[0]:
+                        if role in ("handler_only", "swagger", "configuration", "resource_api"):
+                            retrieval_glue_top1 += 1
+
         except (OSError, json.JSONDecodeError):
             continue
+
     if steps_root.is_dir():
         for summary_path in sorted(steps_root.glob("step_*/rollout_summary.json")):
             try:
@@ -437,6 +504,20 @@ def collect_diagnosis_run_metrics(output_dir: str | Path) -> dict[str, Any]:
         if hard_failure_ids
         else (1.0 if total > 0 else 0.0)
     )
+
+    # compute retrieval metrics
+    retrieval_facts_rate = (
+        retrieval_cases_with_facts / max(retrieval_cases_total, 1)
+        if retrieval_cases_total > 0 else 0.0
+    )
+    glue_top1_rate = (
+        retrieval_glue_top1 / max(retrieval_cases_with_facts, 1)
+        if retrieval_cases_with_facts > 0 else 0.0
+    )
+    avg_score = (
+        sum(retrieval_scores) / len(retrieval_scores) if retrieval_scores else 0.0
+    )
+
     return {
         "diagnosis_steps": steps,
         "diagnosis_count": total,
@@ -444,6 +525,26 @@ def collect_diagnosis_run_metrics(output_dir: str | Path) -> dict[str, Any]:
         "hard_failure_coverage": round(coverage, 3),
         "code_facts_rate": round(with_facts / max(total, 1), 3),
         "needs_review_count": needs_review,
+        "code_retrieval_metrics": {
+            "query_plan_count": retrieval_cases_total,
+            "cases_with_code_facts": retrieval_cases_with_facts,
+            "code_facts_rate": round(retrieval_facts_rate, 3),
+            "business_rules_with_evidence_rate": (
+                retrieval_fact_sources.get("code_retrieval:context_ref", 0)
+                + retrieval_fact_sources.get("code_retrieval:evidence_index", 0)
+                + retrieval_fact_sources.get("code_retrieval:trace", 0)
+                + retrieval_fact_sources.get("code_retrieval:symbol_search", 0)
+            ) / max(sum(retrieval_fact_sources.values()), 1) if retrieval_fact_sources else 0.0,
+            "glue_code_top1_rate": round(glue_top1_rate, 3),
+            "avg_candidates_per_case": 0,  # 候选数需在 retrieval 执行时写入
+            "avg_facts_per_case": round(
+                sum(retrieval_fact_sources.values()) / max(retrieval_cases_total, 1),
+                1,
+            ) if retrieval_cases_total > 0 else 0.0,
+            "avg_fact_confidence": round(avg_score, 3),
+            "top_roles": list(dict.fromkeys(retrieval_top_roles))[:6],
+            "fact_sources": retrieval_fact_sources,
+        },
     }
 
 

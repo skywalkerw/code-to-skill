@@ -283,6 +283,40 @@ def record_rule_bank_acceptance(
     return touched
 
 
+def remove_no_evidence_business_rules(
+    candidate_rules: list[dict],
+) -> list[dict]:
+    """过滤无代码证据的业务规则（设计 09 §9）。
+
+    保留：
+    - prompt_echo / output_format_error 类型的规则（不需要代码证据）
+    - 有 evidence_refs 或 code_facts 的业务规则
+
+    移除：
+    - missing_business_rule 类型但无 evidence_refs 的规则
+    """
+    filtered: list[dict] = []
+    removed = 0
+    for rule in candidate_rules:
+        failure_type = str(rule.get("failure_type") or "")
+        evidence_refs = rule.get("evidence_refs") or []
+        code_facts = rule.get("code_facts") or []
+
+        if failure_type == "missing_business_rule":
+            if not evidence_refs and not code_facts:
+                logger.debug(
+                    "rule_bank: removing business rule without code evidence: %s",
+                    str(rule.get("rule_id") or rule.get("text", "")[:60]),
+                )
+                removed += 1
+                continue
+        filtered.append(rule)
+
+    if removed:
+        logger.info("rule_bank: removed %d business rules without code evidence", removed)
+    return filtered
+
+
 def upsert_candidate_rules(
     candidate_rules: list[dict],
     path: str | Path,
@@ -291,9 +325,13 @@ def upsert_candidate_rules(
     step: int,
     accepted_item_ids: list[str] | None = None,
 ) -> int:
-    """Persist newly accepted diagnosis candidate rules into the rule bank."""
+    """Persist newly accepted diagnosis candidate rules into the rule bank。
+
+    前置检查：无证据的业务规则会被过滤（设计 09 §9）。
+    """
     if not candidate_rules:
         return 0
+    candidate_rules = remove_no_evidence_business_rules(candidate_rules)
     rules = load_rules(path)
     by_id = {str(rule.get("rule_id")): rule for rule in rules if rule.get("rule_id")}
     by_text = {

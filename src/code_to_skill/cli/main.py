@@ -3,6 +3,7 @@
 命令列表：
   skill-lab init           初始化项目
   skill-lab config validate 校验配置
+  skill-lab tool            直接调用通用工具
   skill-lab codegraph      查询代码图谱（search/context/trace 等）
   skill-lab run             运行模块或全流程
   skill-lab status          查看运行状态
@@ -29,6 +30,7 @@ from code_to_skill.time_utils import local_timestamp, local_timestamp_compact
 
 from .config_loader import load_config, AppConfig, SettingsConfig, ProjectConfig
 from .codegraph_cmds import codegraph_group
+from .tool_cmds import tool_group
 from .help_text import (
     INSPECT_RUN_DOC,
     MAIN_EPILOG,
@@ -309,6 +311,7 @@ def main():
       doctor        环境诊断（tree-sitter / 配置 / 数据源路径）
       config        校验 config.yaml（别名：历史上亦称 config validate）
       run           运行模块或完整流水线（见 ``skill-lab run -h``）
+      tool          直接调用通用工具（代码搜索/读取/图谱查询）
       codegraph     查询代码图谱（见 ``skill-lab codegraph -h``）
       status        查看 run 状态（无参数时列出最近 5 次）
       inspect       查看产物文件摘要（json / jsonl / md）
@@ -327,6 +330,7 @@ def main():
 
 
 main.add_command(codegraph_group)
+main.add_command(tool_group)
 
 
 # ── init ─────────────────────────────────────────────────────

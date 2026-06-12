@@ -237,13 +237,33 @@ settings:
         context_window: 32768
         timeout_seconds: 120
 
+      ollama-gemma:
+        type: local_llm
+        provider: openai_compatible
+        base_url: http://127.0.0.1:11434/v1
+        api_key_env: LOCAL_LLM_API_KEY
+        model: gemma4:12b-nvfp4
+        context_window: 32768
+        max_output_tokens: 8192
+        timeout_seconds: 300
+
+      qwen37-plus:
+        type: llm_api
+        provider: openai_compatible
+        base_url: ${DASHSCOPE_CODING_BASE_URL}
+        api_key_env: DASHSCOPE_CODING_API_KEY
+        model: qwen3.7-plus
+        context_window: 128000
+        max_output_tokens: 16384
+        timeout_seconds: 180
+
       mock-backend:
         type: mock
         provider: mock
         model: mock-model-v1
 
     # routes：按调用角色（role）选择 backend；primary 失败时按 fallback 顺序降级。
-    # 本文件未写 skillopt.rollout_backend 时，rollout 使用 target.primary（deepseek-flash）。
+    # 本文件未写 skillopt.rollout_backend 时，rollout 使用 target.primary（qwen37-plus）。
     routes:
       # M3 Atom 抽取：从代码片段与文档块中识别 SkillAtom
       extractor:
@@ -257,10 +277,10 @@ settings:
       optimizer:
         primary: deepseek
         fallback: [qwen-local, mock-backend]
-      # M4 执行端 rollout：train/selection/test benchmark 答题（量大，用 flash 降本提速）
+      # M4 执行端 rollout：train/selection/test benchmark 答题（百炼 Coding API）
       target:
-        primary: deepseek-flash
-        fallback: [qwen-local, mock-backend]
+        primary: qwen37-plus
+        fallback: [deepseek-flash, ollama-gemma, qwen-local, mock-backend]
       # 可选 LLM Judge：benchmark scorer=llm_judge 时的 rubric 打分
       judge:
         primary: deepseek

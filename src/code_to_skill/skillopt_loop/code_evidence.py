@@ -683,6 +683,75 @@ def _format_explore_card(data: dict[str, Any], hint: str = "") -> str:
     return "\n".join(lines)
 
 
+def prefetch_code_facts_for_items(
+    items: list[dict],
+    code_tools: Any,
+    *,
+    sidecars: Any = None,
+    scorer_diagnostics: dict | None = None,
+    max_candidates: int = 8,
+) -> list[dict]:
+    """批量预取 CodeFact，写入 item 的 ``_code_facts`` / ``_code_candidates``。
+
+    调用时机：rollout 前，对每个 item 执行一次确定性检索。
+    返回更新后的 items 列表（原地修改 + 返回）。
+    """
+    from code_to_skill.tool.code_retrieval import (
+        CodeRetrievalResult,
+        find_relevant_code,
+    )
+
+    fetched = 0
+    for item in items:
+        if item.get("_code_facts") is not None:
+            continue
+        result: CodeRetrievalResult = find_relevant_code(
+            item,
+            code_tools,
+            graph_sidecars=sidecars,
+            scorer_diagnostics=scorer_diagnostics,
+            max_candidates=max_candidates,
+        )
+        item["_code_facts"] = [f.to_dict() for f in result.facts]
+        item["_code_candidates"] = [c.to_dict() for c in result.candidates]
+        item["_code_retrieval_metrics"] = result.metrics
+        if result.facts:
+            fetched += 1
+    return items
+
+
+def _dict_to_codefact(d: dict):
+    """Safely convert a fact dict back to a duck-typed object for formatting."""
+    from code_to_skill.tool.code_retrieval import CodeFact
+    return CodeFact(
+        fact_id=str(d.get("fact_id") or ""),
+        case_id=str(d.get("case_id") or ""),
+        statement=str(d.get("statement") or ""),
+        evidence_refs=list(d.get("evidence_refs") or []),
+        evidence_quotes=list(d.get("evidence_quotes") or []),
+        confidence=float(d.get("confidence") or 0),
+        source=str(d.get("source") or ""),
+        role=str(d.get("role") or ""),
+    )
+
+
+def _dict_to_codecandidate(d: dict):
+    """Safely convert a candidate dict back to a duck-typed object."""
+    from code_to_skill.tool.code_retrieval import CodeCandidate
+    return CodeCandidate(
+        ref=str(d.get("ref") or ""),
+        path=str(d.get("path") or ""),
+        symbol=str(d.get("symbol") or ""),
+        kind=str(d.get("kind") or ""),
+        role=str(d.get("role") or ""),
+        source=str(d.get("source") or ""),
+        score=float(d.get("score") or 0),
+        score_reasons=list(d.get("score_reasons") or []),
+        snippet=str(d.get("snippet_preview") or d.get("snippet") or ""),
+        call_chain=str(d.get("call_chain") or ""),
+    )
+
+
 def build_rollout_item_context(
     item: dict,
     code_tools: Any,
@@ -690,10 +759,43 @@ def build_rollout_item_context(
     max_chars: int = 1800,
     sidecars: Any = None,
 ) -> str:
-    """为单条 rollout 预取 benchmark context_refs 对应的真实代码片段。"""
+    """为单条 rollout 预取代码上下文（设计 09 §8.1 / Phase 4）。
+
+    三路优先级：
+    1. 预取的 ``_code_facts`` / ``_code_candidates``（确定性检索）
+    2. 已有 benchmark context_refs（旧行为）
+    3. question 符号提示（回退）
+    """
     if code_tools is None or not getattr(code_tools, "graph_enabled", False):
         return ""
 
+    # --- 优先级 1: 预取的 CodeFact / CodeCandidate ---
+    pre_facts: list[dict] = item.get("_code_facts") or []
+    pre_candidates: list[dict] = item.get("_code_candidates") or []
+    if pre_facts or pre_candidates:
+        from code_to_skill.tool.code_retrieval import (
+            format_candidates_for_context,
+            format_code_facts_for_context,
+        )
+        parts: list[str] = []
+        facts_part = format_code_facts_for_context(
+            [_dict_to_codefact(f) for f in pre_facts[:5]],
+        )
+        if facts_part:
+            parts.append(facts_part)
+        cands_part = format_candidates_for_context(
+            [_dict_to_codecandidate(c) for c in pre_candidates[:4]],
+        )
+        if cands_part:
+            parts.append(cands_part)
+        if parts:
+            body = "\n\n".join(parts)
+            return (
+                f"\n\n--- Project code reference (consult before final answer) ---\n"
+                f"{body[:max_chars]}\n"
+            )
+
+    # --- 优先级 2-3: 旧行为（context_refs → question hints）---
     refs = list(item.get("context_refs") or [])
     if not refs:
         hints = extract_symbol_hints_from_question(item.get("question", ""))
