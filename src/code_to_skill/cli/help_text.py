@@ -171,6 +171,8 @@ Run quality（optimization/run_quality_report.json）:
   --rule-attribution           规则归因摘要
   --frontier                   前沿 Skill 池摘要
   --validate-self-evolution    校验 self_evolution 产物完整性
+  --optimization-dir NAME      optimization 子目录（默认 optimization；对比重训用 optimization-07）
+  --compare-optimization       对比 optimization 与 --optimization-dir 的质量指标
 
 \b
 单文件查看: skill-lab inspect file <path>

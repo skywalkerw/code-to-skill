@@ -101,6 +101,7 @@ def resolve_run_quality_report(opt_dir: Path, run_id: str) -> dict | None:
 def summarize_run(
     run_dir: Path,
     *,
+    optimization_dir: str = "optimization",
     trace_pool: bool = False,
     rule_attribution: bool = False,
     frontier: bool = False,
@@ -108,9 +109,12 @@ def summarize_run(
 ) -> list[str]:
     """生成 run 目录的人类可读摘要行。"""
     lines: list[str] = []
-    opt = run_dir / "optimization"
+    opt = run_dir / optimization_dir
+    if not opt.is_dir():
+        opt = run_dir / "optimization"
     lines.append(f"Run: {run_dir.name}")
     lines.append(f"Path: {run_dir}")
+    lines.append(f"Optimization: {opt.name}")
 
     manifest = _read_json(run_dir / "run_manifest.json")
     if isinstance(manifest, dict):
@@ -306,4 +310,34 @@ def summarize_run(
             detail = chk.get("detail", "")
             lines.append(f"  {mark} {chk.get('name', '?')}: {detail}")
 
+    return lines
+
+
+def compare_optimization_dirs(
+    run_dir: Path,
+    *,
+    baseline: str = "optimization",
+    candidate: str = "optimization-07",
+) -> list[str]:
+    """对比同一 run 下两次 optimization 产物质量。"""
+    lines: list[str] = [f"Compare {baseline} vs {candidate} ({run_dir.name})"]
+    for label, sub in ((baseline, baseline), (candidate, candidate)):
+        opt = run_dir / sub
+        if not opt.is_dir():
+            lines.append(f"  {label}: (missing)")
+            continue
+        rq = resolve_run_quality_report(opt, run_dir.name)
+        if not isinstance(rq, dict):
+            lines.append(f"  {label}: (no quality data)")
+            continue
+        mono = "✓" if rq.get("best_score_monotonic") else "✗"
+        lines.append(
+            f"  {label}: best={rq.get('best_score', 0):.3f} "
+            f"test_hard={rq.get('test_hard', 0):.3f} "
+            f"test_soft={rq.get('test_soft', 0):.3f} "
+            f"monotonic={mono} "
+            f"leakage={rq.get('leakage_count', 0)} "
+            f"case_ids={rq.get('case_id_count', 0)} "
+            f"chars={rq.get('best_skill_chars', 0)}"
+        )
     return lines

@@ -36,6 +36,16 @@ def test_summarize_run_includes_computed_quality():
     assert "leakage=" in joined
 
 
+def test_compare_optimization_dirs_baseline():
+    run_dir = Path("demo-project/runs/20260612-105003")
+    if not (run_dir / "optimization" / "history.json").is_file():
+        return
+    lines = __import__(
+        "code_to_skill.cli.inspect_run", fromlist=["compare_optimization_dirs"]
+    ).compare_optimization_dirs(run_dir, candidate="optimization-07")
+    assert any("optimization vs" in ln for ln in lines)
+
+
 def test_resolve_prefers_saved_report(tmp_path):
     opt = tmp_path / "optimization"
     opt.mkdir(parents=True)

@@ -1592,6 +1592,17 @@ def inspect_file(artifact: str):
 @click.option("--rule-attribution", is_flag=True, help="展示 rule attribution 摘要")
 @click.option("--frontier", is_flag=True, help="展示 frontier pool 摘要")
 @click.option("--validate-self-evolution", is_flag=True, help="校验 self_evolution 产物完整性")
+@click.option(
+    "--optimization-dir",
+    default="optimization",
+    show_default=True,
+    help="optimization 子目录名（如 optimization-07）",
+)
+@click.option(
+    "--compare-optimization",
+    is_flag=True,
+    help="对比 optimization 与 --optimization-dir 的质量指标",
+)
 def inspect_run(
     run_id: str,
     config_path: str,
@@ -1599,9 +1610,11 @@ def inspect_run(
     rule_attribution: bool,
     frontier: bool,
     validate_self_evolution: bool,
+    optimization_dir: str,
+    compare_optimization: bool,
 ):
     """汇总 run 目录：manifest、gate、test、context refs、训练曲线。"""
-    from .inspect_run import summarize_run
+    from .inspect_run import compare_optimization_dirs, summarize_run
 
     cfg = load_config(config_path)
     run_dir = _resolve_run_dir(run_id, cfg.settings.output_root)
@@ -1610,8 +1623,16 @@ def inspect_run(
     if not run_dir.is_dir():
         click.echo(f"❌ 未找到 run: {run_id}")
         return
+    if compare_optimization:
+        for line in compare_optimization_dirs(
+            run_dir,
+            candidate=optimization_dir,
+        ):
+            click.echo(line)
+        return
     for line in summarize_run(
         run_dir,
+        optimization_dir=optimization_dir,
         trace_pool=trace_pool,
         rule_attribution=rule_attribution,
         frontier=frontier,
