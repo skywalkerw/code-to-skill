@@ -12,9 +12,9 @@ echo "========================================"
 echo ""
 
 # 确保 CLI 已安装
-python -m pip install -e . -q 2>/dev/null || true
+python -m pip install -e . 
 
-python -m code_to_skill.cli.main run all --config-path "config.yaml"
+skill-lab run all --config-path config.yaml --with-atoms
 
 echo ""
 echo "========================================"
