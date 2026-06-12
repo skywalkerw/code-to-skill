@@ -279,7 +279,7 @@ settings:
         fallback: [qwen-local, mock-backend]
       # M4 执行端 rollout：train/selection/test benchmark 答题（百炼 Coding API）
       target:
-        primary: qwen37-plus
+        primary: deepseek-flash
         fallback: [deepseek-flash, ollama-gemma, qwen-local, mock-backend]
       # 可选 LLM Judge：benchmark scorer=llm_judge 时的 rubric 打分
       judge:
