@@ -81,7 +81,7 @@ M6 CLI 编排层 (贯穿)
 | `run training-curve plot`     | 绘制训练曲线 SVG                      | `<run_id>`, `-o`                               |
 | `run training-curve backfill` | 从历史回填 training_curve.json       | `<run_id>`                                     |
 | `status`                      | 查看 run 状态                       | `[run_id]`（无参数列最近 5 次）                         |
-| `inspect run`                 | run 目录摘要                        | `--trace-pool`, `--validate-self-evolution`    |
+| `inspect run`                 | run 目录摘要（含 run quality 报告）      | `--trace-pool`, `--validate-self-evolution`    |
 | `inspect file`                | 单文件产物预览                         | `<path>`                                       |
 | `eval`                        | 独立评测 best_skill                 | `--split test`, `--benchmark`                  |
 | `publish`                     | 发布 SKILL.md                     | `--target`, `--strip-rule-ids`, `--force`      |
@@ -336,7 +336,50 @@ skill-lab config --config-path config.yaml
 | `rollout_max_tool_rounds`          | `2`                                  | rollout 工具轮次上限                        |
 | `rollout_workers`                  | `4`                                  | batch 内并行 rollout 数（1=串行）             |
 | `expose_expected_checks_to_target` | `false`                              | 是否向 target 暴露 expected_checks         |
-| `check_aliases`                    | `{}`                                 | 全局 keyword scorer 别名映射                |
+| `check_aliases`                    | 见模板                                  | 全局 keyword / python_script 别名；Fineract 示例含 `资产`/`费用`/`Charge` |
+
+
+**gate**（best/current 状态机，详见 [07-skillopt-run-quality-optimization.md](docs/design/07-skillopt-run-quality-optimization.md)）
+
+
+| 键                              | 默认     | 说明                                      |
+| ------------------------------ | ------ | --------------------------------------- |
+| `strict_best_monotonic`        | `true` | `best_score` 单调不下降                      |
+| `knowledge_updates_current_only` | `true` | `knowledge_accept` 默认只更新 current，不降低 best |
+
+
+**finalize**
+
+
+| 键                       | 默认      | 说明                         |
+| ----------------------- | ------- | -------------------------- |
+| `export_current_on_tie` | `false` | 训练结束默认只导出 `best_skill.md` |
+
+
+**quality_gate**（Skill 泄露/体积门禁）
+
+
+| 键                           | 默认      | 说明                                       |
+| --------------------------- | ------- | ---------------------------------------- |
+| `enabled`                   | `true`  | 启用质量扫描                                   |
+| `run_after_selection_eval`  | `true`  | gate 接受前检查 candidate                     |
+| `reject_on_leakage`         | `true`  | 泄露/超限时拒绝（可先 sanitize 再重评）               |
+| `sanitize_then_reevaluate`  | `true`  | 删除泄露行/重复规则后重新 selection eval           |
+| `max_skill_tokens`          | `2000`  | 估算 token 上限（`len/4`）                     |
+| `max_rules`                 | `40`    | bullet/表格规则数上限                           |
+| `leakage_patterns`          | 见模板     | scorer 面向语汇（`expected_checks`、`校验程序` 等）   |
+| `benchmark_id_patterns`     | `[]`    | 项目级 case id 正则（如 `jv_*`）；通用代码默认为空      |
+
+
+**observability**（step / run 级报告）
+
+
+| 键                                | 默认     | 产物路径                                          |
+| -------------------------------- | ------ | --------------------------------------------- |
+| `write_selection_eval_report`    | `true` | `optimization/steps/step_NNNN/selection_eval_report.json` |
+| `write_skill_quality_report`     | `true` | `.../skill_quality.json`                      |
+| `write_gate_decision_report`     | `true` | `.../gate_decision.json`                      |
+| `write_run_quality_report`       | `true` | `optimization/run_quality_report.json`        |
 
 
 **gate_metric 语义**（与 selection 规模联动，详见 [04-skillopt-loop.md](docs/design/04-skillopt-loop.md) §12.4）：
@@ -625,7 +668,26 @@ M4 可用 `skillopt.rollout_backend` / `optimizer_backend` / `judge_backend` 覆
 "scorer_config": { "script": "../score_expected_checks.py" }
 ```
 
-脚本位于 `demo-project/benchmarks/score_expected_checks.py`：在 keyword 匹配基础上，对含借贷分录的回答做**借贷平衡**验算；若回答明确「无法/不得生成凭证」，则跳过平衡类 check。扩展脚本须从 stdin 读 JSON、向 stdout 写单行 `{"hard", "soft", "passed_checks", "missed_checks", ...}`；详见 `src/code_to_skill/skillopt_loop/scoring.py` 模块文档。
+脚本位于 `demo-project/benchmarks/score_expected_checks.py`：在 keyword 匹配基础上，对含借贷分录的回答做**借贷平衡**验算；若回答明确「无法/不得生成凭证」，则跳过平衡类 check；`diagnostics.alias_hits` 记录别名命中。扩展脚本须从 stdin 读 JSON、向 stdout 写单行 `{"hard", "soft", "passed_checks", "missed_checks", "diagnostics", ...}`；详见 `src/code_to_skill/skillopt_loop/scoring.py` 模块文档。
+
+### M4 质量与观测（07 设计）
+
+M4 将 `best_skill`（历史最优）与 `current_skill`（下一步 rollout 策略）分离：
+
+- `accept_new_best` / `accept_new_best_from_knowledge` → 更新 best + current
+- `accept` / `accept_current_knowledge` → 仅更新 current，**不降低** `best_score`
+- `history.json` 含 `state_target`、`best_score_before/after`、`best_monotonic`
+
+重跑后建议检查：
+
+```bash
+skill-lab inspect run <run_id> --validate-self-evolution
+# 关注 Run quality: monotonic=✓ leakage=0
+cat demo-project/runs/<run_id>/optimization/run_quality_report.json
+cat demo-project/runs/<run_id>/optimization/steps/step_0001/gate_decision.json
+```
+
+设计全文：[07-skillopt-run-quality-optimization.md](docs/design/07-skillopt-run-quality-optimization.md)。
 
 ### M4 训练超参：MVP vs 稳定版
 
@@ -657,7 +719,7 @@ M4 可用 `skillopt.rollout_backend` / `optimizer_backend` / `judge_backend` 覆
 ### 诊断命令
 
 ```bash
-# 自进化产物完整性
+# 自进化 + run quality（monotonic / leakage / hard failures）
 skill-lab inspect run <run_id> --validate-self-evolution --trace-pool
 
 # held-out 评测
@@ -665,7 +727,7 @@ skill-lab eval <run_id> --split test
 
 # 训练曲线与 gate 历史
 skill-lab run training-curve plot <run_id>
-skill-lab inspect run <run_id>   # history.json 近 5 步 gate
+skill-lab inspect run <run_id>   # history 近 5 步 gate + run_quality_report
 ```
 
 ### 常见陷阱
@@ -679,6 +741,9 @@ skill-lab inspect run <run_id>   # history.json 近 5 步 gate
 | Skill 堆砌重复「必须」           | edit_budget 过大、无 hygiene            | 降 edit_budget，启用 hygiene                          |
 | context_ref 解析率低         | 路径规则缺失                              | 配置 `context_ref_path_rules`，inspect run 查看 report |
 | 关闭 slow/meta 后 epoch 间遗忘 | MVP 默认关闭                            | 稳定版开启两者                                           |
+| best_skill 被低分 knowledge 覆盖 | 旧版 `knowledge_accept` 写回 best      | 已修复：仅严格超 best 才更新 best（07 设计）                    |
+| best_skill 含 benchmark id   | scenario 规则 case 化                  | 启用 `quality_gate`；`benchmark_id_patterns` 项目配置      |
+| test hard 低、soft 高          | scorer 变宽 + skill 堆砌 token          | `check_aliases` 放 benchmark 侧，不靠污染 skill           |
 
 
 ---

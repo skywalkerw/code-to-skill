@@ -1,6 +1,6 @@
 # 07：SkillOpt Run 质量优化设计
 
-> 状态: 设计中  
+> 状态: 已实现（2026-06-12）  
 > 日期: 2026-06-12  
 > 关联模块: M3 SkillAtom、M4 SkillOpt、自进化 self_evolution、Benchmark scorer、run inspect  
 > 主要代码路径: `src/code_to_skill/skillopt_loop/`、`demo-project/benchmarks/`、`tests/`

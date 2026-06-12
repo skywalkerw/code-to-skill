@@ -157,7 +157,13 @@ RUN_SKILL_HYGIENE_DOC = """\b
 """
 
 INSPECT_RUN_DOC = """\b
-汇总 run 目录：manifest、gate、test、context refs、训练曲线。
+汇总 run 目录：manifest、gate、test、context refs、训练曲线、run quality。
+
+\b
+Run quality（optimization/run_quality_report.json）:
+  best_score_monotonic   best 是否单调不下降
+  leakage_count          scorer/benchmark 泄露命中
+  hard_failures          test 未通过项与 missed_checks
 
 \b
 自进化扩展:
