@@ -4,7 +4,7 @@
 
 > Agent Skill 不是知识库摘要，而是告诉 Agent 在什么条件下执行什么流程、调用什么工具、遵守什么约束的可复用能力包。
 
-设计文档见 [docs/design/](docs/design/)（`00` 总体设计；流水线整合见 [06-cli-human-interaction-orchestrator.md](docs/design/06-cli-human-interaction-orchestrator.md) §12；Skill 自进化见 [04-skillopt-loop.md](docs/design/04-skillopt-loop.md) §13 / [06](docs/design/06-cli-human-interaction-orchestrator.md) §13）。
+设计文档见 [docs/design/](docs/design/)（`00` 总体设计；流水线整合见 [06-cli-human-interaction-orchestrator.md](docs/design/06-cli-human-interaction-orchestrator.md) §12；Skill 自进化见 [04-skillopt-loop.md](docs/design/04-skillopt-loop.md) §13 / [06](docs/design/06-cli-human-interaction-orchestrator.md) §13；M4 质量门禁见 [07-skillopt-run-quality-optimization.md](docs/design/07-skillopt-run-quality-optimization.md)；代码诊断与规则记忆见 [08-code-diagnosis-driven-skillopt.md](docs/design/08-code-diagnosis-driven-skillopt.md)）。
 
 ## 快速开始
 
@@ -76,12 +76,12 @@ M6 CLI 编排层 (贯穿)
 | `run normalize-docs`          | 仅 M2                            | `--docs`                                       |
 | `run extract-atoms`           | 仅 M3                            | `--from <run_dir>`                             |
 | `run bootstrap-benchmark`     | M3 种子 → benchmark train         | `--from-run`, `--merge`, `--benchmark`         |
-| `run optimize-skill`          | 仅 M4 SkillOpt                   | `-o`, `--epochs`, `--resume`, `--self-evolve`  |
+| `run optimize-skill`          | 仅 M4 SkillOpt                   | `-o`, `--epochs`, `--resume`, `--self-evolve`, `--warm-start-rule-bank` |
 | `run skill-hygiene`           | 离线 hygiene + gate               | `<run_id>`, `--force`                          |
 | `run training-curve plot`     | 绘制训练曲线 SVG                      | `<run_id>`, `-o`                               |
 | `run training-curve backfill` | 从历史回填 training_curve.json       | `<run_id>`                                     |
 | `status`                      | 查看 run 状态                       | `[run_id]`（无参数列最近 5 次）                         |
-| `inspect run`                 | run 目录摘要（含 run quality 报告）      | `--trace-pool`, `--validate-self-evolution`    |
+| `inspect run`                 | run 目录摘要（含 run quality 报告）      | `--show-diagnosis`, `--promote-rules-to-bank`, `--trace-pool`, `--validate-self-evolution` |
 | `inspect file`                | 单文件产物预览                         | `<path>`                                       |
 | `eval`                        | 独立评测 best_skill                 | `--split test`, `--benchmark`                  |
 | `publish`                     | 发布 SKILL.md                     | `--target`, `--strip-rule-ids`, `--force`      |
@@ -179,9 +179,9 @@ skill-lab run optimize-skill \
   --self-evolve
 ```
 
-**run skill-hygiene <run_id>** — 对已有 `best_skill.md` 做离线规则合并/裁剪，并经 selection gate 验证；`--force` 忽略 token/规则阈值。
+**run skill-hygiene \<run_id\>** — 对已有 `best_skill.md` 做离线规则合并/裁剪，并经 selection gate 验证；`--force` 忽略 token/规则阈值。
 
-**run training-curve plot|backfill <run_id>** — 从 `optimization/training_curve.json` 生成 SVG，或从历史 step 日志回填。
+**run training-curve plot|backfill \<run_id\>** — 从 `optimization/training_curve.json` 生成 SVG，或从历史 step 日志回填。
 
 ### 运行后命令
 
@@ -190,8 +190,11 @@ skill-lab run optimize-skill \
 skill-lab status [<run_id>]
 
 # run 摘要：manifest、gate 历史、test_report、context_ref 解析率、training_curve
-skill-lab inspect run <run_id> [--trace-pool] [--rule-attribution] [--frontier] \
-  [--validate-self-evolution]
+skill-lab inspect run <run_id> [--show-diagnosis] [--trace-pool] [--rule-attribution] \
+  [--frontier] [--validate-self-evolution]
+
+# 从好 run 晋升规则到 rule bank（需 config 中 rule_bank.path）
+skill-lab inspect run <run_id> --optimization-dir optimization-07 --promote-rules-to-bank
 
 # 单文件预览
 skill-lab inspect file demo-project/runs/<run_id>/optimization/best_skill.md
@@ -280,15 +283,15 @@ skill-lab config --config-path config.yaml
 ### `settings.code_graph`（M1）
 
 
-| 键                          | 默认值           | 说明                                                |
-| -------------------------- | ------------- | ------------------------------------------------- |
-| `max_leaf_tokens`          | `8000`        | 叶子上下文 token 上限                                    |
-| `max_module_depth`         | `3`           | 模块树最大深度                                           |
-| `tokenizer`                | `cl100k_base` | 分词器                                               |
-| `max_components_per_group` | `200`         | 每组最大组件数                                           |
-| `split_strategy`           | `top_dir`     | `top_dir` | `package_path` | `file_then_function` |
-| `llm_clustering_enabled`   | `false`       | LLM 辅助模块聚类（走 `routes.clusterer`）                  |
-| `use_cache`                | `true`        | 增量解析 graph.db，二次运行跳过未变更文件                         |
+| 键                          | 默认值           | 说明                               |
+| -------------------------- | ------------- | -------------------------------- |
+| `max_leaf_tokens`          | `8000`        | 叶子上下文 token 上限                   |
+| `max_module_depth`         | `3`           | 模块树最大深度                          |
+| `tokenizer`                | `cl100k_base` | 分词器                              |
+| `max_components_per_group` | `200`         | 每组最大组件数                          |
+| `split_strategy`           | `top_dir`     | `top_dir` \| `package_path` \| `file_then_function` |
+| `llm_clustering_enabled`   | `false`       | LLM 辅助模块聚类（走 `routes.clusterer`） |
+| `use_cache`                | `true`        | 增量解析 graph.db，二次运行跳过未变更文件        |
 
 
 ### `settings.document_normalizer`（M2）
@@ -315,71 +318,89 @@ skill-lab config --config-path config.yaml
 ### `settings.skillopt`（M4）
 
 
-| 键                                  | 默认值                                  | 说明                                    |
-| ---------------------------------- | ------------------------------------ | ------------------------------------- |
-| `use_llm_rollout`                  | `true`（模板）；代码未设置时 runtime 默认 `false` | **必须为 true** 才有可信 rollout/reflect 信号  |
-| `rollout_backend`                  | `null`                               | 覆盖 `routes.target`（例：`qwen-local`）    |
-| `optimizer_backend`                | `null`                               | 覆盖 `routes.optimizer`                 |
-| `judge_backend`                    | `null`                               | 覆盖 `routes.judge`（LLM Judge scorer 时） |
-| `num_epochs`                       | `3`                                  | 训练 epoch 数                            |
-| `batch_size`                       | `20`                                 | 每 epoch train batch 条数                |
-| `edit_budget`                      | `3`                                  | 每步最多编辑条数 L                            |
-| `budget_strategy`                  | `cosine`                             | `constant` | `cosine` | `linear`      |
-| `gate_metric`                      | `soft`                               | selection gate 指标（见下表）                |
-| `patience`                         | `10`                                 | 连续 reject 早停步数                        |
-| `accumulation`                     | `1`                                  | 梯度累积                                  |
-| `enable_slow_update`               | `false`                              | epoch 级 slow update                   |
-| `enable_meta_skill`                | `false`                              | epoch 级 meta skill 重写                 |
-| `slow_update_gate`                 | `true`                               | slow update 是否经 selection gate        |
-| `enable_code_tools`                | `true`                               | Reflect/Rollout 可调 CodeGraph 工具       |
-| `max_tool_rounds`                  | `5`                                  | reflect 工具轮次上限                        |
-| `rollout_max_tool_rounds`          | `2`                                  | rollout 工具轮次上限                        |
-| `rollout_workers`                  | `4`                                  | batch 内并行 rollout 数（1=串行）             |
-| `expose_expected_checks_to_target` | `false`                              | 是否向 target 暴露 expected_checks         |
+| 键                                  | 默认值                                  | 说明                                                            |
+| ---------------------------------- | ------------------------------------ | ------------------------------------------------------------- |
+| `use_llm_rollout`                  | `true`（模板）；代码未设置时 runtime 默认 `false` | **必须为 true** 才有可信 rollout/reflect 信号                          |
+| `rollout_backend`                  | `null`                               | 覆盖 `routes.target`（例：`qwen-local`）                            |
+| `optimizer_backend`                | `null`                               | 覆盖 `routes.optimizer`                                         |
+| `judge_backend`                    | `null`                               | 覆盖 `routes.judge`（LLM Judge scorer 时）                         |
+| `num_epochs`                       | `3`                                  | 训练 epoch 数                                                    |
+| `batch_size`                       | `20`                                 | 每 epoch train batch 条数                                        |
+| `edit_budget`                      | `3`                                  | 每步最多编辑条数 L                                                    |
+| `budget_strategy`                  | `cosine`                             | `constant` \| `cosine` \| `linear`                            |
+| `gate_metric`                      | `soft`                               | selection gate 指标（见下表）                                        |
+| `patience`                         | `10`                                 | 连续 reject 早停步数                                                |
+| `accumulation`                     | `1`                                  | 梯度累积                                                          |
+| `enable_slow_update`               | `false`                              | epoch 级 slow update                                           |
+| `enable_meta_skill`                | `false`                              | epoch 级 meta skill 重写                                         |
+| `slow_update_gate`                 | `true`                               | slow update 是否经 selection gate                                |
+| `enable_code_tools`                | `true`                               | Reflect/Rollout 可调 CodeGraph 工具                               |
+| `max_tool_rounds`                  | `5`                                  | reflect 工具轮次上限                                                |
+| `rollout_max_tool_rounds`          | `2`                                  | rollout 工具轮次上限                                                |
+| `rollout_workers`                  | `4`                                  | batch 内并行 rollout 数（1=串行）                                     |
+| `expose_expected_checks_to_target` | `false`                              | 是否向 target 暴露 expected_checks                                 |
 | `check_aliases`                    | 见模板                                  | 全局 keyword / python_script 别名；Fineract 示例含 `资产`/`费用`/`Charge` |
 
 
 **gate**（best/current 状态机，详见 [07-skillopt-run-quality-optimization.md](docs/design/07-skillopt-run-quality-optimization.md)）
 
 
-| 键                              | 默认     | 说明                                      |
-| ------------------------------ | ------ | --------------------------------------- |
-| `strict_best_monotonic`        | `true` | `best_score` 单调不下降                      |
+| 键                                | 默认     | 说明                                        |
+| -------------------------------- | ------ | ----------------------------------------- |
+| `strict_best_monotonic`          | `true` | `best_score` 单调不下降                        |
 | `knowledge_updates_current_only` | `true` | `knowledge_accept` 默认只更新 current，不降低 best |
 
 
 **finalize**
 
 
-| 键                       | 默认      | 说明                         |
-| ----------------------- | ------- | -------------------------- |
+| 键                       | 默认      | 说明                        |
+| ----------------------- | ------- | ------------------------- |
 | `export_current_on_tie` | `false` | 训练结束默认只导出 `best_skill.md` |
 
 
 **quality_gate**（Skill 泄露/体积门禁）
 
 
-| 键                           | 默认      | 说明                                       |
-| --------------------------- | ------- | ---------------------------------------- |
-| `enabled`                   | `true`  | 启用质量扫描                                   |
-| `run_after_selection_eval`  | `true`  | gate 接受前检查 candidate                     |
-| `reject_on_leakage`         | `true`  | 泄露/超限时拒绝（可先 sanitize 再重评）               |
-| `sanitize_then_reevaluate`  | `true`  | 删除泄露行/重复规则后重新 selection eval           |
-| `max_skill_tokens`          | `2000`  | 估算 token 上限（`len/4`）                     |
-| `max_rules`                 | `40`    | bullet/表格规则数上限                           |
-| `leakage_patterns`          | 见模板     | scorer 面向语汇（`expected_checks`、`校验程序` 等）   |
-| `benchmark_id_patterns`     | `[]`    | 项目级 case id 正则（如 `jv_*`）；通用代码默认为空      |
+| 键                          | 默认     | 说明                                      |
+| -------------------------- | ------ | --------------------------------------- |
+| `enabled`                  | `true` | 启用质量扫描                                  |
+| `run_after_selection_eval` | `true` | gate 接受前检查 candidate                    |
+| `reject_on_leakage`        | `true` | 泄露/超限时拒绝（可先 sanitize 再重评）               |
+| `sanitize_then_reevaluate` | `true` | 删除泄露行/重复规则后重新 selection eval            |
+| `max_skill_tokens`         | `2000` | 估算 token 上限（`len/4`）                    |
+| `max_rules`                | `40`   | bullet/表格规则数上限                          |
+| `leakage_patterns`         | 见模板    | scorer 面向语汇（`expected_checks`、`校验程序` 等） |
+| `benchmark_id_patterns`    | `[]`   | 项目级 case id 正则（如 `jv_`*）；通用代码默认为空       |
 
 
 **observability**（step / run 级报告）
 
 
-| 键                                | 默认     | 产物路径                                          |
-| -------------------------------- | ------ | --------------------------------------------- |
-| `write_selection_eval_report`    | `true` | `optimization/steps/step_NNNN/selection_eval_report.json` |
-| `write_skill_quality_report`     | `true` | `.../skill_quality.json`                      |
-| `write_gate_decision_report`     | `true` | `.../gate_decision.json`                      |
-| `write_run_quality_report`       | `true` | `optimization/run_quality_report.json`        |
+| 键                             | 默认     | 产物路径                                                      |
+| ----------------------------- | ------ | --------------------------------------------------------- |
+| `write_selection_eval_report` | `true` | `optimization/steps/step_NNNN/selection_eval_report.json` |
+| `write_skill_quality_report`  | `true` | `.../skill_quality.json`                                  |
+| `write_gate_decision_report`  | `true` | `.../gate_decision.json`                                  |
+| `write_run_quality_report`    | `true` | `optimization/run_quality_report.json`                    |
+
+
+**output_hygiene / code_diagnosis / rule_bank / replay_gate**（设计 08，详见 [08-code-diagnosis-driven-skillopt.md](docs/design/08-code-diagnosis-driven-skillopt.md)）
+
+
+| 键 | 默认 | 说明 |
+| --- | --- | --- |
+| `output_hygiene.enabled` | `true` | rollout 后检测 prompt echo / tool 残留 |
+| `output_hygiene.retry_on_prompt_echo` | `true` | 命中 echo 时用 synthesis hint 重试 |
+| `output_hygiene.hard_fail_on_persistent_echo` | `true` | 重试仍 echo 则 hard=0 |
+| `code_diagnosis.enabled` | `true` | hard fail 生成 `code_diagnosis.jsonl` |
+| `code_diagnosis.max_cases_per_step` | `8` | 每步最多诊断条数 |
+| `warm_start.from_best_skill` | `""` | 可选：上一 run 的 `best_skill.md` 路径 |
+| `rule_bank.enabled` | `false`（模板） | 跨 run 规则库；Fineract 示例为 `true` |
+| `rule_bank.path` | `rule_bank/rules.jsonl` | 规则 JSONL 路径 |
+| `rule_bank.min_support_score` | `0.55` | 注入/写回时的支持分阈值 |
+| `replay_gate.enabled` | `true` | accept 前对 replay pool 再评估 |
+| `replay_gate.on_regression` | `reject` | `reject` 拒 best；`accept_current` 仅更新 current |
 
 
 **gate_metric 语义**（与 selection 规模联动，详见 [04-skillopt-loop.md](docs/design/04-skillopt-loop.md) §12.4）：
@@ -598,16 +619,16 @@ M4 可用 `skillopt.rollout_backend` / `optimizer_backend` / `judge_backend` 覆
 **project.sources.docs[]**
 
 
-| 字段            | 默认           | 说明                                                            |
-| ------------- | ------------ | ------------------------------------------------------------- |
-| `id`          | （必填）         | 文档标识                                                          |
-| `path`        | （必填）         | 本地路径或 URI                                                     |
-| `provider`    | `local_file` | `local_file` | `feishu_api` | …                               |
-| `type`        | （必填）         | `markdown` | `pdf` | `wiki_export` | `html` | `docx` | `text` |
-| `version`     | `latest`     | 版本标签                                                          |
-| `authority`   | —            | 权威来源标签                                                        |
-| `domain_tags` | `[]`         | 域标签                                                           |
-| `ocr_enabled` | `false`      | 是否 OCR                                                        |
+| 字段            | 默认           | 说明           |
+| ------------- | ------------ | ------------ |
+| `id`          | （必填）         | 文档标识         |
+| `path`        | （必填）         | 本地路径或 URI    |
+| `provider`    | `local_file` | `local_file` |
+| `type`        | （必填）         | `markdown`   |
+| `version`     | `latest`     | 版本标签         |
+| `authority`   | —            | 权威来源标签       |
+| `domain_tags` | `[]`         | 域标签          |
+| `ocr_enabled` | `false`      | 是否 OCR       |
 
 
 ---
@@ -653,11 +674,13 @@ M4 可用 `skillopt.rollout_backend` / `optimizer_backend` / `judge_backend` 覆
 
 每条 benchmark item 通过 `scorer` 选择评分器；未指定时默认 `keyword`（同 `deterministic`）。
 
-| `scorer` | 适用场景 | item 级配置 |
-| -------- | -------- | ----------- |
-| `keyword` | 可客观子串匹配的断言 | `expected_checks`、`check_aliases`、`response_mode` |
+
+| `scorer`        | 适用场景               | item 级配置                                                                 |
+| --------------- | ------------------ | ------------------------------------------------------------------------ |
+| `keyword`       | 可客观子串匹配的断言         | `expected_checks`、`check_aliases`、`response_mode`                        |
 | `python_script` | 自定义规则（平衡验算、结构化解析等） | `scorer_config.script`（相对 `items.json` 所在 split 目录）、可选 `timeout_seconds` |
-| `llm_judge` | 开放问答 / rubric 语义评分 | `rubric`；走 `routes.judge` backend |
+| `llm_judge`     | 开放问答 / rubric 语义评分 | `rubric`；走 `routes.judge` backend                                        |
+
 
 **全局别名**（keyword 与 python_script 共用）：`settings.skillopt.check_aliases`，与 item 级 `check_aliases` 合并。
 
@@ -668,7 +691,7 @@ M4 可用 `skillopt.rollout_backend` / `optimizer_backend` / `judge_backend` 覆
 "scorer_config": { "script": "../score_expected_checks.py" }
 ```
 
-脚本位于 `demo-project/benchmarks/score_expected_checks.py`：在 keyword 匹配基础上，对含借贷分录的回答做**借贷平衡**验算；若回答明确「无法/不得生成凭证」，则跳过平衡类 check；`diagnostics.alias_hits` 记录别名命中。扩展脚本须从 stdin 读 JSON、向 stdout 写单行 `{"hard", "soft", "passed_checks", "missed_checks", "diagnostics", ...}`；详见 `src/code_to_skill/skillopt_loop/scoring.py` 模块文档。
+脚本位于 `demo-project/benchmarks/score_expected_checks.py`：在 keyword 匹配基础上，对含借贷分录的回答做**借贷平衡**验算；若回答明确「无法/不得生成凭证」，则跳过平衡类 check；`diagnostics.alias_hits` 记录别名命中；`diagnostics.failure_type` / `suggested_rule` 供 08 代码诊断层消费（项目侧扩展，不写入通用 `src/`）。扩展脚本须从 stdin 读 JSON、向 stdout 写单行 `{"hard", "soft", "passed_checks", "missed_checks", "diagnostics", ...}`；详见 `src/code_to_skill/skillopt_loop/scoring.py` 模块文档。
 
 ### M4 质量与观测（07 设计）
 
@@ -688,6 +711,38 @@ cat demo-project/runs/<run_id>/optimization/steps/step_0001/gate_decision.json
 ```
 
 设计全文：[07-skillopt-run-quality-optimization.md](docs/design/07-skillopt-run-quality-optimization.md)。
+
+### M4 诊断与规则记忆（08 设计）
+
+08 在 07 的 gate **之前**增强候选生成与跨 run 记忆：
+
+```text
+rollout → output_hygiene → code_diagnosis → reflect
+       → selection eval → replay_gate → quality_gate (07) → best/current
+       → rule_bank write_back
+```
+
+| 产物 | 路径 |
+| --- | --- |
+| 逐步诊断 | `optimization/code_diagnosis/step_NNNN/code_diagnosis.jsonl` |
+| replay 池 | `optimization/replay_pool.json` |
+| 卫生报告 | `optimization/steps/step_NNNN/output_hygiene_report.json` |
+| replay 报告 | `optimization/steps/step_NNNN/replay_eval_report.json` |
+
+**`initial_skill.md` vs `rule_bank`**：`initial_skill.md` 是每 run 的任务骨架（科目对、输出格式）；`rule_bank/rules.jsonl` 是跨 run 已验证规则及 `support_count` / `regression_count`。M4 启动时将 active rules 注入 skill 顶部 `## Rule bank (verified)` 段。
+
+```bash
+# 诊断 / replay / rule bank 摘要
+skill-lab inspect run <run_id> --show-diagnosis
+
+# 新 run 前预热规则库
+skill-lab run optimize-skill --config-path config.yaml --warm-start-rule-bank ...
+
+# 关注 run_quality_report 中的 diagnosis_metrics、replay_hard、replay_regressed_ids
+cat demo-project/runs/<run_id>/optimization/run_quality_report.json
+```
+
+设计全文：[08-code-diagnosis-driven-skillopt.md](docs/design/08-code-diagnosis-driven-skillopt.md)。
 
 ### M4 训练超参：MVP vs 稳定版
 
@@ -722,6 +777,9 @@ cat demo-project/runs/<run_id>/optimization/steps/step_0001/gate_decision.json
 # 自进化 + run quality（monotonic / leakage / hard failures）
 skill-lab inspect run <run_id> --validate-self-evolution --trace-pool
 
+# 08：诊断、replay、rule bank 命中
+skill-lab inspect run <run_id> --show-diagnosis
+
 # held-out 评测
 skill-lab eval <run_id> --split test
 
@@ -733,17 +791,20 @@ skill-lab inspect run <run_id>   # history 近 5 步 gate + run_quality_report
 ### 常见陷阱
 
 
-| 现象                       | 可能原因                                | 对策                                                |
-| ------------------------ | ----------------------------------- | ------------------------------------------------- |
-| train 全绿、selection 不升    | `use_llm_rollout: false` 或假 rollout | 开启 LLM rollout，检查 traces                          |
-| 编辑长期 reject              | selection 过小仍期望 hard gate           | 改用 soft/mixed，或扩充 selection                       |
-| reflect 质量差              | target 与 optimizer 同一弱模型            | 分离 backend                                        |
-| Skill 堆砌重复「必须」           | edit_budget 过大、无 hygiene            | 降 edit_budget，启用 hygiene                          |
-| context_ref 解析率低         | 路径规则缺失                              | 配置 `context_ref_path_rules`，inspect run 查看 report |
-| 关闭 slow/meta 后 epoch 间遗忘 | MVP 默认关闭                            | 稳定版开启两者                                           |
-| best_skill 被低分 knowledge 覆盖 | 旧版 `knowledge_accept` 写回 best      | 已修复：仅严格超 best 才更新 best（07 设计）                    |
-| best_skill 含 benchmark id   | scenario 规则 case 化                  | 启用 `quality_gate`；`benchmark_id_patterns` 项目配置      |
-| test hard 低、soft 高          | scorer 变宽 + skill 堆砌 token          | `check_aliases` 放 benchmark 侧，不靠污染 skill           |
+| 现象                          | 可能原因                                | 对策                                                |
+| --------------------------- | ----------------------------------- | ------------------------------------------------- |
+| train 全绿、selection 不升       | `use_llm_rollout: false` 或假 rollout | 开启 LLM rollout，检查 traces                          |
+| 编辑长期 reject                 | selection 过小仍期望 hard gate           | 改用 soft/mixed，或扩充 selection                       |
+| reflect 质量差                 | target 与 optimizer 同一弱模型            | 分离 backend                                        |
+| Skill 堆砌重复「必须」              | edit_budget 过大、无 hygiene            | 降 edit_budget，启用 hygiene                          |
+| context_ref 解析率低            | 路径规则缺失                              | 配置 `context_ref_path_rules`，inspect run 查看 report |
+| 关闭 slow/meta 后 epoch 间遗忘    | MVP 默认关闭                            | 稳定版开启两者                                           |
+| best_skill 被低分 knowledge 覆盖 | 旧版 `knowledge_accept` 写回 best       | 已修复：仅严格超 best 才更新 best（07 设计）                     |
+| best_skill 含 benchmark id   | scenario 规则 case 化                  | 启用 `quality_gate`；`benchmark_id_patterns` 项目配置    |
+| test hard 低、soft 高          | scorer 变宽 + skill 堆砌 token          | `check_aliases` 放 benchmark 侧，不靠污染 skill          |
+| 答案含 Task/Skill/Code context | target 复述 prompt                    | 启用 `output_hygiene`；inspect `--show-diagnosis`       |
+| 好 run 规则下轮丢失              | 无跨 run 记忆                          | 配置 `rule_bank.path`，`--warm-start-rule-bank`         |
+| test hard 从 0.875 跌到 0.5   | 历史 case 回退未拦截                     | 启用 `replay_gate`；检查 `replay_regressed_ids`          |
 
 
 ---
@@ -757,6 +818,9 @@ export SKILL_LAB_CONFIG_PATH=$PWD/config.yaml   # 可选
 
 # 完整 M1→M4（推荐首次冒烟）
 skill-lab run all --config-path config.yaml --with-atoms
+
+# 完整流水线 + 从 rule bank 预热（需 skillopt.rule_bank.path）
+skill-lab run all --config-path config.yaml --with-atoms --warm-start-rule-bank
 
 # 仅 M4 重训（需 run 目录内已有 graph.db）
 skill-lab run optimize-skill \
@@ -788,9 +852,10 @@ skill-lab run optimize-skill --self-evolve ...
 
 置于 `demo-project/sources/docs/<project>/` 并在 `config.yaml` 的 `sources.docs` 注册。
 
-### 3. 初始 Skill
+### 3. 初始 Skill 与规则库
 
-`demo-project/initial_skill.md`：Workflow / Constraint / Failure Mode / Checklist。
+- `demo-project/initial_skill.md`：Workflow / Constraint / Failure Mode / Checklist（每 run 基线骨架）。
+- `demo-project/rule_bank/rules.jsonl`（可选）：跨 run 已验证规则；在 `config.yaml` 设置 `skillopt.rule_bank.path` 后，M4 启动时自动注入 active rules。
 
 ### 4. Benchmark
 
@@ -813,7 +878,7 @@ skill-lab run optimize-skill --self-evolve ...
 
 ```
 code-to-skill/
-├── docs/design/          # 00–06 模块与整合设计
+├── docs/design/          # 00–08 模块与整合设计（含 07 质量门禁、08 诊断与规则记忆）
 ├── docs/references/      # API 参考与编码规范
 ├── config.template.yaml  # 配置权威模板（带注释）
 ├── config.yaml           # 本地配置（Fineract 示例）

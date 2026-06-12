@@ -433,44 +433,53 @@ tool_calls
 
 ## 12. 配置设计
 
+权威模板见 `config.template.yaml` 中 `settings.skillopt` 下 `output_hygiene` / `code_diagnosis` / `warm_start` / `rule_bank` / `replay_gate` 段。示例：
+
 ```yaml
 settings:
   skillopt:
+    output_hygiene:
+      enabled: true
+      retry_on_prompt_echo: true
+      hard_fail_on_persistent_echo: true
+      patterns:
+        - "^Task:\\s"
+        - "Skill reference:"
+        - "Code context:"
+        - "^Context references:"
+        - "Follow the skill document"
+
     code_diagnosis:
       enabled: true
-      run_on_hard_failures: true
-      max_cases_per_step: 5
-      require_code_facts_for_rules: true
-      min_confidence_for_rule: 0.75
-      allow_needs_review_rules: false
+      max_context_files: 2
+      max_snippet_chars: 800
+      max_cases_per_step: 8
+      write_jsonl: true
+      require_code_facts_for_rules: false
+
+    warm_start:
+      from_best_skill: ""   # 可选：上一 run 的 best_skill.md 路径
 
     rule_bank:
       enabled: true
       path: demo-project/rule_bank/rules.jsonl
       max_active_rules: 20
       min_support_count: 1
+      min_support_score: 0.55
       exclude_regressed: true
       write_back: true
 
     replay_gate:
       enabled: true
-      max_items: 12
-      include_recent_failures: true
+      pool_max_items: 12
+      min_hard_pass_rate: 1.0
+      reject_on_prompt_echo: true
+      reject_on_regression: true
+      on_regression: reject   # reject | accept_current
       include_rule_exemplars: true
       include_prompt_echo_cases: true
-      reject_on_prompt_echo: true
-      reject_on_active_rule_regression: true
-
-    output_hygiene:
-      enabled: true
-      retry_on_prompt_echo: true
-      hard_fail_on_persistent_echo: true
-      patterns:
-        - "Task:"
-        - "Skill reference:"
-        - "Code context:"
-        - "Context references:"
-        - "Follow the skill document"
+      external_pool_paths: []
+      pool_path: ""
 ```
 
 ## 13. 代码改造范围
@@ -478,14 +487,19 @@ settings:
 | 文件/模块 | 改造 |
 |---|---|
 | `skillopt_loop/code_diagnosis.py` | 新增失败项代码诊断器 |
+| `skillopt_loop/diagnosis_rules.py` | 诊断 → 候选规则、quality scan |
+| `skillopt_loop/eval_hygiene.py` | selection/test 统一 hygiene 评估 |
 | `skillopt_loop/rule_bank.py` | 新增持久规则库读写 |
 | `skillopt_loop/replay_gate.py` | 新增 replay 集构造与 gate |
 | `skillopt_loop/output_hygiene.py` | 新增 prompt echo 检测 |
 | `skillopt_loop/__init__.py` | 在 reflect 前插入 diagnosis，在 accept 前插入 replay gate |
 | `skillopt_loop/llm_components.py` | reflect prompt 接收 `code_diagnosis` |
-| `skillopt_loop/envs/base.py` | target 输出后执行 output hygiene/retry |
+| `skillopt_loop/envs/base.py` | target 输出后执行 output hygiene/retry；backend 异常走 fallback |
 | `skillopt_loop/test_eval.py` | final/selection 报告增加 hygiene 字段 |
-| `cli/inspect_run.py` | 展示 diagnosis、rule bank、replay gate 指标 |
+| `cli/inspect_run.py` | 展示 diagnosis、rule bank、replay gate 指标；`--promote-rules-to-bank` |
+| `cli/main.py` | `run all` / `optimize-skill` 支持 `--warm-start-rule-bank` |
+| `demo-project/benchmarks/score_expected_checks.py` | scorer `diagnostics.failure_type` / `suggested_rule` |
+| `demo-project/rule_bank/rules.jsonl` | Fineract 示例规则库种子 |
 | `tests/` | 增加 diagnosis/rule_bank/replay/hygiene 回归测试 |
 
 ## 14. CLI 体验
@@ -544,9 +558,9 @@ settings:
 
 ## 15. 实施计划
 
-### 阶段 A：输出卫生硬化
+> **状态（2026-06-12）**：阶段 A–E 均已落地，见 §20 实现记录。以下为各阶段目标与验收标准。
 
-先处理最明显的坏输出：
+### 阶段 A：输出卫生硬化 ✅
 
 1. 新增 `output_hygiene.py`。
 2. target rollout 后检测 prompt echo。
@@ -558,9 +572,7 @@ settings:
 - `Task:`、`Skill reference:`、`Code context:` 不再以 soft 0.8+ 进入 gate。
 - `jv_disburse_fee_001` 这类输出会 retry 或 hard fail。
 
-### 阶段 B：Rule Bank MVP
-
-先不做复杂诊断，把已验证有效规则持久化：
+### 阶段 B：Rule Bank MVP ✅
 
 1. 从 `optimization-07/best_skill.md` 提取无污染规则。
 2. 写入 `demo-project/rule_bank/rules.jsonl`。
@@ -572,30 +584,30 @@ settings:
 - 新 run 初始 skill 包含 `optimization-07` 的有效规则。
 - 不再依赖 LLM 每轮重新发现“明确交易类型+金额应生成凭证”。
 
-### 阶段 C：Code Diagnosis MVP
+### 阶段 C：Code Diagnosis MVP ✅
 
 1. 对 hard failures 读取 `context_refs`。
 2. 生成 `code_diagnosis.jsonl`。
 3. reflect prompt 强制引用 diagnosis。
-4. 规则没有 `code_facts` 时只能进入 candidate，不可直接 best。
+4. 规则没有 `code_facts` 时只能进入 candidate，不可直接 best（`require_code_facts_for_rules` 可配置，默认 `false`）。
 
 验收：
 
 - 每个 hard fail 至少有 diagnosis status。
 - diagnosis 能区分 `missing_business_rule`、`output_format_error`、`prompt_echo`、`scorer_alias_gap`。
 
-### 阶段 D：Replay Gate
+### 阶段 D：Replay Gate ✅
 
 1. 构建 recent failure replay pool。
 2. 通过 selection 后运行 replay。
-3. replay regression 阻止 new best。
+3. replay regression 阻止 new best（或按 `on_regression: accept_current` 降级）。
 
 验收：
 
 - 后续 run 不应从 0.875 hard 回退到 0.5 hard 而仍认为正常。
 - `run_quality_report` 增加 replay hard / regression ids。
 
-### 阶段 E：完整闭环
+### 阶段 E：完整闭环 ✅
 
 1. diagnosis -> candidate rule。
 2. candidate rule -> replay。
@@ -659,14 +671,69 @@ settings:
 
 因此 08 不替代 07，而是在 07 之前增加更强的候选生成与验证层。
 
-## 19. 推荐下一步
+## 19. 推荐下一步（实现后）
 
-最小可落地路径：
+代码已合入 `master`（commit `f8d1428`）。后续工作重点从「实现管线」转为「实跑验证与迭代」：
 
-1. 先实现 output hygiene，阻断 prompt echo。
-2. 将 `optimization-07` 的三条有效规则写入 rule bank 或 `initial_skill.md`。
-3. 新 run 从 rule bank warm start。
-4. 再实现 code diagnosis，替代当前单纯 missed_checks reflect。
-5. 最后加 replay gate，防止历史已解决 case 回退。
+1. **实跑 M4**：在 `config.yaml` 启用 `rule_bank.path` 与 `warm_start.from_best_skill`，对比有无 rule bank 的 test hard 方差。
+2. **replay 池扩展**：将历史黄金失败项写入 `replay_gate.external_pool_paths`，防止已解决 case 回退。
+3. **inspect 巡检**：`skill-lab inspect run <run_id> --show-diagnosis`，关注 `diagnosis_metrics`、`replay_hard`、`replay_regressed_ids`。
+4. **规则晋升**：好 run 结束后 `--promote-rules-to-bank`，或 `--warm-start-rule-bank` 从新 run 预热。
+5. **可选增强**：独立 LLM 诊断 prompt（当前为启发式 + scorer `diagnostics`）；`require_code_facts_for_rules: true` 收紧候选规则。
 
-这样比单纯增加 epoch 更稳定。增加 epoch 只能提高“再次碰到好规则”的概率；08 的目标是让好规则一旦出现，就能被诊断、验证、保存，并在后续 run 中复用。
+`initial_skill.md` 仍是任务骨架；`rule_bank/rules.jsonl` 是跨 run 已验证规则记忆。两者分工见 §20.3。
+
+## 20. 实现记录
+
+### 20.1 新增模块
+
+| 模块 | 路径 | 职责 |
+|---|---|---|
+| Output hygiene | `skillopt_loop/output_hygiene.py` | prompt echo / tool 残留检测、retry hint、step 报告 |
+| Code diagnosis | `skillopt_loop/code_diagnosis.py` | 失败分类、证据链、`code_diagnosis.jsonl` |
+| Diagnosis rules | `skillopt_loop/diagnosis_rules.py` | 诊断 → 候选规则、quality scan、`summary.json` |
+| Rule bank | `skillopt_loop/rule_bank.py` | 跨 run 规则读写、inject、warm_start、write_back、`support_score` |
+| Replay gate | `skillopt_loop/replay_gate.py` | replay pool、gate、fixed/regressed ids |
+| Eval hygiene | `skillopt_loop/eval_hygiene.py` | `rollout_with_hygiene()` 统一 selection/test 评估 |
+
+### 20.2 M4 主循环接线（`skillopt_loop/__init__.py`）
+
+```text
+M4 启动 → rule_bank warm_start + inject → initial_skill
+每 step rollout → output_hygiene + 更新 replay_pool
+reflect 前 → code_diagnosis + candidate rules → reflect prompt
+selection eval → eval_hygiene
+accept 前 → replay_gate（regression 时可 accept_current）
+accept/finalize → rule_bank write_back
+final → test eval hygiene + run_quality_report（含 diagnosis/replay 指标）
+```
+
+### 20.3 `initial_skill` 与 `rule_bank` 分工
+
+| 产物 | 路径 | 角色 |
+|---|---|---|
+| 基线 Skill 骨架 | `demo-project/initial_skill.md` | 任务定义、科目对、输出格式；每 run 起点 |
+| 跨 run 规则库 | `demo-project/rule_bank/rules.jsonl` | 已验证规则 + `support_count` / `regression_count` 元数据 |
+
+M4 启动时将 active rules 注入 `initial_skill` 顶部 `## Rule bank (verified)` 段，而非覆盖骨架正文。
+
+### 20.4 项目侧扩展（非通用 `src/`）
+
+- `demo-project/benchmarks/score_expected_checks.py`：`diagnostics.failure_type` / `suggested_rule` 供诊断层消费。
+- `demo-project/rule_bank/rules.jsonl`：5 条 active 规则（来自 `optimization-07` 与 echo 分析）。
+- `settings.pipeline.atom_rule_include_keywords` / `exclude_keywords`：M3 atom 规则过滤，避免 Fineract 领域词固化进通用代码。
+
+### 20.5 CLI
+
+| 命令 / 选项 | 说明 |
+|---|---|
+| `inspect run --show-diagnosis` | 展示 diagnosis 步数、replay pool、hygiene/replay 末步报告 |
+| `inspect run --promote-rules-to-bank` | 从指定 optimization 目录晋升规则到 `rule_bank.path` |
+| `inspect run --warm-start-rule-bank` | 同 promote（预热规则库） |
+| `run all` / `optimize-skill --warm-start-rule-bank` | 启动前从配置或 CLI 预热规则库 |
+
+### 20.6 已知限制
+
+- 代码诊断当前为**启发式 + scorer diagnostics**，非完整 LLM 诊断 prompt。
+- `require_code_facts_for_rules` 默认 `false`，便于 MVP 迭代；生产可收紧。
+- rule bank 依赖 `min_support_score` 与 `exclude_regressed` 过滤；错误规则需 inspect 人工审查或降级。
