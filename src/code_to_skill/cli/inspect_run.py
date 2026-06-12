@@ -76,6 +76,27 @@ def summarize_run(
             f"n={test_report.get('n_items', 0)}"
         )
 
+    run_quality = _read_json(opt / "run_quality_report.json")
+    if isinstance(run_quality, dict):
+        mono = run_quality.get("best_score_monotonic")
+        mono_flag = "✓" if mono else "✗"
+        lines.append(
+            f"Run quality: monotonic={mono_flag} "
+            f"leakage={run_quality.get('leakage_count', 0)} "
+            f"case_ids={run_quality.get('case_id_count', 0)}"
+        )
+        recs = run_quality.get("recommendations") or []
+        for rec in recs[:3]:
+            lines.append(f"  → {rec}")
+        failures = run_quality.get("hard_failures") or []
+        if failures:
+            lines.append(f"  hard failures: {len(failures)}")
+            for row in failures[:5]:
+                if isinstance(row, dict):
+                    lines.append(
+                        f"    {row.get('id', '?')}: missed={row.get('missed_checks', [])}"
+                    )
+
     ref_report = _read_json(opt / "context_ref_report.json")
     if isinstance(ref_report, dict):
         s = ref_report.get("summary") or {}

@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 
 from .types import EditOp
+from .skill_quality import QualityGateConfig, edit_has_leakage
 
 MIN_CONTENT_LEN = 20
 
@@ -30,7 +31,12 @@ def _content_already_in_skill(content: str, skill: str) -> bool:
     return False
 
 
-def validate_edit(edit: EditOp, current_skill: str) -> tuple[bool, str]:
+def validate_edit(
+    edit: EditOp,
+    current_skill: str,
+    *,
+    quality_config: QualityGateConfig | None = None,
+) -> tuple[bool, str]:
     """校验单条编辑是否可应用。返回 (is_valid, reject_reason)。"""
     content = (edit.content or "").strip()
     if len(content) < MIN_CONTENT_LEN:
@@ -38,6 +44,10 @@ def validate_edit(edit: EditOp, current_skill: str) -> tuple[bool, str]:
     for pat in _META_PATTERNS:
         if pat.search(content):
             return False, "meta_comment"
+    if quality_config and quality_config.enabled and quality_config.reject_on_leakage:
+        leaked, reason = edit_has_leakage(content, quality_config)
+        if leaked:
+            return False, reason
     if _content_already_in_skill(content, current_skill):
         return False, "duplicate"
     if not any(m in content for m in _ACTIONABLE_MARKERS):
@@ -48,12 +58,14 @@ def validate_edit(edit: EditOp, current_skill: str) -> tuple[bool, str]:
 def filter_valid_edits(
     edits: list[EditOp],
     current_skill: str,
+    *,
+    quality_config: QualityGateConfig | None = None,
 ) -> tuple[list[EditOp], list[tuple[EditOp, str]]]:
     """过滤低质量编辑，返回 (valid_edits, rejected_with_reason)。"""
     valid: list[EditOp] = []
     rejected: list[tuple[EditOp, str]] = []
     for edit in edits:
-        ok, reason = validate_edit(edit, current_skill)
+        ok, reason = validate_edit(edit, current_skill, quality_config=quality_config)
         if ok:
             valid.append(edit)
         else:

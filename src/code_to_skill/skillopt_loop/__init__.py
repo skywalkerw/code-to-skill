@@ -27,7 +27,14 @@ logger = logging.getLogger(__name__)
 
 def _gate_icon(action: str) -> str:
     """门禁动作图标。"""
-    return {"accept_new_best": "⭐", "accept": "✓", "reject": "✗"}.get(action, "?")
+    return {
+        "accept_new_best": "⭐",
+        "accept_new_best_from_knowledge": "⭐",
+        "accept": "✓",
+        "accept_current_knowledge": "✓",
+        "reject": "✗",
+        "reject_knowledge": "✗",
+    }.get(action, "?")
 
 
 def compute_semantic_hash(content: str) -> str:
@@ -300,6 +307,15 @@ def run_skillopt_loop(
         se_raw if isinstance(se_raw, dict) else None,
         cli_enabled=self_evolve,
         trace_merge_only=trace_merge and not self_evolve,
+    )
+    from .skill_quality import QualityGateConfig, SkillGateConfig
+    quality_cfg = QualityGateConfig.from_skillopt_settings(
+        skillopt_settings if isinstance(skillopt_settings, dict) else None,
+        se_max_skill_tokens=se_cfg.max_skill_tokens,
+        se_max_rules=se_cfg.max_rules,
+    )
+    skill_gate_cfg = SkillGateConfig.from_skillopt_settings(
+        skillopt_settings if isinstance(skillopt_settings, dict) else None,
     )
     trace_pool = None
     rejected_buf = None
@@ -579,7 +595,9 @@ def run_skillopt_loop(
 
             # 3.5 Validate — 过滤占位/低质量编辑
             from .edit_validator import filter_valid_edits
-            valid_edits, rejected_validations = filter_valid_edits(merged.edits, current_skill)
+            valid_edits, rejected_validations = filter_valid_edits(
+                merged.edits, current_skill, quality_config=quality_cfg,
+            )
             for edit, reason in rejected_validations:
                 logger.info("[M4] validate: REJECT [%s] %s — %s", edit.op, edit.content[:40], reason)
                 buffer.record_rejected_edit(step_counter, edit)
@@ -591,7 +609,7 @@ def run_skillopt_loop(
                 if scenario_edits:
                     scenario_rules_triggered = len(scenario_edits)
                     valid_edits, scenario_rejected = filter_valid_edits(
-                        scenario_edits, current_skill,
+                        scenario_edits, current_skill, quality_config=quality_cfg,
                     )
                     rejected_validations.extend(scenario_rejected)
                     if valid_edits:
@@ -652,7 +670,8 @@ def run_skillopt_loop(
             size_delta = len(candidate_content) - len(current_skill)
             logger.info("[M4] update: hash=%s delta=%+d chars", candidate_hash[:8], size_delta)
 
-            # 6. Evaluate（selection cache）
+            # 6. Evaluate（selection cache + per-item results for observability）
+            selection_eval_results: list[dict] | None = None
             cached = cache.get(candidate_hash)
             if cached is not None:
                 candidate_hard = cached.get("hard", cached["gate_score"])
@@ -660,18 +679,32 @@ def run_skillopt_loop(
                 candidate_gate = cached["gate_score"]
                 logger.info("[M4] evaluate: CACHED hard=%.3f soft=%.3f (epoch=%d step=%d)",
                              candidate_hard, candidate_soft, cached.get("epoch", 0), cached.get("step", 0))
-            else:
-                # selection rollout → score_benchmark_item（每条 item）→ compute_scores 得 hard/soft。
-                eval_result = adapter.evaluate(candidate_content, selection_items, target_backend=backend_mgr.target)
-                candidate_hard = eval_result.get("accuracy", 0.0)
-                candidate_soft = eval_result["soft"]
-                candidate_gate = select_gate_score(candidate_hard, candidate_soft,
-                                                    metric=gate.metric, mixed_weight=gate.mixed_weight)
+            elif selection_items:
+                selection_eval_results = adapter.rollout(
+                    candidate_content, selection_items, target_backend=backend_mgr.target,
+                )
+                n_sel_eval = max(len(selection_eval_results), 1)
+                candidate_hard = sum(
+                    float(r.get("accuracy", r.get("hard", 0))) for r in selection_eval_results
+                ) / n_sel_eval
+                candidate_soft = sum(float(r.get("soft", 0)) for r in selection_eval_results) / n_sel_eval
+                candidate_gate = select_gate_score(
+                    candidate_hard, candidate_soft,
+                    metric=gate.metric, mixed_weight=gate.mixed_weight,
+                )
                 cache.put(candidate_hash, candidate_hard,
                           candidate_soft, candidate_gate, epoch + 1, step_counter)
-                logger.info("[M4] evaluate: hard=%.3f soft=%.3f acc=%.3f f1=%.3f (gate=%.3f, best=%.3f [%s])",
-                             candidate_hard, candidate_soft, eval_result.get("accuracy", 0.0),
-                             eval_result.get("f1", 0.0), candidate_gate, best_score, gate.metric)
+                logger.info("[M4] evaluate: hard=%.3f soft=%.3f (gate=%.3f, best=%.3f [%s])",
+                             candidate_hard, candidate_soft, candidate_gate, best_score, gate.metric)
+            else:
+                candidate_hard = 0.0
+                candidate_soft = 0.0
+                candidate_gate = 0.0
+
+            best_score_before = best_score
+            current_score_before = current_score
+            state_target = "none"
+            quality_report: dict = {}
 
             # Gate — uses the gate metric projection
             decision = gate.evaluate(
@@ -681,20 +714,15 @@ def run_skillopt_loop(
             )
             last_rollout_avg = rollout_avg
             action = decision.action
-            candidate_gate = decision.candidate_score  # the projected score
+            candidate_gate = decision.candidate_score
             logger.info("[M4] gate: %s reason=%s", _gate_icon(action), decision.reason)
 
             if action == "accept_new_best":
-                best_score = candidate_gate
-                best_skill = candidate_content
-                best_step = step_counter
+                state_target = "best"
                 for r in ranked:
                     buffer.record_accepted_edit(step_counter, r.edit)
             elif action == "accept":
-                if candidate_gate >= best_score - 1e-9:
-                    best_score = candidate_gate
-                    best_skill = candidate_content
-                    best_step = step_counter
+                state_target = "current"
                 for r in ranked:
                     buffer.record_accepted_edit(step_counter, r.edit)
             else:
@@ -725,13 +753,18 @@ def run_skillopt_loop(
                             knowledge_soft = cached_knowledge.get("soft", cached_knowledge["gate_score"])
                             knowledge_gate = cached_knowledge["gate_score"]
                         elif selection_items:
-                            knowledge_eval = adapter.evaluate(
+                            knowledge_results = adapter.rollout(
                                 knowledge_content,
                                 selection_items,
                                 target_backend=backend_mgr.target,
                             )
-                            knowledge_hard = knowledge_eval.get("accuracy", 0.0)
-                            knowledge_soft = knowledge_eval["soft"]
+                            n_k = max(len(knowledge_results), 1)
+                            knowledge_hard = sum(
+                                float(r.get("accuracy", r.get("hard", 0))) for r in knowledge_results
+                            ) / n_k
+                            knowledge_soft = sum(
+                                float(r.get("soft", 0)) for r in knowledge_results
+                            ) / n_k
                             knowledge_gate = select_gate_score(
                                 knowledge_hard,
                                 knowledge_soft,
@@ -747,10 +780,16 @@ def run_skillopt_loop(
                                 step_counter,
                             )
                         tolerance = float(getattr(se_cfg, "knowledge_gate_tolerance", 0.05) or 0.0)
-                        knowledge_accept = (
-                            not selection_items
-                            or knowledge_gate >= best_score - tolerance
-                        )
+                        knowledge_delta = gate.delta if se_cfg.strict_improvement else 0.0
+                        if knowledge_gate > best_score + knowledge_delta:
+                            knowledge_accept = True
+                            knowledge_action = "accept_new_best_from_knowledge"
+                        elif knowledge_gate >= current_score - tolerance:
+                            knowledge_accept = True
+                            knowledge_action = "accept_current_knowledge"
+                        else:
+                            knowledge_accept = False
+                            knowledge_action = "reject_knowledge"
                         _save_knowledge_merge_artifact(
                             output_dir,
                             step_counter,
@@ -764,10 +803,11 @@ def run_skillopt_loop(
                             edit_reports=knowledge_reports,
                         )
                         if knowledge_accept:
-                            action = "accept"
+                            action = knowledge_action
+                            state_target = "best" if action == "accept_new_best_from_knowledge" else "current"
                             decision.reason = (
-                                f"knowledge_accept ({knowledge_gate:.3f} >= "
-                                f"{best_score:.3f}-{tolerance:.3f}) [{gate.metric}]"
+                                f"{action} ({knowledge_gate:.3f} vs best={best_score:.3f}, "
+                                f"current={current_score:.3f}, tol={tolerance:.3f}) [{gate.metric}]"
                             )
                             candidate_content = knowledge_content
                             candidate_hash = knowledge_hash
@@ -775,28 +815,113 @@ def run_skillopt_loop(
                             candidate_soft = knowledge_soft
                             candidate_gate = knowledge_gate
                             edit_reports = knowledge_reports
-                            best_score = knowledge_gate
-                            best_skill = knowledge_content
-                            best_step = step_counter
                             for r in knowledge_ranked:
                                 buffer.record_accepted_edit(step_counter, r.edit)
                             logger.info(
-                                "[M4] knowledge merge: ✓ accepted success edits=%d score=%.3f",
+                                "[M4] knowledge merge: ✓ %s success edits=%d score=%.3f",
+                                action,
                                 len(knowledge_ranked),
                                 knowledge_gate,
                             )
                         else:
+                            action = "reject"
                             logger.info(
                                 "[M4] knowledge merge: ✗ rejected success edits=%d score=%.3f",
                                 len(knowledge_ranked),
                                 knowledge_gate,
                             )
 
-            current_hard = candidate_hard if action != "reject" else current_hard
-            current_soft = candidate_soft if action != "reject" else current_soft
-            current_score = candidate_gate if action != "reject" else current_score
-            if action != "reject":
+            accept_actions = {
+                "accept_new_best",
+                "accept",
+                "accept_new_best_from_knowledge",
+                "accept_current_knowledge",
+            }
+            if action in accept_actions and quality_cfg.enabled and quality_cfg.run_after_selection_eval:
+                candidate_content, quality_report, q_fail = _apply_quality_gate(
+                    candidate_content,
+                    quality_cfg,
+                    adapter=adapter,
+                    selection_items=selection_items,
+                    target_backend=backend_mgr.target,
+                    cache=cache,
+                    gate=gate,
+                    epoch=epoch + 1,
+                    step=step_counter,
+                )
+                candidate_hash = compute_semantic_hash(candidate_content)
+                if q_fail:
+                    if action in accept_actions:
+                        for r in ranked:
+                            buffer.record_rejected_edit(step_counter, r.edit)
+                        if rejected_buf is not None:
+                            for r in ranked:
+                                rejected_buf.append(
+                                    edit=r.edit,
+                                    step=step_counter,
+                                    reason=q_fail,
+                                    before_score=current_score,
+                                    after_score=candidate_gate,
+                                )
+                    action = "reject"
+                    state_target = "none"
+                    decision.reason = q_fail
+                elif selection_items and quality_report.get("sanitized"):
+                    selection_eval_results = adapter.rollout(
+                        candidate_content, selection_items, target_backend=backend_mgr.target,
+                    )
+                    n_re = max(len(selection_eval_results), 1)
+                    candidate_hard = sum(
+                        float(r.get("accuracy", r.get("hard", 0))) for r in selection_eval_results
+                    ) / n_re
+                    candidate_soft = sum(
+                        float(r.get("soft", 0)) for r in selection_eval_results
+                    ) / n_re
+                    candidate_gate = select_gate_score(
+                        candidate_hard, candidate_soft,
+                        metric=gate.metric, mixed_weight=gate.mixed_weight,
+                    )
+                    cache.put(
+                        candidate_hash, candidate_hard, candidate_soft,
+                        candidate_gate, epoch + 1, step_counter,
+                    )
+                    re_decision = gate.evaluate(
+                        candidate_hard, candidate_soft, best_score, current_score,
+                        train_rollout=rollout_avg,
+                        prev_train_rollout=last_rollout_avg,
+                    )
+                    if re_decision.action == "reject":
+                        action = "reject"
+                        state_target = "none"
+                        decision.reason = f"quality_sanitize_reject ({decision.reason})"
+                    else:
+                        action = re_decision.action
+                        candidate_gate = re_decision.candidate_score
+                        decision.reason = re_decision.reason
+                        state_target = "best" if action == "accept_new_best" else "current"
+
+            if action == "accept_new_best" or action == "accept_new_best_from_knowledge":
+                if skill_gate_cfg.strict_best_monotonic:
+                    assert candidate_gate >= best_score_before - 1e-9 or not selection_items
+                best_score = candidate_gate
+                best_skill = candidate_content
+                best_step = step_counter
+                current_score = candidate_gate
                 current_skill = candidate_content
+                current_hard = candidate_hard
+                current_soft = candidate_soft
+            elif action in ("accept", "accept_current_knowledge"):
+                current_score = candidate_gate
+                current_skill = candidate_content
+                current_hard = candidate_hard
+                current_soft = candidate_soft
+            elif action != "reject":
+                current_hard = candidate_hard
+                current_soft = candidate_soft
+                current_score = candidate_gate
+                current_skill = candidate_content
+
+            if action in accept_actions:
                 if (
                     rule_attr is not None
                     and se_cfg.attribution_enabled
@@ -809,10 +934,56 @@ def run_skillopt_loop(
                     )
                     rule_attr.sync_from_skill(current_skill, step=step_counter)
                     rule_attr.save()
-                if action in ("accept_new_best", "accept"):
-                    best_skill = current_skill
+                    if action in ("accept_new_best", "accept_new_best_from_knowledge"):
+                        best_skill = current_skill
                 if frontier_pool is not None:
                     frontier_pool.try_add(current_skill, candidate_gate, step_counter)
+
+            if not quality_report and quality_cfg.enabled:
+                from .skill_quality import build_skill_quality_report
+                quality_report = build_skill_quality_report(
+                    candidate_content if action != "reject" else current_skill,
+                    quality_cfg,
+                    step=step_counter,
+                    skill_hash=candidate_hash,
+                )
+
+            if (
+                quality_cfg.write_selection_eval_report
+                and selection_eval_results is not None
+            ):
+                from .test_eval import build_selection_eval_report, write_selection_eval_report
+                sel_report = build_selection_eval_report(
+                    selection_eval_results,
+                    selection_items,
+                    step=step_counter,
+                    skill_hash=candidate_hash,
+                    gate_score=candidate_gate,
+                    hard=candidate_hard,
+                    soft=candidate_soft,
+                )
+                write_selection_eval_report(output_dir, step_counter, sel_report)
+
+            if quality_cfg.write_skill_quality_report and quality_report:
+                _write_skill_quality_report(output_dir, step_counter, quality_report)
+
+            if quality_cfg.write_gate_decision_report:
+                _write_gate_decision_report(
+                    output_dir,
+                    step_counter,
+                    action=action,
+                    state_target=state_target,
+                    reason=decision.reason,
+                    before={
+                        "best_score": best_score_before,
+                        "current_score": current_score_before,
+                    },
+                    after={
+                        "best_score": best_score,
+                        "current_score": current_score,
+                    },
+                    quality_gate=quality_report,
+                )
 
             # 记录 rollout 中的失败/成功任务
             for r in all_results:
@@ -833,8 +1004,14 @@ def run_skillopt_loop(
                 "selection_score": round(candidate_gate, 3),
                 "gate_action": action,
                 "gate_reason": decision.reason,
-                "before_score": round(current_score, 3),
-                "after_score": round(candidate_gate, 3),
+                "state_target": state_target,
+                "best_score_before": round(best_score_before, 3),
+                "best_score_after": round(best_score, 3),
+                "current_score_before": round(current_score_before, 3),
+                "current_score_after": round(current_score, 3),
+                "best_monotonic": best_score >= best_score_before - 1e-9,
+                "before_score": round(current_score_before, 3),
+                "after_score": round(current_score, 3),
                 "candidate_hash": candidate_hash,
                 "best_score": round(best_score, 3),
                 "edit_count": len(ranked),
@@ -1031,8 +1208,11 @@ def run_skillopt_loop(
                 )
                 if hyg.get("applied"):
                     current_skill = hyg["skill"]
-                    best_skill = current_skill
-                    best_score = float(hyg.get("after_score", best_score))
+                    hyg_score = float(hyg.get("after_score", best_score))
+                    current_score = hyg_score
+                    if hyg_score >= best_score - 1e-9:
+                        best_skill = current_skill
+                        best_score = hyg_score
 
         # Meta Skill（与 slow_update 解耦：仅依赖 enable_meta_skill）
         if enable_meta_skill:
@@ -1085,33 +1265,42 @@ def run_skillopt_loop(
         cache.save()
 
     # ── Final ───────────────────────────────────────────────
-    # 训练结束时：若 current_skill 在 selection 上优于 best_skill，提升导出产物
-    if selection_items and current_skill.strip() != best_skill.strip():
-        curr_eval = adapter.evaluate(
+    if (
+        skill_gate_cfg.export_current_on_tie
+        and selection_items
+        and current_skill.strip() != best_skill.strip()
+    ):
+        curr_eval_results = adapter.rollout(
             current_skill, selection_items, target_backend=backend_mgr.target,
         )
-        best_eval = adapter.evaluate(
+        best_eval_results = adapter.rollout(
             best_skill, selection_items, target_backend=backend_mgr.target,
         )
+        n_c = max(len(curr_eval_results), 1)
+        n_b = max(len(best_eval_results), 1)
+        curr_hard = sum(float(r.get("hard", 0)) for r in curr_eval_results) / n_c
+        curr_soft = sum(float(r.get("soft", 0)) for r in curr_eval_results) / n_c
+        best_hard = sum(float(r.get("hard", 0)) for r in best_eval_results) / n_b
+        best_soft = sum(float(r.get("soft", 0)) for r in best_eval_results) / n_b
         curr_gate = select_gate_score(
-            curr_eval.get("accuracy", 0.0), curr_eval["soft"],
-            metric=gate.metric, mixed_weight=gate.mixed_weight,
+            curr_hard, curr_soft, metric=gate.metric, mixed_weight=gate.mixed_weight,
         )
         best_gate = select_gate_score(
-            best_eval.get("accuracy", 0.0), best_eval["soft"],
-            metric=gate.metric, mixed_weight=gate.mixed_weight,
+            best_hard, best_soft, metric=gate.metric, mixed_weight=gate.mixed_weight,
         )
-        if curr_gate > best_gate + gate.delta or (
-            curr_gate >= best_gate - 1e-9
-            and current_skill.strip() != best_skill.strip()
+        from .skill_quality import scan_skill_quality
+        curr_quality = scan_skill_quality(current_skill, quality_cfg)
+        if (
+            abs(curr_gate - best_gate) <= 1e-9
+            and curr_quality.get("passed")
+            and curr_quality.get("estimated_tokens", 0) <= quality_cfg.max_skill_tokens
         ):
             logger.info(
-                "[M4] Finalize: export current_skill on selection "
-                "(%.3f vs best %.3f)",
+                "[M4] Finalize: export current_skill on tie (%.3f vs best %.3f)",
                 curr_gate, best_gate,
             )
             best_skill = current_skill
-            best_score = max(curr_gate, best_gate)
+            best_score = max(curr_gate, best_score)
 
     # Test eval
     test_report = {}
@@ -1134,6 +1323,23 @@ def run_skillopt_loop(
         )
 
     curve.finalize(best_step=best_step, test_report=test_report or None)
+
+    if quality_cfg.write_run_quality_report:
+        from .skill_quality import build_run_quality_report
+        run_id = os.path.basename(effective_run_root.rstrip(os.sep)) or "run"
+        rq = build_run_quality_report(
+            run_id=run_id,
+            initial_skill=initial_skill,
+            best_skill=best_skill,
+            best_score=best_score,
+            history=history,
+            test_report=test_report or None,
+            quality_config=quality_cfg,
+        )
+        rq_path = os.path.join(output_dir, "run_quality_report.json")
+        with open(rq_path, "w", encoding="utf-8") as f:
+            json.dump(rq, f, indent=2, ensure_ascii=False)
+        logger.info("[M4] run quality report → %s", rq_path)
 
     if pipe.auto_plot_training_curve:
         try:
@@ -1164,6 +1370,85 @@ def run_skillopt_loop(
 
 
 # ── Artifact helpers ──────────────────────────────────────────
+
+def _apply_quality_gate(
+    candidate_content: str,
+    quality_cfg: Any,
+    *,
+    adapter: Any,
+    selection_items: list[dict],
+    target_backend: Any,
+    cache: Any,
+    gate: GateManager,
+    epoch: int,
+    step: int,
+) -> tuple[str, dict, str | None]:
+    """Sanitize skill if needed; return (skill, report, fail_reason)."""
+    from .gate import select_gate_score
+    from .skill_quality import build_skill_quality_report, sanitize_skill
+
+    skill_hash = compute_semantic_hash(candidate_content)
+    report = build_skill_quality_report(
+        candidate_content, quality_cfg, step=step, skill_hash=skill_hash,
+    )
+    if report.get("passed"):
+        return candidate_content, report, None
+
+    if quality_cfg.sanitize_then_reevaluate:
+        sanitized, actions = sanitize_skill(candidate_content, quality_cfg)
+        if sanitized.strip() != candidate_content.strip():
+            candidate_content = sanitized
+            report = build_skill_quality_report(
+                candidate_content, quality_cfg, step=step,
+                skill_hash=compute_semantic_hash(candidate_content),
+            )
+            report["sanitized"] = True
+            report["sanitize_actions"] = actions
+            if report.get("passed"):
+                return candidate_content, report, None
+
+    if quality_cfg.reject_on_leakage and not report.get("passed"):
+        return candidate_content, report, "quality_gate_failed"
+    return candidate_content, report, None
+
+
+def _write_skill_quality_report(output_dir: str, step: int, report: dict) -> None:
+    step_dir = os.path.join(output_dir, "steps", f"step_{step:04d}")
+    os.makedirs(step_dir, exist_ok=True)
+    with open(os.path.join(step_dir, "skill_quality.json"), "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2, ensure_ascii=False)
+
+
+def _write_gate_decision_report(
+    output_dir: str,
+    step: int,
+    *,
+    action: str,
+    state_target: str,
+    reason: str,
+    before: dict,
+    after: dict,
+    quality_gate: dict,
+) -> None:
+    step_dir = os.path.join(output_dir, "steps", f"step_{step:04d}")
+    os.makedirs(step_dir, exist_ok=True)
+    payload = {
+        "schema_version": "1.0",
+        "step": step,
+        "action": action,
+        "state_target": state_target,
+        "reason": reason,
+        "before": before,
+        "after": after,
+        "quality_gate": {
+            "passed": quality_gate.get("passed", True),
+            "leakage_count": quality_gate.get("leakage_count", 0),
+            "case_id_count": quality_gate.get("case_id_count", 0),
+        },
+    }
+    with open(os.path.join(step_dir, "gate_decision.json"), "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+
 
 def _save_step_metrics(
     output_dir: str,

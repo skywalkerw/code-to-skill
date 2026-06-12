@@ -9,11 +9,11 @@ from code_to_skill.skillopt_loop.reflect_helpers import (
 from code_to_skill.skillopt_loop.scenario_rules import build_scenario_edits
 
 
-def test_build_scenario_edits_skips_duplicate_task_ids():
+def test_build_scenario_edits_skips_duplicate_triggers():
     skill = (
         "# Skill\n## Workflow\n\n"
         f"{SCENARIO_SECTION_HEADING}\n\n"
-        "- **jv_purchase_001** (buy item): must satisfy verification checks [库存]"
+        "- 当用户描述「buy item」时，输出须明确体现：库存"
     )
     results = [
         {"id": "jv_purchase_001", "hard": 0, "question": "buy item", "missed_checks": ["库存"]},
@@ -21,11 +21,13 @@ def test_build_scenario_edits_skips_duplicate_task_ids():
     ]
     edits = build_scenario_edits(results, skill)
     assert len(edits) == 1
-    assert "jv_loan_disburse_001" in edits[0].content
+    assert "jv_loan_disburse_001" not in edits[0].content
     assert "jv_purchase_001" not in edits[0].content
+    assert "disburse loan" in edits[0].content
+    assert "jv_loan_disburse_001" in edits[0].related_task_ids
 
 
-def test_scenario_edits_pass_validator_when_generic_rules_duplicate():
+def test_scenario_edits_pass_validator_without_benchmark_ids_in_body():
     skill = (
         "# Skill\n## Workflow\n\n"
         f"{RULE_SECTION_HEADING_PRIMARY}\n\n"
@@ -44,4 +46,8 @@ def test_scenario_edits_pass_validator_when_generic_rules_duplicate():
     valid, rejected = filter_valid_edits(edits, skill)
     assert valid
     assert not rejected
-    assert "jv_fee_001" in valid[0].content
+    assert "jv_fee_001" not in valid[0].content
+    assert "cover verified checks" not in valid[0].content
+    assert "must satisfy verification checks" not in valid[0].content
+    assert "jv_fee_001" in valid[0].related_task_ids
+    assert "费用" in valid[0].content or "Charge" in valid[0].content

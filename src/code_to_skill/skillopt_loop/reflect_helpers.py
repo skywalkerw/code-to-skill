@@ -23,7 +23,7 @@ _PRIMARY_TARGET_KEYWORDS = (
 
 RULE_SECTION_HEADING_PRIMARY = "### Output rules (auto-generated)"
 RULE_SECTION_HEADING_BOUNDARY = "### Boundary rules (auto-generated)"
-SCENARIO_SECTION_HEADING = "### Scenario rules (by benchmark case)"
+SCENARIO_SECTION_HEADING = "### Scenario rules"
 
 REFLECT_SYNTHESIS_HINT = (
     "Stop using tools. Output JSON only with schema: "

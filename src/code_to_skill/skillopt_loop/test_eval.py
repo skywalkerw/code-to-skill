@@ -134,6 +134,7 @@ def _result_report_item(
         "fail_reason": result.get("fail_reason", ""),
         "scorer_justification": result.get("scorer_justification", ""),
         "score_error": result.get("score_error", ""),
+        **({"scorer_diagnostics": result.get("scorer_diagnostics")} if result.get("scorer_diagnostics") else {}),
         "context_refs": list(result.get("context_refs") or item.get("context_refs") or []),
         "predicted_answer": predicted,
         "predicted_preview": predicted[:500],
@@ -281,6 +282,52 @@ def evaluate_test_split(
         "n_items": n,
         "report_path": report_path,
     }
+
+
+def build_selection_eval_report(
+    results: list[dict],
+    items: list[dict],
+    *,
+    step: int,
+    skill_hash: str = "",
+    gate_score: float = 0.0,
+    hard: float = 0.0,
+    soft: float = 0.0,
+) -> dict:
+    """Build per-step selection eval report (same schema as test eval per_item)."""
+    item_by_id = {str(item.get("id") or ""): item for item in items}
+    trace_index: dict[str, list[dict]] = {}
+    per_item = [
+        _result_report_item(
+            r,
+            item_by_id.get(str(r.get("id") or ""), {}),
+            trace_index,
+        )
+        for r in results
+    ]
+    return {
+        "schema_version": "1.0",
+        "step": step,
+        "skill_hash": skill_hash,
+        "hard": round(hard, 3),
+        "soft": round(soft, 3),
+        "gate_score": round(gate_score, 3),
+        "summary": _report_summary(per_item),
+        "per_item": per_item,
+    }
+
+
+def write_selection_eval_report(
+    output_dir: str,
+    step: int,
+    report: dict,
+) -> str:
+    step_dir = Path(output_dir) / "steps" / f"step_{step:04d}"
+    step_dir.mkdir(parents=True, exist_ok=True)
+    path = step_dir / "selection_eval_report.json"
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2, ensure_ascii=False)
+    return str(path)
 
 
 # ── Step 内部 Checkpoint ────────────────────────────────────

@@ -359,6 +359,7 @@ def _normalize_script_score(
         "f1": round(f1, 3),
         "score_type": "python_script",
         **({"justification": str(raw.get("justification"))} if raw.get("justification") else {}),
+        **({"diagnostics": raw.get("diagnostics")} if raw.get("diagnostics") else {}),
     }
 
 

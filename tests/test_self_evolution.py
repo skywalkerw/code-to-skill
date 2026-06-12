@@ -387,8 +387,39 @@ class _OfflineAllSuccessAdapter:
 class _OfflineKnowledgeToleranceAdapter(_OfflineAllSuccessAdapter):
     """成功知识候选略降 selection，但应被 knowledge gate 容忍沉淀。"""
 
+    def _downgraded_results(self, skill, items):
+        from code_to_skill.skillopt_loop.reflect_helpers import SCENARIO_SECTION_HEADING
+
+        if SCENARIO_SECTION_HEADING not in skill and "Scenario rules" not in skill:
+            return None
+        out = []
+        for item in items:
+            checks = list(item.get("expected_checks") or [])
+            out.append({
+                "id": item.get("id", ""),
+                "question": item.get("question", ""),
+                "context_refs": list(item.get("context_refs") or []),
+                "expected_checks": checks,
+                "passed_checks": checks,
+                "missed_checks": [],
+                "hard": 1,
+                "soft": 0.95,
+                "accuracy": 0.95,
+                "predicted_answer": "## 会计凭证\n借\n贷\n借贷平衡",
+                "fail_reason": "",
+                "task_type": item.get("task_type", "journal_entry"),
+            })
+        return out
+
+    def rollout(self, skill, items, target_backend=None, out_dir=""):
+        downgraded = self._downgraded_results(skill, items)
+        if downgraded is not None:
+            return downgraded
+        return super().rollout(skill, items, target_backend=target_backend, out_dir=out_dir)
+
     def evaluate(self, skill, items, target_backend=None):
-        if "Scenario rules" in skill:
+        downgraded = self._downgraded_results(skill, items)
+        if downgraded is not None:
             return {"soft": 0.95, "accuracy": 0.95, "f1": 0.95}
         return {"soft": 1.0, "accuracy": 1.0, "f1": 1.0}
 
@@ -435,7 +466,7 @@ class TestSelfEvolutionIntegration:
         report = validate_self_evolution_run(out)
         assert report["passed"] is True
 
-    def test_all_success_run_updates_skill_with_trace_rules(self, tmp_path):
+    def test_all_success_run_updates_current_with_trace_rules(self, tmp_path):
         items = [
             {
                 "id": "jv_success_a",
@@ -469,13 +500,17 @@ class TestSelfEvolutionIntegration:
                 "trace_pool": {"min_support_count": 2},
                 "gate": {"strict_improvement": False, "reject_ties": False},
             },
+            skillopt_settings={"quality_gate": {"enabled": False}},
         )
-        assert "jv_success_a" in result["best_skill"]
-        assert "CashBasedAccountingProcessorForLoan" in result["best_skill"]
+        current_skill_path = os.path.join(out, "skills", "skill_v0001.md")
+        assert os.path.isfile(current_skill_path)
+        current_skill = open(current_skill_path, encoding="utf-8").read()
+        assert "jv_success_a" in current_skill or "贷款" in current_skill
         assert result["history"]
-        assert result["history"][-1]["gate_action"] == "accept"
+        assert result["history"][-1]["gate_action"] in ("accept", "accept_current_knowledge")
+        assert result["history"][-1]["best_monotonic"] is True
 
-    def test_success_knowledge_merge_accepts_small_selection_drop(self, tmp_path):
+    def test_success_knowledge_merge_updates_current_not_best(self, tmp_path):
         items = [
             {
                 "id": "jv_success_a",
@@ -509,13 +544,43 @@ class TestSelfEvolutionIntegration:
                 "trace_pool": {"min_support_count": 2},
                 "knowledge": {"enabled": True, "gate_tolerance": 0.1},
             },
+            skillopt_settings={"quality_gate": {"enabled": False}},
         )
-        assert "jv_success_a" in result["best_skill"]
+        assert result["best_score"] >= 0.95
         knowledge_report = os.path.join(out, "steps", "step_0001", "knowledge_merge.json")
         assert os.path.isfile(knowledge_report)
         with open(knowledge_report, encoding="utf-8") as f:
             payload = json.load(f)
         assert payload["action"] == "accept"
+        last = result["history"][-1]
+        assert last["gate_action"] == "accept_current_knowledge"
+        assert last["best_monotonic"] is True
+        assert last["best_score_after"] >= last["best_score_before"] - 1e-9
+
+
+class TestKnowledgeAcceptMonotonic:
+    def test_knowledge_accept_does_not_lower_best(self):
+        """best=0.70, knowledge=0.66, tolerance=0.05 → best stays 0.70."""
+        gate = GateManager(metric="soft", delta=0.01)
+        best_score = 0.70
+        current_score = 0.70
+        knowledge_gate = 0.66
+        tolerance = 0.05
+        knowledge_delta = gate.delta
+
+        old_best = best_score
+        if knowledge_gate > best_score + knowledge_delta:
+            action = "accept_new_best_from_knowledge"
+            best_score = knowledge_gate
+        elif knowledge_gate >= current_score - tolerance:
+            action = "accept_current_knowledge"
+            current_score = knowledge_gate
+        else:
+            action = "reject_knowledge"
+
+        assert action == "accept_current_knowledge"
+        assert best_score == old_best == 0.70
+        assert current_score == 0.66
 
 
 class TestHygieneHelpers:

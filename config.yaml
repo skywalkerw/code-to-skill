@@ -48,7 +48,28 @@ settings:
     rollout_max_tool_rounds: 2
     rollout_workers: 4
     expose_expected_checks_to_target: false
-    check_aliases: {}
+    check_aliases:
+      资产: ["设备资产", "固定资产", "固定资产科目"]
+      费用: ["Fee", "手续费", "费用收入", "fee"]
+      Charge: ["Client charge", "Fee charge", "charge", "客户费用"]
+    gate:
+      strict_best_monotonic: true
+      knowledge_updates_current_only: true
+    finalize:
+      export_current_on_tie: false
+    quality_gate:
+      enabled: true
+      reject_on_leakage: true
+      sanitize_then_reevaluate: true
+      max_skill_tokens: 2000
+      max_rules: 40
+      benchmark_id_patterns:
+        - "\\bjv_[a-z0-9_]+\\b"
+    observability:
+      write_selection_eval_report: true
+      write_skill_quality_report: true
+      write_gate_decision_report: true
+      write_run_quality_report: true
     token_budgets:
       rollout: 8192
       reflect_failure: 16384

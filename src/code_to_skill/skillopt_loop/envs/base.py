@@ -437,6 +437,7 @@ class DEFAULTAdapter(EnvAdapter):
             "score_type": scores.get("score_type", item.get("scorer", "keyword")),
             "scorer_justification": scores.get("justification", ""),
             "score_error": scores.get("error", ""),
+            **({"scorer_diagnostics": scores.get("diagnostics")} if scores.get("diagnostics") else {}),
             "trace_request_id": trace_request_id,
             "response_status": response_status,
             "finish_reason": finish_reason,

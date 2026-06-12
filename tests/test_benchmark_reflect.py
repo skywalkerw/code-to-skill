@@ -260,6 +260,24 @@ class TestScoringChecks:
         assert result["score_type"] == "python_script"
         assert set(result["passed_checks"]) == {"借方", "贷方", "平衡"}
 
+    def test_python_script_global_check_aliases(self):
+        import importlib.util
+
+        script = (
+            Path(__file__).resolve().parents[1]
+            / "demo-project/benchmarks/score_expected_checks.py"
+        )
+        spec = importlib.util.spec_from_file_location("score_expected_checks", script)
+        assert spec and spec.loader
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        item = {"expected_checks": ["Charge", "fee", "100"]}
+        predicted = "Client Fee 100 applied to account"
+        global_aliases = {"Charge": ["Client Fee", "Fee charge"]}
+        result = mod.score(predicted, item, global_aliases)
+        assert result["hard"] == 1
+        assert result["diagnostics"]["alias_hits"]["Charge"] == ["Client Fee"]
+
     def test_python_script_scorer_resolves_config_base_dir(self, tmp_path):
         script = tmp_path / "score_relative.py"
         script.write_text(

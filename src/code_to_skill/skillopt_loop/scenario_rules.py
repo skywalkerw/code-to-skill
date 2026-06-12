@@ -18,30 +18,45 @@ def _is_amount_check(check: str) -> bool:
     return bool(_AMOUNT_RE.fullmatch(check.strip())) or is_numeric_check(check)
 
 
+def _business_outcome(missed: list[str]) -> str:
+    """将 missed checks 转为业务输出要求，不写 checks/scorer 语汇。"""
+    reqs = [c for c in missed if not _is_amount_check(c)]
+    if not reqs:
+        return "输出应覆盖该场景所需的完整业务字段，金额只取用户输入"
+    joined = "、".join(reqs[:6])
+    return f"输出须明确体现：{joined}；金额只取用户输入"
+
+
+def _trigger_from_question(question: str) -> str:
+    """从 question 提取业务触发条件，不逐字复述 benchmark id。"""
+    q = (question or "").strip()
+    if not q:
+        return "当用户描述同类业务场景"
+    q_short = q[:72] + ("…" if len(q) > 72 else "")
+    return f"当用户描述「{q_short}」时"
+
+
 def _scenario_rule_line(failure: dict) -> str:
-    """为单条失败 rollout 生成唯一、可执行的场景规则。"""
-    rid = failure.get("id") or "unknown"
+    """为单条失败 rollout 生成业务触发条件规则（不含 benchmark id / scorer 语汇）。"""
     question = (failure.get("question") or "").strip()
     missed = [c for c in failure.get("missed_checks", []) if not _is_amount_check(c)][:6]
-    checks_hint = ", ".join(missed) if missed else "(see expected_checks)"
     refs = failure.get("context_refs") or failure.get("context", {}).get("refs") or []
-    ref_hint = f"; code ref {refs[0]}" if refs else ""
+    ref_hint = f"；可参考 {refs[0]}" if refs else ""
     hint = str(failure.get("reflect_hint") or failure.get("rollout_hint") or "").strip()
-    hint_suffix = f" {hint}" if hint else ""
-    q_short = question[:48] + ("…" if len(question) > 48 else "")
-    return (
-        f"- **{rid}** ({q_short}): must satisfy verification checks "
-        f"[{checks_hint}]{ref_hint}{hint_suffix}"
-    )
+    hint_suffix = f"；{hint}" if hint else ""
+    trigger = _trigger_from_question(question)
+    outcome = _business_outcome(missed)
+    return f"- {trigger}，{outcome}{ref_hint}{hint_suffix}"
 
 
 def _rule_line_in_skill(line: str, skill: str) -> bool:
     stripped = line.strip()
     if stripped in skill:
         return True
-    rid_match = re.search(r"\*\*([^*]+)\*\*", stripped)
-    if rid_match and rid_match.group(1) in skill:
-        return True
+    if stripped.startswith("- 当用户描述"):
+        prefix = stripped[: min(len(stripped), 48)]
+        if prefix and prefix in skill:
+            return True
     return stripped.lstrip("- ").strip() in skill
 
 

@@ -96,18 +96,31 @@ def _check_no_voucher_special(predicted: str, check: str) -> bool | None:
     return None
 
 
+def _match_check(
+    text: str,
+    check: str,
+    aliases: dict[str, list[str]],
+) -> tuple[bool, str | None]:
+    """返回 (是否通过, 命中的别名或 None)。"""
+    special = _check_no_voucher_special(text, check)
+    if special is not None:
+        return special, None
+    if _check_keyword(text, check):
+        return True, None
+    for alias in _aliases_for(check, aliases):
+        if _check_keyword(text, alias):
+            return True, alias
+    return False, None
+
+
 def _check_expected(
     text: str,
     check: str,
     aliases: dict[str, list[str]],
     item: dict,
 ) -> bool:
-    special = _check_no_voucher_special(text, check)
-    if special is not None:
-        return special
-    if _check_keyword(text, check):
-        return True
-    return any(_check_keyword(text, alias) for alias in _aliases_for(check, aliases))
+    passed, _ = _match_check(text, check, aliases)
+    return passed
 
 
 def score(predicted: str, item: dict, global_aliases: dict[str, Any] | None) -> dict:
@@ -117,9 +130,13 @@ def score(predicted: str, item: dict, global_aliases: dict[str, Any] | None) -> 
 
     passed_checks: list[str] = []
     missed_checks: list[str] = []
+    alias_hits: dict[str, list[str]] = {}
     for check in checks:
-        if _check_expected(predicted, check, aliases, item):
+        passed, matched_alias = _match_check(predicted, check, aliases)
+        if passed:
             passed_checks.append(check)
+            if matched_alias:
+                alias_hits.setdefault(check, []).append(matched_alias)
         else:
             missed_checks.append(check)
 
@@ -145,6 +162,11 @@ def score(predicted: str, item: dict, global_aliases: dict[str, Any] | None) -> 
         "recall": round(recall, 3),
         "f1": round(f1, 3),
         "justification": f"keyword checks {passed}/{total}",
+        "diagnostics": {
+            "mode": "keyword",
+            "no_voucher_response": _is_no_voucher_response(predicted),
+            **({"alias_hits": alias_hits} if alias_hits else {}),
+        },
     }
 
 
