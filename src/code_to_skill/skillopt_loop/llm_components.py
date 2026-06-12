@@ -214,6 +214,7 @@ def _reflect_failure_group(
     focus: str,
     graph_sidecars: Any = None,
     adapter: Any = None,
+    code_diagnosis_context: str = "",
 ) -> tuple[dict | None, ReflectEvidenceMetrics]:
     """对单类失败（primary / boundary）调用 reflect。"""
     empty_metrics = ReflectEvidenceMetrics()
@@ -257,6 +258,8 @@ def _reflect_failure_group(
     )
     if evidence_result.text:
         user_content += "\n\n" + evidence_result.text[:4500]
+    if code_diagnosis_context.strip():
+        user_content += "\n\n" + code_diagnosis_context[:2500]
 
     stage = reflect_stage_for_focus(focus)
     request = InteractionRequest(
@@ -309,6 +312,7 @@ def reflect_llm(
     max_tool_rounds: int = 5,
     graph_sidecars: Any = None,
     adapter: Any = None,
+    code_diagnosis_context: str = "",
 ) -> ReflectLLMResult:
     """LLM Reflect：分析 rollout 轨迹，生成有意义的 patch。"""
     if not is_llm_available():
@@ -345,6 +349,7 @@ def reflect_llm(
                 focus=focus,
                 graph_sidecars=graph_sidecars,
                 adapter=adapter,
+                code_diagnosis_context=code_diagnosis_context,
             )
             evidence_metrics.merge(group_metrics)
             if patch:

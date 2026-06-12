@@ -223,6 +223,7 @@ class DEFAULTAdapter(EnvAdapter):
             self.expose_expected_checks_to_target = bool(
                 cfg.get("expose_expected_checks_to_target", self.expose_expected_checks_to_target)
             )
+            self.output_hygiene_config = cfg.get("output_hygiene")
         if self.use_llm:
             try:
                 from code_to_skill.model_provider.llm_backend import (
@@ -384,10 +385,70 @@ class DEFAULTAdapter(EnvAdapter):
                             skill,
                             expose_expected_checks=expose_checks,
                         )
+                from ..output_hygiene import (
+                    ECHO_RETRY_HINT,
+                    OutputHygieneConfig,
+                    detect_output_hygiene,
+                )
+
+                hygiene_cfg = (
+                    getattr(self, "output_hygiene_config", None)
+                    or OutputHygieneConfig()
+                )
+                clean, echo_reason, _ = detect_output_hygiene(predicted, hygiene_cfg)
+                if (
+                    not clean
+                    and hygiene_cfg.enabled
+                    and hygiene_cfg.retry_on_prompt_echo
+                    and backend
+                ):
+                    retry_msg = user_msg + "\n\n" + ECHO_RETRY_HINT
+                    retry_request = InteractionRequest(
+                        role="target",
+                        stage="rollout",
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": build_rollout_system_prompt(
+                                    skill, code_tools_enabled=False,
+                                ),
+                            },
+                            {"role": "user", "content": retry_msg},
+                        ],
+                        max_output_tokens=get_token_budgets().rollout,
+                        temperature=0.2,
+                        metadata={
+                            "synthesis_hint": ECHO_RETRY_HINT,
+                        },
+                    )
+                    retry_resp = backend.invoke(retry_request)
+                    retry_pred = extract_rollout_answer(
+                        (retry_resp.content or "").strip(),
+                    )
+                    retry_clean, _, _ = detect_output_hygiene(retry_pred, hygiene_cfg)
+                    if retry_clean and retry_pred:
+                        predicted = retry_pred
                 fail_reason = ""
             except Exception as e:
-                predicted = f"[LLM error: {e}]"
-                fail_reason = str(e)[:100]
+                logger.warning(
+                    "[rollout] backend failed for item=%s: %s",
+                    item.get("id", "?"),
+                    e,
+                )
+                expose_checks = bool(
+                    self.expose_expected_checks_to_target
+                    or item.get("expose_expected_checks_to_target")
+                )
+                predicted = fallback_skill_answer(
+                    question,
+                    checks,
+                    skill,
+                    expose_expected_checks=expose_checks,
+                )
+                response_status = "backend_error"
+                finish_reason = "exception"
+                backend_id = backend_id or str(getattr(backend, "backend_id", "") or "")
+                fail_reason = f"backend_error: {str(e)[:100]}"
         else:
             from ..rollout_helpers import fallback_skill_answer
 
@@ -422,6 +483,8 @@ class DEFAULTAdapter(EnvAdapter):
             "response_mode": item.get("response_mode", "answer"),
             "reflect_focus": item.get("reflect_focus", ""),
             "context_refs": list(item.get("context_refs") or []),
+            "context_mode": item.get("context_mode", ""),
+            "item_check_aliases": dict(item.get("check_aliases") or {}),
             "expected_checks": checks,
             "passed_checks": scores.get("passed_checks", []),
             "missed_checks": missed,
@@ -435,6 +498,13 @@ class DEFAULTAdapter(EnvAdapter):
             "fail_reason": fail_reason,
             "task_type": item.get("task_type", ""),
             "score_type": scores.get("score_type", item.get("scorer", "keyword")),
+            "scorer": item.get("scorer", "keyword"),
+            "scorer_config": dict(item.get("scorer_config") or {}),
+            "score_script": item.get("score_script", ""),
+            "scorer_script": item.get("scorer_script", ""),
+            "score_timeout_seconds": item.get("score_timeout_seconds"),
+            "_benchmark_dir": item.get("_benchmark_dir", ""),
+            "_item_dir": item.get("_item_dir", ""),
             "scorer_justification": scores.get("justification", ""),
             "score_error": scores.get("error", ""),
             **({"scorer_diagnostics": scores.get("diagnostics")} if scores.get("diagnostics") else {}),

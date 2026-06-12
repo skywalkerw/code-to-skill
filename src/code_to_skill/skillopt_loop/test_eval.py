@@ -145,6 +145,16 @@ def _result_report_item(
         "response_status": result.get("response_status", ""),
         "finish_reason": result.get("finish_reason", ""),
         "backend_id": result.get("backend_id", ""),
+        **(
+            {"output_hygiene_reason": result.get("output_hygiene_reason")}
+            if result.get("output_hygiene_reason")
+            else {}
+        ),
+        **(
+            {"output_hygiene_patterns": list(result.get("output_hygiene_patterns") or [])}
+            if result.get("output_hygiene_patterns")
+            else {}
+        ),
     }
 
 
@@ -179,6 +189,7 @@ def _report_summary(per_item: list[dict]) -> dict:
     scorer_counts: dict[str, int] = {}
     failed_ids: list[str] = []
     missing_trace_ids: list[str] = []
+    prompt_echo_ids: list[str] = []
     for row in per_item:
         scorer = str(row.get("scorer") or "keyword")
         scorer_counts[scorer] = scorer_counts.get(scorer, 0) + 1
@@ -186,12 +197,16 @@ def _report_summary(per_item: list[dict]) -> dict:
             failed_ids.append(str(row.get("id") or ""))
         if row.get("trace_missing"):
             missing_trace_ids.append(str(row.get("id") or ""))
+        if row.get("output_hygiene_reason") in ("prompt_echo", "tool_leak"):
+            prompt_echo_ids.append(str(row.get("id") or ""))
     return {
         "hard_passed": len(per_item) - len(failed_ids),
         "hard_failed": len(failed_ids),
         "failed_ids": failed_ids,
         "scorer_counts": scorer_counts,
         "trace_missing_ids": missing_trace_ids,
+        "prompt_echo_count": len(prompt_echo_ids),
+        "prompt_echo_ids": prompt_echo_ids,
     }
 
 
@@ -201,6 +216,7 @@ def evaluate_test_split(
     adapter: Any = None,
     target_backend: Any = None,
     output_dir: str = "",
+    hygiene_cfg: Any = None,
 ) -> dict:
     """在 held-out test split 上做最终评估。
 
@@ -229,6 +245,10 @@ def evaluate_test_split(
         results = adapter.rollout(
             best_skill, test_items, target_backend=target_backend,
         )
+        if hygiene_cfg is not None and getattr(hygiene_cfg, "enabled", False):
+            from .output_hygiene import apply_hygiene_to_rollout_results
+
+            results = apply_hygiene_to_rollout_results(results, hygiene_cfg)
     else:
         # Fallback 也走统一 scorer 路由，避免绕过 python_script / llm_judge。
         from .scoring import score_benchmark_item

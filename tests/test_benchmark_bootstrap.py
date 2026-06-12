@@ -76,6 +76,36 @@ def test_append_atom_rules_to_skill():
     assert "idempotency" in updated
 
 
+def test_append_atom_rules_to_skill_supports_configured_filters():
+    relevant = SkillAtom(
+        atom_id="a3",
+        kind="constraint",
+        claim="Loan repayment journal entries must include amount and account mapping.",
+        confidence=0.95,
+        status="accepted",
+        source_refs=[SourceRef(type="code", id="LoanTransactionDTO.java")],
+    )
+    irrelevant = SkillAtom(
+        atom_id="a4",
+        kind="coding_convention",
+        claim="Command handlers use constructor injection.",
+        confidence=0.95,
+        status="accepted",
+        source_refs=[SourceRef(type="code", id="Handler.java")],
+    )
+
+    updated = append_atom_rules_to_skill(
+        "# Skill\n",
+        {"merged_atoms": [relevant, irrelevant]},
+        min_confidence=0.8,
+        include_keywords=["journal", "loan"],
+        exclude_keywords=["constructor injection"],
+    )
+
+    assert "Loan repayment journal" in updated
+    assert "Command handlers" not in updated
+
+
 def test_load_m3_from_run(tmp_path):
     atoms_dir = tmp_path / "atoms"
     atoms_dir.mkdir()

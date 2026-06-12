@@ -23,6 +23,8 @@ class PipelineSettings(BaseModel):
     merge_atom_seeds_into_benchmark: bool = False
     append_atom_rules_to_skill: bool = False
     bootstrap_min_confidence: float = 0.8
+    atom_rule_include_keywords: list[str] = Field(default_factory=list)
+    atom_rule_exclude_keywords: list[str] = Field(default_factory=list)
     use_evidence_index: bool = True
     use_entrypoints: bool = True
     use_role_index: bool = True

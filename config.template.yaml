@@ -94,6 +94,45 @@ settings:
       write_skill_quality_report: true
       write_gate_decision_report: true
       write_run_quality_report: true
+    # 设计 08：输出卫生 / 规则库 / 代码诊断 / replay gate
+    output_hygiene:
+      enabled: true
+      retry_on_prompt_echo: true
+      hard_fail_on_persistent_echo: true
+      patterns:
+        - "^Task:\\s"
+        - "Skill reference:"
+        - "Code context:"
+        - "^Context references:"
+        - "Follow the skill document"
+    code_diagnosis:
+      enabled: true
+      max_context_files: 2
+      max_snippet_chars: 800
+      max_cases_per_step: 8
+      write_jsonl: true
+      require_code_facts_for_rules: false
+    warm_start:
+      from_best_skill: ""
+    rule_bank:
+      enabled: false
+      path: rule_bank/rules.jsonl
+      max_active_rules: 20
+      min_support_count: 1
+      min_support_score: 0.55
+      exclude_regressed: true
+      write_back: true
+    replay_gate:
+      enabled: true
+      pool_max_items: 12
+      min_hard_pass_rate: 1.0
+      reject_on_prompt_echo: true
+      reject_on_regression: true
+      on_regression: reject
+      include_rule_exemplars: true
+      include_prompt_echo_cases: true
+      external_pool_paths: []
+      pool_path: ""
     # 各阶段 LLM 输出 token 预算（须 ≤ backend.max_output_tokens）
     token_budgets:
       rollout: 8192
@@ -157,6 +196,8 @@ settings:
     merge_atom_seeds_into_benchmark: false
     append_atom_rules_to_skill: false
     bootstrap_min_confidence: 0.8
+    atom_rule_include_keywords: []  # 非空时仅追加命中关键词的 M3 atom claim
+    atom_rule_exclude_keywords: []  # 命中任一关键词时不追加到 initial_skill
     use_evidence_index: true
     use_entrypoints: true
     use_role_index: true

@@ -69,3 +69,28 @@ def test_rollout_parallel_runs_concurrently():
 
     assert peak >= 2
     assert elapsed < 8 * 0.08
+
+
+def test_rollout_backend_exception_uses_fallback_answer():
+    backend = MagicMock()
+    backend.invoke.side_effect = ValueError("bad parameter or other API misuse")
+
+    adapter = DEFAULTAdapter(use_llm=True, enable_code_tools=False, rollout_workers=1)
+    item = {
+        "id": "bad_api",
+        "question": "return marker TOKEN-42",
+        "expected_checks": ["TOKEN-42"],
+        "context_mode": "none",
+    }
+
+    result = adapter.rollout(
+        "# Skill\nReturn the requested marker.",
+        [item],
+        target_backend=backend,
+    )[0]
+
+    assert "[LLM error" not in result["predicted_answer"]
+    assert "TOKEN-42" in result["predicted_answer"]
+    assert result["response_status"] == "backend_error"
+    assert result["finish_reason"] == "exception"
+    assert result["fail_reason"].startswith("backend_error:")

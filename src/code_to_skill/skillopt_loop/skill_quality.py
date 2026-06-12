@@ -263,6 +263,7 @@ def build_run_quality_report(
     best_score: float,
     history: list[dict],
     test_report: dict | None = None,
+    optimization_dir: str = "",
     quality_config: QualityGateConfig | None = None,
 ) -> dict[str, Any]:
     """Aggregate run-level quality metrics for inspect run."""
@@ -296,7 +297,41 @@ def build_run_quality_report(
             except (OSError, json.JSONDecodeError, TypeError):
                 pass
 
+    from pathlib import Path
+
+    from .code_diagnosis import collect_diagnosis_run_metrics
+
+    diag_root = optimization_dir
+    if not diag_root and test_report and test_report.get("report_path"):
+        diag_root = str(Path(test_report["report_path"]).resolve().parent.parent)
+    diagnosis_metrics = collect_diagnosis_run_metrics(diag_root) if diag_root else {
+        "diagnosis_steps": 0,
+        "diagnosis_count": 0,
+        "hard_failure_coverage": 0.0,
+        "code_facts_rate": 0.0,
+        "needs_review_count": 0,
+    }
+
+    replay_hard = 0.0
+    replay_regressed_ids: list[str] = []
+    try:
+        from pathlib import Path
+        opt_dir = Path(test_report.get("report_path", "")).parent.parent if test_report else None
+        if opt_dir and opt_dir.name == "final_eval":
+            opt_dir = opt_dir.parent
+        if opt_dir and (opt_dir / "steps").is_dir():
+            replay_files = sorted((opt_dir / "steps").glob("step_*/replay_eval_report.json"))
+            if replay_files:
+                import json
+                last_replay = json.loads(replay_files[-1].read_text(encoding="utf-8"))
+                replay_hard = float(last_replay.get("hard", 0) or 0)
+                replay_regressed_ids = list(last_replay.get("regressed_ids") or [])
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        pass
+
     recommendations: list[str] = []
+    if replay_regressed_ids:
+        recommendations.append(f"Replay regression on: {', '.join(replay_regressed_ids[:5])}")
     if not monotonic:
         recommendations.append("Do not overwrite best during knowledge_accept.")
     if best_scan.get("leakage_count", 0) > 0 or best_scan.get("case_id_count", 0) > 0:
@@ -318,5 +353,8 @@ def build_run_quality_report(
         "duplicate_rule_count": best_scan.get("duplicate_rule_count", 0),
         "estimated_tokens": best_scan.get("estimated_tokens", 0),
         "hard_failures": hard_failures,
+        "replay_hard": round(replay_hard, 3),
+        "replay_regressed_ids": replay_regressed_ids,
+        "diagnosis_metrics": diagnosis_metrics,
         "recommendations": recommendations,
     }

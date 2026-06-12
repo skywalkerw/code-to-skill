@@ -171,6 +171,12 @@ def run_skillopt_loop(
     if judge_id and judge_backend:
         logger.info("[M4] judge backend: %s", judge_id)
 
+    from .output_hygiene import OutputHygieneConfig
+
+    hygiene_cfg = OutputHygieneConfig.from_skillopt_settings(
+        skillopt_settings if isinstance(skillopt_settings, dict) else None,
+    )
+
     adapter.setup({
         "code_repos": code_repos,
         "graph_db_path": graph_db_path,
@@ -186,6 +192,7 @@ def run_skillopt_loop(
         "expose_expected_checks_to_target": bool(
             (skillopt_settings or {}).get("expose_expected_checks_to_target", False)
         ),
+        "output_hygiene": hygiene_cfg,
     })
     code_tools = getattr(adapter, "code_tools", None)
     if code_tools and getattr(code_tools, "enabled", False):
@@ -210,6 +217,11 @@ def run_skillopt_loop(
     train_items = resolved.train
     selection_items = resolved.selection
     test_items = resolved.test
+    replay_item_registry = {
+        str(item.get("id")): item
+        for item in (train_items + selection_items)
+        if item.get("id")
+    }
     splits.log_validation()
 
     from code_to_skill.cli.pipeline_config import (
@@ -317,6 +329,79 @@ def run_skillopt_loop(
     skill_gate_cfg = SkillGateConfig.from_skillopt_settings(
         skillopt_settings if isinstance(skillopt_settings, dict) else None,
     )
+    from .output_hygiene import (
+        apply_hygiene_to_rollout_results,
+        build_hygiene_report,
+        write_output_hygiene_report,
+    )
+    from .code_diagnosis import (
+        CodeDiagnosisConfig,
+        append_diagnoses_jsonl,
+        diagnose_failures,
+        format_diagnoses_for_reflect,
+    )
+    from .rule_bank import (
+        RuleBankConfig,
+        inject_rule_bank_into_skill,
+        load_rules,
+        record_rule_bank_acceptance,
+        record_rule_bank_regression,
+        should_record_rule_bank_regression,
+        upsert_candidate_rules,
+        warm_start_rule_bank,
+    )
+    from .diagnosis_rules import (
+        diagnoses_to_candidate_rules,
+        format_candidate_rules_for_reflect,
+        write_diagnosis_step_summary,
+    )
+    from .eval_hygiene import rollout_with_hygiene
+    from .replay_gate import (
+        ReplayGateConfig,
+        apply_replay_results_to_pool,
+        default_pool_path,
+        filter_replay_pool,
+        load_replay_pool,
+        merge_external_replay_pools,
+        merge_rule_exemplars_into_pool,
+        run_replay_gate,
+        save_replay_pool,
+        update_replay_pool,
+        write_replay_eval_report,
+    )
+
+    diagnosis_cfg = CodeDiagnosisConfig.from_skillopt_settings(
+        skillopt_settings if isinstance(skillopt_settings, dict) else None,
+    )
+    rule_bank_cfg = RuleBankConfig.from_skillopt_settings(
+        skillopt_settings if isinstance(skillopt_settings, dict) else None,
+    )
+    replay_cfg = ReplayGateConfig.from_skillopt_settings(
+        skillopt_settings if isinstance(skillopt_settings, dict) else None,
+    )
+    if not replay_cfg.pool_path:
+        replay_cfg.pool_path = default_pool_path(output_dir)
+    warm_start_path = ""
+    if isinstance(skillopt_settings, dict):
+        warm_start_path = str(
+            (skillopt_settings.get("warm_start") or {}).get("from_best_skill") or ""
+        ).strip()
+    if warm_start_path and rule_bank_cfg.enabled and rule_bank_cfg.path:
+        promoted = warm_start_rule_bank(
+            warm_start_path,
+            rule_bank_path=rule_bank_cfg.path,
+            source_run="warm_start",
+            quality_config=quality_cfg,
+        )
+        if promoted:
+            logger.info("[M4] warm_start: promoted %d rules from %s", len(promoted), warm_start_path)
+    if rule_bank_cfg.enabled:
+        rb_rules = load_rules(rule_bank_cfg.path)
+        if rb_rules:
+            initial_skill = inject_rule_bank_into_skill(
+                initial_skill, rb_rules, rule_bank_cfg,
+            )
+            logger.info("[M4] rule bank: injected %d active rules", len(rb_rules))
     trace_pool = None
     rejected_buf = None
     rule_attr = None
@@ -472,15 +557,21 @@ def run_skillopt_loop(
                 len(initial_skill), len(train_items), len(selection_items),
                 num_epochs, batch_size, accumulation)
     if selection_items and not resume:
-        eval_result = adapter.evaluate(current_skill, selection_items, target_backend=backend_mgr.target)
-        current_hard = eval_result["accuracy"]
-        current_soft = eval_result["soft"]
+        init_eval_results, current_hard, current_soft = rollout_with_hygiene(
+            adapter,
+            current_skill,
+            selection_items,
+            target_backend=backend_mgr.target,
+            hygiene_cfg=hygiene_cfg,
+        )
         init_decision = gate.evaluate(current_hard, current_soft, 0.0, 0.0)
         current_score = init_decision.candidate_score
         best_score = init_decision.candidate_score
 
         logger.info("[M4] 初始评分: hard=%.3f soft=%.3f acc=%.3f f1=%.3f (gate=%.3f [%s])",
-                     current_hard, current_soft, eval_result["accuracy"], eval_result["f1"],
+                     current_hard, current_soft,
+                     sum(float(r.get("accuracy", r.get("hard", 0))) for r in init_eval_results) / max(len(init_eval_results), 1),
+                     sum(float(r.get("f1", 0.0)) for r in init_eval_results) / max(len(init_eval_results), 1),
                      best_score, gate.metric)
         curve.record_init(
             selection_hard=current_hard,
@@ -501,6 +592,8 @@ def run_skillopt_loop(
         for batch_start in range(batch_begin, len(train_items), batch_size):
             batch = train_items[batch_start:batch_start + batch_size]
             step_counter += 1
+            step_diagnoses: list[dict] = []
+            candidate_rules: list[dict] = []
 
             # 1. Rollout（通过 adapter）
             results = adapter.rollout(current_skill, batch, target_backend=backend_mgr.target)
@@ -514,6 +607,20 @@ def run_skillopt_loop(
                 continue
 
             all_results = acc.consume()
+            for row in all_results:
+                row["step"] = step_counter
+            if hygiene_cfg.enabled:
+                all_results = apply_hygiene_to_rollout_results(all_results, hygiene_cfg)
+                hygiene_report = build_hygiene_report(
+                    all_results, step=step_counter, config=hygiene_cfg,
+                )
+                write_output_hygiene_report(output_dir, step_counter, hygiene_report)
+            if replay_cfg.enabled:
+                replay_pool = load_replay_pool(replay_cfg.pool_path)
+                replay_pool = update_replay_pool(
+                    replay_pool, all_results, max_items=replay_cfg.pool_max_items,
+                )
+                save_replay_pool(replay_cfg.pool_path, replay_pool)
             rollout_avg = sum(r["soft"] for r in all_results) / max(len(all_results), 1)
             passed = sum(1 for r in all_results if r["hard"] == 1)
             failed = sum(1 for r in all_results if r["hard"] == 0)
@@ -565,6 +672,44 @@ def run_skillopt_loop(
                 for rec in rejected_buf.load_recent(15):
                     step_buffer = step_buffer or []
                     step_buffer.append({"type": "rejected_buffer", "record": rec})
+            step_diagnoses = diagnose_failures(
+                all_results,
+                step=step_counter,
+                code_tools=code_tools,
+                graph_sidecars=graph_sidecars,
+                hygiene_cfg=hygiene_cfg,
+                config=diagnosis_cfg,
+                check_aliases=(skillopt_settings or {}).get("check_aliases")
+                if isinstance(skillopt_settings, dict) else None,
+            )
+            candidate_rules = diagnoses_to_candidate_rules(
+                step_diagnoses,
+                quality_config=quality_cfg,
+                require_code_facts=diagnosis_cfg.require_code_facts_for_rules,
+            )
+            if step_diagnoses:
+                write_diagnosis_step_summary(
+                    output_dir,
+                    step_counter,
+                    step_diagnoses,
+                    candidate_rules=candidate_rules,
+                )
+            if diagnosis_cfg.write_jsonl and step_diagnoses:
+                diag_dir = os.path.join(
+                    output_dir, "code_diagnosis", f"step_{step_counter:04d}",
+                )
+                append_diagnoses_jsonl(
+                    os.path.join(diag_dir, "code_diagnosis.jsonl"),
+                    step_diagnoses,
+                )
+            diagnosis_context = format_diagnoses_for_reflect(step_diagnoses)
+            rules_context = format_candidate_rules_for_reflect(candidate_rules)
+            if rules_context:
+                diagnosis_context = (
+                    f"{diagnosis_context}\n\n{rules_context}".strip()
+                    if diagnosis_context
+                    else rules_context
+                )
             reflect_result = reflect_llm(
                 all_results, current_skill,
                 rejected_edits=rejected_edits,
@@ -575,6 +720,7 @@ def run_skillopt_loop(
                 max_tool_rounds=max_tool_rounds,
                 graph_sidecars=graph_sidecars,
                 adapter=adapter,
+                code_diagnosis_context=diagnosis_context,
             )
             patches = reflect_result.patches
             if proposal_patches:
@@ -680,14 +826,14 @@ def run_skillopt_loop(
                 logger.info("[M4] evaluate: CACHED hard=%.3f soft=%.3f (epoch=%d step=%d)",
                              candidate_hard, candidate_soft, cached.get("epoch", 0), cached.get("step", 0))
             elif selection_items:
-                selection_eval_results = adapter.rollout(
-                    candidate_content, selection_items, target_backend=backend_mgr.target,
+                selection_eval_results, candidate_hard, candidate_soft = rollout_with_hygiene(
+                    adapter,
+                    candidate_content,
+                    selection_items,
+                    target_backend=backend_mgr.target,
+                    hygiene_cfg=hygiene_cfg,
                 )
                 n_sel_eval = max(len(selection_eval_results), 1)
-                candidate_hard = sum(
-                    float(r.get("accuracy", r.get("hard", 0))) for r in selection_eval_results
-                ) / n_sel_eval
-                candidate_soft = sum(float(r.get("soft", 0)) for r in selection_eval_results) / n_sel_eval
                 candidate_gate = select_gate_score(
                     candidate_hard, candidate_soft,
                     metric=gate.metric, mixed_weight=gate.mixed_weight,
@@ -705,6 +851,7 @@ def run_skillopt_loop(
             current_score_before = current_score
             state_target = "none"
             quality_report: dict = {}
+            replay_report: dict = {}
 
             # Gate — uses the gate metric projection
             decision = gate.evaluate(
@@ -753,18 +900,14 @@ def run_skillopt_loop(
                             knowledge_soft = cached_knowledge.get("soft", cached_knowledge["gate_score"])
                             knowledge_gate = cached_knowledge["gate_score"]
                         elif selection_items:
-                            knowledge_results = adapter.rollout(
+                            knowledge_results, knowledge_hard, knowledge_soft = rollout_with_hygiene(
+                                adapter,
                                 knowledge_content,
                                 selection_items,
                                 target_backend=backend_mgr.target,
+                                hygiene_cfg=hygiene_cfg,
                             )
                             n_k = max(len(knowledge_results), 1)
-                            knowledge_hard = sum(
-                                float(r.get("accuracy", r.get("hard", 0))) for r in knowledge_results
-                            ) / n_k
-                            knowledge_soft = sum(
-                                float(r.get("soft", 0)) for r in knowledge_results
-                            ) / n_k
                             knowledge_gate = select_gate_score(
                                 knowledge_hard,
                                 knowledge_soft,
@@ -867,16 +1010,14 @@ def run_skillopt_loop(
                     state_target = "none"
                     decision.reason = q_fail
                 elif selection_items and quality_report.get("sanitized"):
-                    selection_eval_results = adapter.rollout(
-                        candidate_content, selection_items, target_backend=backend_mgr.target,
+                    selection_eval_results, candidate_hard, candidate_soft = rollout_with_hygiene(
+                        adapter,
+                        candidate_content,
+                        selection_items,
+                        target_backend=backend_mgr.target,
+                        hygiene_cfg=hygiene_cfg,
                     )
                     n_re = max(len(selection_eval_results), 1)
-                    candidate_hard = sum(
-                        float(r.get("accuracy", r.get("hard", 0))) for r in selection_eval_results
-                    ) / n_re
-                    candidate_soft = sum(
-                        float(r.get("soft", 0)) for r in selection_eval_results
-                    ) / n_re
                     candidate_gate = select_gate_score(
                         candidate_hard, candidate_soft,
                         metric=gate.metric, mixed_weight=gate.mixed_weight,
@@ -900,6 +1041,80 @@ def run_skillopt_loop(
                         decision.reason = re_decision.reason
                         state_target = "best" if action == "accept_new_best" else "current"
 
+            if action in accept_actions and replay_cfg.enabled:
+                replay_pool = load_replay_pool(replay_cfg.pool_path)
+                if replay_cfg.external_pool_paths:
+                    replay_pool = merge_external_replay_pools(
+                        replay_pool,
+                        replay_cfg.external_pool_paths,
+                        max_items=replay_cfg.pool_max_items,
+                    )
+                if replay_cfg.include_rule_exemplars and rule_bank_cfg.enabled:
+                    replay_pool = merge_rule_exemplars_into_pool(
+                        replay_pool,
+                        load_rules(rule_bank_cfg.path),
+                        max_items=replay_cfg.pool_max_items,
+                        item_registry=replay_item_registry,
+                    )
+                replay_pool = filter_replay_pool(replay_cfg, replay_pool)
+                if replay_pool:
+                    replay_report = run_replay_gate(
+                        candidate_content,
+                        replay_pool,
+                        adapter=adapter,
+                        target_backend=backend_mgr.target,
+                        hygiene_cfg=hygiene_cfg,
+                        config=replay_cfg,
+                        step=step_counter,
+                        candidate_hash=candidate_hash,
+                    )
+                    updated_pool, _, _ = apply_replay_results_to_pool(
+                        replay_pool,
+                        replay_report.get("results") or [],
+                        step=step_counter,
+                    )
+                    save_replay_pool(replay_cfg.pool_path, updated_pool)
+                    write_replay_eval_report(output_dir, step_counter, replay_report)
+                    if not replay_report.get("passed"):
+                        replay_reason = replay_report.get("reason", "failed")
+                        downgrade = (
+                            replay_reason == "replay_regression_accept_current"
+                            and action == "accept_new_best"
+                        )
+                        if downgrade:
+                            for r in ranked:
+                                buffer.record_rejected_edit(step_counter, r.edit)
+                            action = "accept"
+                            state_target = "current"
+                            candidate_content = current_skill
+                            candidate_hash = compute_semantic_hash(current_skill)
+                            candidate_hard = current_hard
+                            candidate_soft = current_soft
+                            candidate_gate = current_score
+                            decision.reason = "replay_regression_downgrade_to_current"
+                            logger.info("[M4] replay gate: downgrade accept_new_best → accept")
+                        else:
+                            for r in ranked:
+                                buffer.record_rejected_edit(step_counter, r.edit)
+                            if rejected_buf is not None:
+                                for r in ranked:
+                                    rejected_buf.append(
+                                        edit=r.edit,
+                                        step=step_counter,
+                                        reason=replay_reason,
+                                        before_score=current_score,
+                                        after_score=candidate_gate,
+                                    )
+                            action = "reject"
+                            state_target = "none"
+                            decision.reason = f"replay_gate: {replay_reason}"
+                        logger.info(
+                            "[M4] replay gate: ✗ %s rate=%.2f echo=%d",
+                            replay_reason,
+                            replay_report.get("hard_pass_rate", 0),
+                            replay_report.get("prompt_echo_count", 0),
+                        )
+
             if action == "accept_new_best" or action == "accept_new_best_from_knowledge":
                 if skill_gate_cfg.strict_best_monotonic:
                     assert candidate_gate >= best_score_before - 1e-9 or not selection_items
@@ -922,6 +1137,44 @@ def run_skillopt_loop(
                 current_skill = candidate_content
 
             if action in accept_actions:
+                if (
+                    rule_bank_cfg.enabled
+                    and rule_bank_cfg.write_back
+                    and rule_bank_cfg.path
+                ):
+                    accepted_train_ids = [
+                        str(r.get("id"))
+                        for r in all_results
+                        if r.get("id") and int(r.get("hard", 0) or 0) == 1
+                    ]
+                    n_new_candidate_rules = upsert_candidate_rules(
+                        candidate_rules,
+                        rule_bank_cfg.path,
+                        source_run=os.path.basename(output_dir),
+                        step=step_counter,
+                        accepted_item_ids=accepted_train_ids,
+                    )
+                    n_rules = record_rule_bank_acceptance(
+                        current_skill,
+                        rule_bank_cfg.path,
+                        source_run=os.path.basename(output_dir),
+                        step=step_counter,
+                        replay_fixed_ids=list(replay_report.get("fixed_ids") or []),
+                    )
+                    total_rules = n_rules + n_new_candidate_rules
+                    if should_record_rule_bank_regression(
+                        action=action,
+                        replay_report=replay_report,
+                        accepted_candidate_hash=candidate_hash,
+                        accepted_actions=accept_actions,
+                    ):
+                        n_regressed = record_rule_bank_regression(
+                            rule_bank_cfg.path,
+                            list(replay_report.get("regressed_ids") or []),
+                        )
+                        total_rules += n_regressed
+                    if total_rules:
+                        logger.info("[M4] rule bank write_back: %d rules touched", total_rules)
                 if (
                     rule_attr is not None
                     and se_cfg.attribution_enabled
@@ -984,6 +1237,11 @@ def run_skillopt_loop(
                         "current_score": current_score,
                     },
                     quality_gate=quality_report,
+                    replay_gate=replay_report if replay_report else None,
+                    diagnosis_summary={
+                        "count": len(step_diagnoses),
+                        "candidate_rules": len(candidate_rules),
+                    } if step_diagnoses else None,
                 )
 
             # 记录 rollout 中的失败/成功任务
@@ -1003,6 +1261,9 @@ def run_skillopt_loop(
                 "epoch": epoch + 1,
                 "rollout_score": round(rollout_avg, 3),
                 "selection_score": round(candidate_gate, 3),
+                "diagnosis_count": len(step_diagnoses),
+                "candidate_rule_count": len(candidate_rules),
+                "replay_passed": replay_report.get("passed") if replay_report else None,
                 "gate_action": action,
                 "gate_reason": decision.reason,
                 "state_target": state_target,
@@ -1271,11 +1532,19 @@ def run_skillopt_loop(
         and selection_items
         and current_skill.strip() != best_skill.strip()
     ):
-        curr_eval_results = adapter.rollout(
-            current_skill, selection_items, target_backend=backend_mgr.target,
+        curr_eval_results, _, _ = rollout_with_hygiene(
+            adapter,
+            current_skill,
+            selection_items,
+            target_backend=backend_mgr.target,
+            hygiene_cfg=hygiene_cfg,
         )
-        best_eval_results = adapter.rollout(
-            best_skill, selection_items, target_backend=backend_mgr.target,
+        best_eval_results, _, _ = rollout_with_hygiene(
+            adapter,
+            best_skill,
+            selection_items,
+            target_backend=backend_mgr.target,
+            hygiene_cfg=hygiene_cfg,
         )
         n_c = max(len(curr_eval_results), 1)
         n_b = max(len(best_eval_results), 1)
@@ -1313,6 +1582,7 @@ def run_skillopt_loop(
             adapter=adapter,
             target_backend=backend_mgr.target,
             output_dir=os.path.join(output_dir, "final_eval"),
+            hygiene_cfg=hygiene_cfg if hygiene_cfg.enabled else None,
         )
         logger.info("[M4] Test eval: score=%.3f hard=%.3f n=%d",
                      test_report["test_score"], test_report["test_hard"], test_report["n_items"])
@@ -1346,6 +1616,7 @@ def run_skillopt_loop(
             best_score=best_score,
             history=history,
             test_report=test_report or None,
+            optimization_dir=output_dir,
             quality_config=quality_cfg,
         )
         rq_path = os.path.join(output_dir, "run_quality_report.json")
@@ -1376,6 +1647,18 @@ def run_skillopt_loop(
         with open(os.path.join(output_dir, "test_report.json"), "w") as f:
             json.dump(test_report, f, indent=2, ensure_ascii=False)
     cache.save()
+
+    if rule_bank_cfg.enabled and rule_bank_cfg.write_back and rule_bank_cfg.path:
+        from .rule_bank import promote_rules_from_skill
+
+        promoted = promote_rules_from_skill(
+            best_skill,
+            source_run=os.path.basename(effective_run_root.rstrip(os.sep)) or "run",
+            path=rule_bank_cfg.path,
+            quality_config=quality_cfg,
+        )
+        if promoted:
+            logger.info("[M4] finalize rule bank: promoted %d rules", len(promoted))
 
     logger.info("[M4] SkillOpt 完成: %d steps, best_score=%.3f", step_counter, best_score)
     return final
@@ -1441,6 +1724,8 @@ def _write_gate_decision_report(
     before: dict,
     after: dict,
     quality_gate: dict,
+    replay_gate: dict | None = None,
+    diagnosis_summary: dict | None = None,
 ) -> None:
     step_dir = os.path.join(output_dir, "steps", f"step_{step:04d}")
     os.makedirs(step_dir, exist_ok=True)
@@ -1458,6 +1743,16 @@ def _write_gate_decision_report(
             "case_id_count": quality_gate.get("case_id_count", 0),
         },
     }
+    if replay_gate:
+        payload["replay_gate"] = {
+            k: replay_gate.get(k)
+            for k in (
+                "passed", "reason", "hard", "soft", "fixed_ids",
+                "regressed_ids", "prompt_echo_ids", "replay_items",
+            )
+        }
+    if diagnosis_summary:
+        payload["diagnosis"] = diagnosis_summary
     with open(os.path.join(step_dir, "gate_decision.json"), "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False)
 

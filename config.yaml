@@ -33,7 +33,7 @@ settings:
     judge_backend: null
     # rollout_backend: qwen-local   # 覆盖 routes.target，为 rollout 指定独立 LLM
     # optimizer_backend: deepseek   # 覆盖 routes.optimizer
-    num_epochs: 2           # 完整集先跑 2 轮验证；充分训练可改回 5
+    num_epochs: 5           # 完整集先跑 2 轮验证；充分训练可改回 5
     batch_size: 5           # 完整集 train=15，每 step 5 条
     edit_budget: 4          # 论文推荐 L=4
     budget_strategy: cosine # 论文消融：cosine/constant 均优于无 budget
@@ -45,8 +45,8 @@ settings:
     slow_update_gate: true  # slow update 须经 selection gate（论文默认）
     enable_code_tools: true
     max_tool_rounds: 5
-    rollout_max_tool_rounds: 2
-    rollout_workers: 4
+    rollout_max_tool_rounds: 5
+    rollout_workers: 8
     expose_expected_checks_to_target: false
     check_aliases:
       资产: ["设备资产", "固定资产", "固定资产科目"]
@@ -70,6 +70,38 @@ settings:
       write_skill_quality_report: true
       write_gate_decision_report: true
       write_run_quality_report: true
+    output_hygiene:
+      enabled: true
+      retry_on_prompt_echo: true
+      hard_fail_on_persistent_echo: true
+    code_diagnosis:
+      enabled: true
+      max_context_files: 2
+      max_snippet_chars: 800
+      max_cases_per_step: 8
+      write_jsonl: true
+      require_code_facts_for_rules: false
+    warm_start:
+      from_best_skill: ""
+    rule_bank:
+      enabled: true
+      path: demo-project/rule_bank/rules.jsonl
+      max_active_rules: 20
+      min_support_count: 1
+      min_support_score: 0.55
+      exclude_regressed: true
+      write_back: true
+    replay_gate:
+      enabled: true
+      pool_max_items: 12
+      min_hard_pass_rate: 1.0
+      reject_on_prompt_echo: true
+      reject_on_regression: true
+      on_regression: reject
+      include_rule_exemplars: true
+      include_prompt_echo_cases: true
+      external_pool_paths: []
+      pool_path: ""
     token_budgets:
       rollout: 8192
       reflect_failure: 16384
@@ -135,6 +167,40 @@ settings:
     merge_atom_seeds_into_benchmark: false
     append_atom_rules_to_skill: true
     bootstrap_min_confidence: 0.9
+    atom_rule_include_keywords:
+      - 会计
+      - 凭证
+      - 科目
+      - 借方
+      - 贷方
+      - 借贷
+      - 金额
+      - 透支
+      - 手续费
+      - 逾期费
+      - 罚款
+      - Charge
+      - loan
+      - savings
+      - journal
+      - transaction
+      - accounting
+      - ledger
+      - account
+      - overdraft
+      - fee
+      - penalty
+      - repayment
+      - disbursement
+      - accrual
+      - LoanTransactionDTO
+      - SavingsAccountTransactionDTO
+    atom_rule_exclude_keywords:
+      - command handler
+      - constructor injection
+      - "@Service"
+      - 状态变更
+      - 审计日志
     use_evidence_index: true
     use_entrypoints: true
     use_role_index: true

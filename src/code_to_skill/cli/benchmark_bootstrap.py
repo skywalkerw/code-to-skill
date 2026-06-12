@@ -100,11 +100,24 @@ def append_atom_rules_to_skill(
     m3: dict,
     *,
     min_confidence: float = 0.8,
+    include_keywords: list[str] | None = None,
+    exclude_keywords: list[str] | None = None,
 ) -> str:
-    """将高置信 atom claims 追加为 ``### Auto-suggested rules`` 附录。"""
+    """将高置信 atom claims 追加为 ``### Auto-suggested rules`` 附录。
+
+    include/exclude 为空时保持旧行为；有配置时按项目配置过滤，避免在通用代码
+    中固化目标项目领域词。
+    """
+    include = _normalize_keywords(include_keywords)
+    exclude = _normalize_keywords(exclude_keywords)
     atoms = [
         a for a in m3.get("merged_atoms", [])
-        if a.confidence >= min_confidence and a.status == "accepted" and a.claim.strip()
+        if (
+            a.confidence >= min_confidence
+            and a.status == "accepted"
+            and a.claim.strip()
+            and _atom_rule_allowed(a, include_keywords=include, exclude_keywords=exclude)
+        )
     ]
     if not atoms:
         return skill
@@ -125,3 +138,28 @@ def append_atom_rules_to_skill(
     for atom in atoms[:30]:
         lines.append(f"- {atom.claim.strip()}")
     return "\n".join(lines) + "\n"
+
+
+def _normalize_keywords(keywords: list[str] | None) -> list[str]:
+    return [str(k).strip().lower() for k in (keywords or []) if str(k).strip()]
+
+
+def _atom_rule_allowed(
+    atom: SkillAtom,
+    *,
+    include_keywords: list[str],
+    exclude_keywords: list[str],
+) -> bool:
+    text = " ".join([
+        atom.claim or "",
+        atom.action or "",
+        atom.negative_rule or "",
+        atom.evidence_summary or "",
+        " ".join(atom.checks or []),
+        " ".join(str(ref.id) for ref in (atom.source_refs or [])),
+    ]).lower()
+    if exclude_keywords and any(keyword in text for keyword in exclude_keywords):
+        return False
+    if include_keywords and not any(keyword in text for keyword in include_keywords):
+        return False
+    return True

@@ -15,7 +15,7 @@ def _read_json(path: Path) -> dict | list | None:
 
 
 def _quality_config_for_inspect() -> Any:
-    """Load quality_gate from project config; fallback for demo Fineract runs."""
+    """Load quality_gate from project config."""
     from code_to_skill.skillopt_loop.skill_quality import QualityGateConfig
 
     cfg_path = os.environ.get("SKILL_LAB_CONFIG_PATH", "config.yaml")
@@ -33,9 +33,7 @@ def _quality_config_for_inspect() -> Any:
             se_max_rules=int(hygiene.get("max_rules", 40) or 40),
         )
     except (OSError, ValueError, TypeError, ImportError):
-        return QualityGateConfig(
-            benchmark_id_patterns=[r"\bjv_[a-z0-9_]+\b"],
-        )
+        return QualityGateConfig()
 
 
 def build_run_quality_from_artifacts(
@@ -130,6 +128,7 @@ def summarize_run(
     rule_attribution: bool = False,
     frontier: bool = False,
     validate_self_evolution: bool = False,
+    show_diagnosis: bool = False,
 ) -> list[str]:
     """生成 run 目录的人类可读摘要行。"""
     lines: list[str] = []
@@ -197,7 +196,110 @@ def summarize_run(
             f"n={test_report.get('n_items', 0)}"
         )
 
+    if show_diagnosis:
+        diag_root = opt / "code_diagnosis"
+        if diag_root.is_dir():
+            diag_files = sorted(diag_root.glob("step_*/code_diagnosis.jsonl"))
+            summary_files = sorted(diag_root.glob("step_*/summary.json"))
+            lines.append(f"Code diagnosis: {len(diag_files)} steps")
+            if summary_files:
+                last_sum = _read_json(summary_files[-1])
+                if isinstance(last_sum, dict):
+                    lines.append(
+                        f"  last summary: n={last_sum.get('diagnosis_count', 0)} "
+                        f"candidate_rules={last_sum.get('candidate_rule_count', 0)} "
+                        f"needs_review={last_sum.get('needs_review_count', 0)}"
+                    )
+            if diag_files:
+                last = diag_files[-1]
+                rows = []
+                with open(last, encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            try:
+                                rows.append(json.loads(line))
+                            except json.JSONDecodeError:
+                                pass
+                for row in rows[:5]:
+                    if isinstance(row, dict):
+                        cause = str(row.get("failure_cause") or row.get("general_rule") or "")[:80]
+                        lines.append(
+                            f"  {row.get('item_id', '?')}: "
+                            f"type={row.get('failure_type')} "
+                            f"status={row.get('status', '?')}"
+                        )
+                        if cause:
+                            lines.append(f"    cause: {cause}")
+        replay_pool = _read_json(opt / "replay_pool.json")
+        if isinstance(replay_pool, dict):
+            items = replay_pool.get("items") or []
+            lines.append(f"Replay pool: {len(items)} items")
+        steps_dir = opt / "steps"
+        hygiene_files = (
+            sorted(steps_dir.glob("step_*/output_hygiene_report.json"))
+            if steps_dir.is_dir()
+            else []
+        )
+        if hygiene_files:
+            last_h = _read_json(hygiene_files[-1])
+            if isinstance(last_h, dict):
+                lines.append(
+                    f"Output hygiene (last step): echo={last_h.get('prompt_echo_count', 0)} "
+                    f"tool={last_h.get('tool_residue_count', 0)}"
+                )
+        replay_files = (
+            sorted(steps_dir.glob("step_*/replay_eval_report.json"))
+            if steps_dir.is_dir()
+            else []
+        )
+        if replay_files:
+            last_r = _read_json(replay_files[-1])
+            if isinstance(last_r, dict):
+                flag = "✓" if last_r.get("passed") else "✗"
+                lines.append(
+                    f"Replay gate (last step): {flag} "
+                    f"hard={last_r.get('hard', last_r.get('hard_pass_rate', 0)):.2f} "
+                    f"fixed={len(last_r.get('fixed_ids') or [])} "
+                    f"regressed={len(last_r.get('regressed_ids') or [])} "
+                    f"reason={last_r.get('reason', '?')}"
+                )
+        rb_path = None
+        try:
+            from code_to_skill.cli.config_loader import load_config
+
+            cfg_path = os.environ.get("SKILL_LAB_CONFIG_PATH", "config.yaml")
+            app = load_config(cfg_path)
+            rb = (app.settings.skillopt or {}).get("rule_bank") or {}
+            rb_path = rb.get("path")
+        except (OSError, ValueError, TypeError, ImportError):
+            rb_path = None
+        if rb_path:
+            from code_to_skill.skillopt_loop.rule_bank import (
+                RuleBankConfig,
+                load_rules,
+                select_active_rules,
+            )
+
+            rules = load_rules(rb_path)
+            if rules:
+                rb_cfg = RuleBankConfig(enabled=True, path=str(rb_path))
+                active = select_active_rules(rules, rb_cfg)
+                lines.append(f"Rule bank: {len(active)} active / {len(rules)} total")
+
     if isinstance(run_quality, dict):
+        dm = run_quality.get("diagnosis_metrics") or {}
+        if dm:
+            lines.append(
+                f"Diagnosis metrics: steps={dm.get('diagnosis_steps', 0)} "
+                f"code_facts_rate={dm.get('code_facts_rate', 0):.2f} "
+                f"needs_review={dm.get('needs_review_count', 0)}"
+            )
+        if run_quality.get("replay_hard"):
+            lines.append(
+                f"Replay hard: {run_quality.get('replay_hard', 0):.3f} "
+                f"regressed={run_quality.get('replay_regressed_ids', [])}"
+            )
         mono = run_quality.get("best_score_monotonic")
         mono_flag = "✓" if mono else "✗"
         lines.append(
@@ -341,6 +443,37 @@ def summarize_run(
             detail = chk.get("detail", "")
             lines.append(f"  {mark} {chk.get('name', '?')}: {detail}")
 
+    return lines
+
+
+def promote_rules_to_bank_from_run(
+    run_dir: Path,
+    *,
+    optimization_dir: str = "optimization",
+    rule_bank_path: str = "",
+) -> list[str]:
+    """从 run 的 best_skill.md 提升规则到 rule bank。"""
+    opt = run_dir / optimization_dir
+    best = opt / "best_skill.md"
+    lines: list[str] = []
+    if not best.is_file():
+        lines.append(f"❌ 未找到 {best}")
+        return lines
+    if not rule_bank_path.strip():
+        lines.append("❌ rule_bank.path 未配置")
+        return lines
+    from code_to_skill.skillopt_loop.rule_bank import promote_rules_from_skill
+
+    skill = best.read_text(encoding="utf-8")
+    source_run = f"{run_dir.name}/{optimization_dir}"
+    promoted = promote_rules_from_skill(
+        skill,
+        source_run=source_run,
+        path=rule_bank_path,
+    )
+    lines.append(f"Promoted {len(promoted)} rules → {rule_bank_path}")
+    for row in promoted:
+        lines.append(f"  + {row.get('rule_id')}: {str(row.get('text', ''))[:60]}")
     return lines
 
 

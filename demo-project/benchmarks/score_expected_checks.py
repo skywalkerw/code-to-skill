@@ -123,6 +123,36 @@ def _check_expected(
     return passed
 
 
+def _classify_failure_type(
+    predicted: str,
+    missed_checks: list[str],
+    aliases: dict[str, list[str]],
+) -> tuple[str, str]:
+    """Project-specific failure typing for code_diagnosis (via diagnostics)."""
+    if _is_no_voucher_response(predicted):
+        for check in missed_checks:
+            if "会计凭证" in str(check):
+                return (
+                    "output_format_error",
+                    "信息充分时应输出 ## 会计凭证，不得以澄清问题代替凭证。",
+                )
+    for check in missed_checks:
+        key = (check or "").strip().lower()
+        for alias in _aliases_for(check, aliases):
+            if _check_keyword(predicted, alias) and not _check_keyword(predicted, check):
+                return (
+                    "scorer_alias_gap",
+                    f"输出须覆盖评分关键词 «{check}»（可含已配置别名）。",
+                )
+    if missed_checks:
+        missed_s = ", ".join(str(c) for c in missed_checks[:5])
+        return (
+            "missing_business_rule",
+            f"根据代码与场景补充业务规则，确保输出包含: {missed_s}。",
+        )
+    return "unknown", ""
+
+
 def score(predicted: str, item: dict, global_aliases: dict[str, Any] | None) -> dict:
     # 与 skillopt_loop.scoring.score_rollout_result 对齐；非凭证回答只放过借贷专项。
     checks = list(item.get("expected_checks") or [])
@@ -153,6 +183,19 @@ def score(predicted: str, item: dict, global_aliases: dict[str, Any] | None) -> 
         else 0.0
     )
 
+    diagnostics: dict[str, Any] = {
+        "mode": "keyword",
+        "no_voucher_response": _is_no_voucher_response(predicted),
+        **({"alias_hits": alias_hits} if alias_hits else {}),
+    }
+    if hard == 0:
+        failure_type, suggested_rule = _classify_failure_type(
+            predicted, missed_checks, aliases,
+        )
+        diagnostics["failure_type"] = failure_type
+        if suggested_rule:
+            diagnostics["suggested_rule"] = suggested_rule
+
     return {
         "hard": hard,
         "soft": round(soft, 3),
@@ -162,11 +205,7 @@ def score(predicted: str, item: dict, global_aliases: dict[str, Any] | None) -> 
         "recall": round(recall, 3),
         "f1": round(f1, 3),
         "justification": f"keyword checks {passed}/{total}",
-        "diagnostics": {
-            "mode": "keyword",
-            "no_voucher_response": _is_no_voucher_response(predicted),
-            **({"alias_hits": alias_hits} if alias_hits else {}),
-        },
+        "diagnostics": diagnostics,
     }
 
 

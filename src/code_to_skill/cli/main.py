@@ -688,6 +688,12 @@ def run():
     "--suggest-skill-rules", "suggest_skill_rules", is_flag=True,
     help="将高置信 atom 追加到 initial_skill 的 Auto-suggested rules 节。",
 )
+@click.option(
+    "--warm-start-rule-bank",
+    "warm_start_rule_bank",
+    is_flag=True,
+    help="M4 前从 settings.skillopt.warm_start.from_best_skill 预热 rule bank",
+)
 @click.pass_context
 def run_all(
     ctx,
@@ -702,6 +708,7 @@ def run_all(
     bootstrap_benchmark: bool,
     merge_benchmark: bool,
     suggest_skill_rules: bool,
+    warm_start_rule_bank: bool,
 ):
     if dry_run:
         ctx.invoke(
@@ -942,6 +949,8 @@ def run_all(
                 initial_skill,
                 m3,
                 min_confidence=pipeline.bootstrap_min_confidence,
+                include_keywords=pipeline.atom_rule_include_keywords,
+                exclude_keywords=pipeline.atom_rule_exclude_keywords,
             )
             click.echo("   📝 已追加 Auto-suggested rules 到 initial_skill")
 
@@ -970,6 +979,19 @@ def run_all(
             {"path": r.path, "include": r.include, "exclude": r.exclude}
             for r in p.repos
         ]
+        skillopt_settings = dict(s.skillopt or {})
+        if warm_start_rule_bank:
+            rb = dict(skillopt_settings.get("rule_bank") or {})
+            rb["enabled"] = True
+            skillopt_settings["rule_bank"] = rb
+            ws = dict(skillopt_settings.get("warm_start") or {})
+            if not ws.get("from_best_skill"):
+                click.echo(
+                    "⚠️  --warm-start-rule-bank 需在 config 设置 "
+                    "settings.skillopt.warm_start.from_best_skill"
+                )
+            skillopt_settings["warm_start"] = ws
+
         m4 = run_skillopt_loop(
             initial_skill=initial_skill,
             benchmark_items=splits.train,
@@ -986,7 +1008,7 @@ def run_all(
             graph_role_hints=p.graph_role_hints,
             reflect_prompts=p.reflect_prompts,
             context_ref_path_rules=p.code_graph.context_ref_path_rules,
-            skillopt_settings=s.skillopt,
+            skillopt_settings=skillopt_settings,
             self_evolution_settings=s.self_evolution,
             self_evolve=bool(s.self_evolution.get("enabled")),
             **_skillopt_run_kwargs(s.skillopt, s.model_provider),
@@ -1290,6 +1312,12 @@ def run_bootstrap_benchmark(
 @click.option("--resume", is_flag=True, help="从 --output 目录 runtime_state.json 断点续训")
 @click.option("--self-evolve", is_flag=True, help="启用 M4 自进化（trace pool + proposals + 严格 gate）")
 @click.option("--trace-merge", is_flag=True, help="仅启用 trace 聚类归纳（不启用严格 gate / 归因）")
+@click.option(
+    "--warm-start-rule-bank",
+    "warm_start_rule_bank",
+    is_flag=True,
+    help="从 settings.skillopt.warm_start.from_best_skill 预热 rule bank",
+)
 def run_optimize_skill(
     benchmark: str | None,
     output: str | None,
@@ -1302,6 +1330,7 @@ def run_optimize_skill(
     resume: bool,
     self_evolve: bool,
     trace_merge: bool,
+    warm_start_rule_bank: bool,
 ):
     from code_to_skill.skillopt_loop import run_skillopt_loop
     from code_to_skill.skillopt_loop.token_budgets import configure_token_budgets
@@ -1351,6 +1380,19 @@ def run_optimize_skill(
     from .pipeline_config import parse_pipeline_settings
     pipeline = parse_pipeline_settings(s.pipeline)
 
+    skillopt_settings = dict(s.skillopt or {})
+    if warm_start_rule_bank:
+        rb = dict(skillopt_settings.get("rule_bank") or {})
+        rb["enabled"] = True
+        skillopt_settings["rule_bank"] = rb
+        ws = dict(skillopt_settings.get("warm_start") or {})
+        if not ws.get("from_best_skill"):
+            click.echo(
+                "⚠️  --warm-start-rule-bank 需在 config 设置 "
+                "settings.skillopt.warm_start.from_best_skill"
+            )
+        skillopt_settings["warm_start"] = ws
+
     result = run_skillopt_loop(
         initial_skill=initial_skill,
         benchmark_items=splits.train,
@@ -1367,7 +1409,7 @@ def run_optimize_skill(
         graph_role_hints=p.graph_role_hints,
         reflect_prompts=p.reflect_prompts,
         context_ref_path_rules=p.code_graph.context_ref_path_rules,
-        skillopt_settings=s.skillopt,
+        skillopt_settings=skillopt_settings,
         self_evolution_settings=s.self_evolution,
         self_evolve=self_evolve or bool(s.self_evolution.get("enabled")),
         trace_merge=trace_merge,
@@ -1603,6 +1645,21 @@ def inspect_file(artifact: str):
     is_flag=True,
     help="对比 optimization 与 --optimization-dir 的质量指标",
 )
+@click.option(
+    "--show-diagnosis",
+    is_flag=True,
+    help="显示 code diagnosis / replay pool / hygiene 摘要",
+)
+@click.option(
+    "--promote-rules-to-bank",
+    is_flag=True,
+    help="将 optimization best_skill 中可提升规则写入 rule bank",
+)
+@click.option(
+    "--warm-start-rule-bank",
+    is_flag=True,
+    help="同 --promote-rules-to-bank（从指定 optimization 目录预热规则库）",
+)
 def inspect_run(
     run_id: str,
     config_path: str,
@@ -1612,9 +1669,16 @@ def inspect_run(
     validate_self_evolution: bool,
     optimization_dir: str,
     compare_optimization: bool,
+    show_diagnosis: bool,
+    promote_rules_to_bank: bool,
+    warm_start_rule_bank: bool,
 ):
     """汇总 run 目录：manifest、gate、test、context refs、训练曲线。"""
-    from .inspect_run import compare_optimization_dirs, summarize_run
+    from .inspect_run import (
+        compare_optimization_dirs,
+        promote_rules_to_bank_from_run,
+        summarize_run,
+    )
 
     cfg = load_config(config_path)
     run_dir = _resolve_run_dir(run_id, cfg.settings.output_root)
@@ -1623,6 +1687,21 @@ def inspect_run(
     if not run_dir.is_dir():
         click.echo(f"❌ 未找到 run: {run_id}")
         return
+    if promote_rules_to_bank or warm_start_rule_bank:
+        skillopt = cfg.settings.skillopt or {}
+        rb = skillopt.get("rule_bank") or {}
+        bank_path = str(rb.get("path") or "").strip()
+        if not bank_path:
+            click.echo("❌ 请在 config settings.skillopt.rule_bank.path 配置规则库路径")
+            return
+        for line in promote_rules_to_bank_from_run(
+            run_dir,
+            optimization_dir=optimization_dir,
+            rule_bank_path=bank_path,
+        ):
+            click.echo(line)
+        if not (compare_optimization or show_diagnosis or trace_pool):
+            return
     if compare_optimization:
         for line in compare_optimization_dirs(
             run_dir,
@@ -1637,6 +1716,7 @@ def inspect_run(
         rule_attribution=rule_attribution,
         frontier=frontier,
         validate_self_evolution=validate_self_evolution,
+        show_diagnosis=show_diagnosis,
     ):
         click.echo(line)
 
