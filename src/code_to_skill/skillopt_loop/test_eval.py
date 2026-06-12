@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from typing import Any
 
 from code_to_skill.time_utils import local_timestamp
 
@@ -18,6 +19,153 @@ logger = logging.getLogger(__name__)
 
 
 # ── Test Split 最终评估 ────────────────────────────────────
+
+def _scorer_name(item: dict) -> str:
+    scorer = str(item.get("scorer") or "keyword").strip().lower()
+    if scorer in ("python", "py", "script", "python_script"):
+        return "python_script"
+    if scorer in ("llm", "judge", "llm_judge"):
+        return "llm_judge"
+    return scorer or "keyword"
+
+
+def _script_path(item: dict) -> str:
+    scorer_config = item.get("scorer_config") or {}
+    return str(
+        item.get("score_script")
+        or item.get("scorer_script")
+        or scorer_config.get("script")
+        or scorer_config.get("path")
+        or ""
+    )
+
+
+def _find_trace_dir(output_dir: str) -> Path | None:
+    if not output_dir:
+        return None
+    out_dir = Path(output_dir).resolve()
+    for base in (out_dir, *out_dir.parents):
+        candidate = base / "traces"
+        if (candidate / "traces.jsonl").is_file():
+            return candidate
+        # Avoid walking all the way to filesystem root for normal run layouts.
+        if base.name == "runs":
+            break
+    return None
+
+
+def _load_trace_index(output_dir: str) -> tuple[dict[str, list[dict]], str]:
+    """Build request_id -> trace call summaries for final eval observability."""
+    trace_dir = _find_trace_dir(output_dir)
+    if trace_dir is None:
+        return {}, ""
+
+    trace_path = trace_dir / "traces.jsonl"
+    by_request: dict[str, list[dict]] = {}
+    try:
+        with open(trace_path, encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                record = json.loads(line)
+                request = record.get("request") or {}
+                response = record.get("response") or {}
+                request_id = str(
+                    request.get("request_id")
+                    or response.get("request_id")
+                    or ""
+                )
+                if not request_id:
+                    continue
+                call_file = str(record.get("call_file") or "")
+                call_summary = {
+                    "call_index": record.get("call_index"),
+                    "call_file": call_file,
+                    "call_path": str(trace_dir / "calls" / call_file) if call_file else "",
+                    "created_at": record.get("created_at", ""),
+                    "backend_id": record.get("backend_id", ""),
+                    "role": request.get("role", ""),
+                    "stage": request.get("stage", ""),
+                    "status": response.get("status", ""),
+                    "finish_reason": response.get("finish_reason", ""),
+                    "tool_call_count": len(response.get("tool_calls") or []),
+                }
+                by_request.setdefault(request_id, []).append(call_summary)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("[TestEval] Failed to load trace index: %s", exc)
+        return {}, str(trace_dir)
+    return by_request, str(trace_dir)
+
+
+def _result_report_item(
+    result: dict,
+    item: dict,
+    trace_index: dict[str, list[dict]],
+) -> dict:
+    expected_checks = list(
+        result.get("expected_checks")
+        or item.get("expected_checks")
+        or []
+    )
+    passed_checks = list(result.get("passed_checks") or [])
+    missed_checks = list(result.get("missed_checks") or [])
+    predicted = str(result.get("predicted_answer") or "")
+    trace_request_id = str(result.get("trace_request_id") or "")
+    trace_calls = trace_index.get(trace_request_id, []) if trace_request_id else []
+    return {
+        "id": result.get("id") or item.get("id", ""),
+        "question": result.get("question") or item.get("question", ""),
+        "task_type": result.get("task_type") or item.get("task_type", ""),
+        "response_mode": result.get("response_mode") or item.get("response_mode", "answer"),
+        "scorer": _scorer_name(item),
+        "score_type": result.get("score_type") or _scorer_name(item),
+        "scorer_script": _script_path(item),
+        "soft": result.get("soft", 0),
+        "hard": result.get("hard", 0),
+        "accuracy": result.get("accuracy", result.get("hard", 0)),
+        "precision": result.get("precision", 0.0),
+        "recall": result.get("recall", 0.0),
+        "f1": result.get("f1", 0.0),
+        "passed": result.get("passed", len(passed_checks)),
+        "total": result.get("total", len(expected_checks) if expected_checks else 1),
+        "expected_checks": expected_checks,
+        "passed_checks": passed_checks,
+        "missed_checks": missed_checks,
+        "fail_reason": result.get("fail_reason", ""),
+        "scorer_justification": result.get("scorer_justification", ""),
+        "score_error": result.get("score_error", ""),
+        "context_refs": list(result.get("context_refs") or item.get("context_refs") or []),
+        "predicted_answer": predicted,
+        "predicted_preview": predicted[:500],
+        "trace_request_id": trace_request_id,
+        "trace_call_files": [c.get("call_file", "") for c in trace_calls if c.get("call_file")],
+        "trace_calls": trace_calls,
+        "trace_missing": bool(trace_request_id and not trace_calls),
+        "response_status": result.get("response_status", ""),
+        "finish_reason": result.get("finish_reason", ""),
+        "backend_id": result.get("backend_id", ""),
+    }
+
+
+def _report_summary(per_item: list[dict]) -> dict:
+    scorer_counts: dict[str, int] = {}
+    failed_ids: list[str] = []
+    missing_trace_ids: list[str] = []
+    for row in per_item:
+        scorer = str(row.get("scorer") or "keyword")
+        scorer_counts[scorer] = scorer_counts.get(scorer, 0) + 1
+        if int(row.get("hard") or 0) == 0:
+            failed_ids.append(str(row.get("id") or ""))
+        if row.get("trace_missing"):
+            missing_trace_ids.append(str(row.get("id") or ""))
+    return {
+        "hard_passed": len(per_item) - len(failed_ids),
+        "hard_failed": len(failed_ids),
+        "failed_ids": failed_ids,
+        "scorer_counts": scorer_counts,
+        "trace_missing_ids": missing_trace_ids,
+    }
+
 
 def evaluate_test_split(
     best_skill: str,
@@ -54,8 +202,8 @@ def evaluate_test_split(
             best_skill, test_items, target_backend=target_backend,
         )
     else:
-        # Fallback: use scoring directly with simple keyword rule
-        from .scoring import score_rollout_result
+        # Fallback 也走统一 scorer 路由，避免绕过 python_script / llm_judge。
+        from .scoring import score_benchmark_item
         results = []
         for item in test_items:
             checks = item.get("expected_checks", [])
@@ -66,29 +214,56 @@ def evaluate_test_split(
                 if any(c.lower() in l.lower() for c in checks)
             ]
             predicted = "\n".join(relevant[:10]) if relevant else best_skill[:300]
-            scores = score_rollout_result(predicted, checks)
+            scores = score_benchmark_item(predicted, item)
+            missed = scores.get("missed_checks", [])
             results.append({
                 "id": item.get("id", ""),
+                "question": question,
+                "task_type": item.get("task_type", ""),
+                "response_mode": item.get("response_mode", "answer"),
+                "context_refs": list(item.get("context_refs") or []),
+                "expected_checks": checks,
                 "hard": scores["hard"],
                 "soft": scores["soft"],
-                "accuracy": scores["accuracy"],
-                "f1": scores["f1"],
+                "accuracy": scores.get("accuracy", float(scores["hard"])),
+                "precision": scores.get("precision", 0.0),
+                "recall": scores.get("recall", 0.0),
+                "f1": scores.get("f1", 0.0),
+                "passed": scores.get("passed", len(scores.get("passed_checks", []))),
+                "total": scores.get("total", len(checks) if checks else 1),
+                "passed_checks": scores.get("passed_checks", []),
+                "missed_checks": missed,
                 "predicted_answer": predicted,
+                "fail_reason": "missed: " + ", ".join(missed) if scores["hard"] == 0 and missed else "",
+                "score_type": scores.get("score_type", item.get("scorer", "keyword")),
+                "scorer_justification": scores.get("justification", ""),
+                "score_error": scores.get("error", ""),
             })
 
     n = len(results)
     soft_avg = sum(r.get("soft", 0) for r in results) / max(n, 1)
     hard_avg = sum(r.get("hard", 0) for r in results) / max(n, 1)
+    item_by_id = {str(item.get("id") or ""): item for item in test_items}
+    trace_index, trace_dir = _load_trace_index(output_dir)
+    per_item = [
+        _result_report_item(
+            r,
+            item_by_id.get(str(r.get("id") or ""), {}),
+            trace_index,
+        )
+        for r in results
+    ]
 
     report = {
+        "schema_version": "1.1",
         "evaluated_at": local_timestamp(),
         "n_items": n,
+        "n_expected_items": len(test_items),
         "test_score_soft": round(soft_avg, 3),
         "test_score_hard": round(hard_avg, 3),
-        "per_item": [
-            {"id": r.get("id", ""), "soft": r.get("soft", 0), "hard": r.get("hard", 0)}
-            for r in results
-        ],
+        "trace_dir": trace_dir,
+        "summary": _report_summary(per_item),
+        "per_item": per_item,
     }
 
     report_path = ""

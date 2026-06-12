@@ -1,12 +1,74 @@
-"""综合评分工具。
+"""综合评分工具（M4 rollout → gate 的评分层）。
 
-对齐 external/SkillOpt skillopt/utils/scoring.py
+对齐 external/SkillOpt ``skillopt/utils/scoring.py``。
 
-提供：
-- score_rollout_result: 单条 rollout 评分（deterministic keyword check）
-- compute_scores: 批量结果聚合
-- score_with_llm_judge: LLM Judge rubric 语义评分
-- skill_hash: Skill 内容哈希
+调用链
+------
+``envs/base._rollout_single_item`` 得到 ``predicted`` 后调用
+``score_benchmark_item``；每条 item 的 ``scorer`` 字段选择评分器；结果中的
+``hard`` / ``soft`` / ``missed_checks`` 供 selection gate（``gate.py``）与
+reflect 使用。split 级均值由 ``compute_scores`` 聚合。
+
+评分器路由（``score_benchmark_item``）
+------------------------------------
+由 benchmark item 的 ``scorer`` 字段决定（默认 ``keyword`` / ``deterministic``）：
+
+1. **keyword / deterministic**（内置，无子进程）
+   - ``score_rollout_result``：对 ``expected_checks`` 逐条做子串匹配（金额类
+     check 忽略千分位逗号）。
+   - 别名：``settings.skillopt.check_aliases``（全局）与 item 级
+     ``check_aliases`` 合并后，可按 check 键追加同义词。
+   - **hard**：全部 check 命中 → ``1``，否则 ``0``。
+   - **soft**：``passed_checks / len(expected_checks)``。
+
+2. **python_script / script / py / python**（benchmark 扩展脚本）
+   - ``score_with_python_script`` 以子进程执行 item 指定的脚本。
+   - 脚本路径（优先级）：``score_script`` → ``scorer_script`` →
+     ``scorer_config.script`` / ``path``；相对路径基于
+     ``item._benchmark_dir``（``BenchmarkSplits.from_dir`` 注入）或
+     ``scorer_config.base_dir``。
+   - **stdin JSON**::
+         {"predicted": str, "item": dict, "global_check_aliases": dict}
+   - **stdout JSON**（单行对象）：``hard``, ``soft``, ``passed_checks``,
+     ``missed_checks``, ``precision``, ``recall``, ``f1``, ``justification``。
+   - 脚本未返回 ``hard`` 时，由 ``soft`` 与 ``hard_threshold``（默认 0.8）
+     推导；缺 ``missed_checks`` 时从 ``expected_checks`` 反推供 reflect。
+   - 超时：``score_timeout_seconds`` 或 ``scorer_config.timeout_seconds``
+     （默认 10s）；失败时 ``hard=0`` 且 ``error`` 字段记录原因。
+   - 示例：``demo-project/benchmarks/score_expected_checks.py``（keyword +
+     借贷平衡验算，Fineract 全量 benchmark 共用）。
+
+3. **llm_judge / judge / llm**（语义 rubric）
+   - ``score_with_llm_judge``：调用 ``routes.judge`` backend，``temperature=0``。
+   - 适用于开放问答；item 可提供 ``rubric``。
+
+单条结果字段
+------------
+各评分器统一产出（供 gate / history / reflect）：
+
+- ``hard`` / ``soft`` / ``accuracy``：0–1 标量；gate 经 ``select_gate_score`` 投影。
+- ``passed_checks`` / ``missed_checks``：可追溯的失败项，驱动 reflect。
+- ``passed`` / ``total``、``precision`` / ``recall`` / ``f1``：辅助指标。
+- ``score_type``：``python_script`` 时标记来源。
+
+批量聚合
+--------
+``compute_scores(results)``：对 rollout 结果列表求 ``hard`` / ``soft`` /
+``accuracy`` / ``f1`` 均值，写入 train/selection/test 汇总。
+
+其它
+----
+``skill_hash``：Skill 正文短 hash，用于 selection cache 去重。
+
+公开 API
+--------
+- ``score_benchmark_item`` — 评分入口（按 item.scorer 路由）
+- ``score_rollout_result`` — 内置 keyword 评分
+- ``score_with_python_script`` — 扩展脚本评分
+- ``score_with_llm_judge`` — LLM Judge 评分
+- ``merge_check_aliases`` — 全局 + item 别名合并
+- ``compute_scores`` — split 级聚合
+- ``skill_hash`` — Skill 内容哈希
 """
 from __future__ import annotations
 

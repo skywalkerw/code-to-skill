@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared Fineract benchmark scorer — keyword checks on expected_checks.
+"""Shared Fineract benchmark scorer — keyword checks with no-voucher handling.
 
 stdin JSON::
     {"predicted": str, "item": dict, "global_check_aliases": dict | optional}
@@ -13,13 +13,41 @@ import json
 import sys
 from typing import Any
 
+# 回答明确不生成会计凭证时，借贷类 expected_checks 不应触发平衡验算。
+_BALANCE_VERIFY_CHECKS = frozenset({"借贷平衡", "借贷校验"})
+_IMBALANCE_SIGNAL_CHECKS = frozenset({"不平"})
+_REJECTION_CHECKS = frozenset({"不得"})
+_IS_BALANCED_CHECK = "isbalanced"
+_STRONG_NO_VOUCHER_TOKENS = (
+    "信息不足",
+    "需要补充",
+    "请补充",
+    "待确认",
+    "无法生成",
+    "不能生成",
+    "不可生成",
+    "不得生成",
+    "无法输出",
+    "不能输出",
+    "insufficient information",
+    "not enough information",
+    "missing information",
+    "cannot generate",
+)
+_WEAK_NO_VOUCHER_TOKENS = ("缺少",)
+_NO_VOUCHER_TOKENS = _STRONG_NO_VOUCHER_TOKENS + _WEAK_NO_VOUCHER_TOKENS
+
 
 def _normalize_text(text: str) -> str:
     return text.replace(",", "").lower()
 
 
-def _check_keyword(text: str, check: str) -> bool:
-    return _normalize_text(check) in _normalize_text(text)
+def _is_no_voucher_response(text: str) -> bool:
+    """回答明确没有生成凭证时，借贷类 check 视为满足边界处理。"""
+    norm = _normalize_text(text)
+    if any(t in norm for t in _STRONG_NO_VOUCHER_TOKENS):
+        return True
+    return any(t in norm for t in _WEAK_NO_VOUCHER_TOKENS)
 
 
 def _merge_aliases(
@@ -48,33 +76,55 @@ def _aliases_for(check: str, aliases: dict[str, list[str]]) -> list[str]:
     return out
 
 
+def _check_keyword(text: str, check: str) -> bool:
+    return _normalize_text(check) in _normalize_text(text)
+
+
+def _check_no_voucher_special(predicted: str, check: str) -> bool | None:
+    """仅在无凭证回答时放过借贷专项；其他情况全部回退 keyword。"""
+    norm_check = (check or "").strip().lower()
+    if not _is_no_voucher_response(predicted):
+        return None
+    if (
+        check in _BALANCE_VERIFY_CHECKS
+        or check in _IMBALANCE_SIGNAL_CHECKS
+        or check in _REJECTION_CHECKS
+        or norm_check == _IS_BALANCED_CHECK
+    ):
+        return True
+
+    return None
+
+
 def _check_expected(
     text: str,
     check: str,
     aliases: dict[str, list[str]],
+    item: dict,
 ) -> bool:
+    special = _check_no_voucher_special(text, check)
+    if special is not None:
+        return special
     if _check_keyword(text, check):
         return True
     return any(_check_keyword(text, alias) for alias in _aliases_for(check, aliases))
 
 
 def score(predicted: str, item: dict, global_aliases: dict[str, Any] | None) -> dict:
-    # 与 skillopt_loop.scoring.score_rollout_result 对齐：逐条 expected_checks 做子串匹配。
+    # 与 skillopt_loop.scoring.score_rollout_result 对齐；非凭证回答只放过借贷专项。
     checks = list(item.get("expected_checks") or [])
-    # global_check_aliases 来自 settings.skillopt；item.check_aliases 可追加同义词。
     aliases = _merge_aliases(global_aliases, item.get("check_aliases"))
 
     passed_checks: list[str] = []
     missed_checks: list[str] = []
     for check in checks:
-        if _check_expected(predicted, check, aliases):
+        if _check_expected(predicted, check, aliases, item):
             passed_checks.append(check)
         else:
             missed_checks.append(check)
 
     total = len(checks) if checks else 1
     passed = len(passed_checks)
-    # soft：通过率；hard：全通过才为 1（驱动 selection gate 与 reflect 的 missed_checks）。
     soft = passed / total
     hard = 1 if soft == 1.0 else 0
 

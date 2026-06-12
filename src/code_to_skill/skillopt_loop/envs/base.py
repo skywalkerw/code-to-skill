@@ -275,6 +275,10 @@ class DEFAULTAdapter(EnvAdapter):
         checks = item.get("expected_checks", [])
         context_mode = self._item_context_mode(item)
         question = self._build_context_from_item(item)
+        trace_request_id = ""
+        response_status = ""
+        finish_reason = ""
+        backend_id = ""
 
         if backend:
             from code_to_skill.model_provider.types import InteractionRequest
@@ -340,6 +344,7 @@ class DEFAULTAdapter(EnvAdapter):
                         ),
                     },
                 )
+                trace_request_id = request.request_id
                 tool_rounds = (
                     self.rollout_max_tool_rounds if code_tools_enabled else 0
                 )
@@ -356,6 +361,9 @@ class DEFAULTAdapter(EnvAdapter):
                     )
                 else:
                     resp = backend.invoke(request)
+                response_status = getattr(resp, "status", "") or ""
+                finish_reason = getattr(resp, "finish_reason", "") or ""
+                backend_id = getattr(resp, "backend_id", "") or ""
                 predicted = extract_rollout_answer((resp.content or "").strip())
                 if looks_like_tool_call_leak(predicted):
                     predicted = ""
@@ -426,6 +434,13 @@ class DEFAULTAdapter(EnvAdapter):
             "predicted_answer": predicted,
             "fail_reason": fail_reason,
             "task_type": item.get("task_type", ""),
+            "score_type": scores.get("score_type", item.get("scorer", "keyword")),
+            "scorer_justification": scores.get("justification", ""),
+            "score_error": scores.get("error", ""),
+            "trace_request_id": trace_request_id,
+            "response_status": response_status,
+            "finish_reason": finish_reason,
+            "backend_id": backend_id,
         }
 
     def evaluate(
