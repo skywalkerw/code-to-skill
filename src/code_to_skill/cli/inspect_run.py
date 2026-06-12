@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from typing import Any
 
 
 def _read_json(path: Path) -> dict | list | None:
@@ -11,6 +12,90 @@ def _read_json(path: Path) -> dict | list | None:
         return None
     with open(path, encoding="utf-8") as f:
         return json.load(f)
+
+
+def _quality_config_for_inspect() -> Any:
+    """Load quality_gate from project config; fallback for demo Fineract runs."""
+    from code_to_skill.skillopt_loop.skill_quality import QualityGateConfig
+
+    cfg_path = os.environ.get("SKILL_LAB_CONFIG_PATH", "config.yaml")
+    try:
+        from code_to_skill.cli.config_loader import load_config
+
+        app = load_config(cfg_path)
+        skillopt = app.settings.skillopt or {}
+        se = skillopt.get("self_evolution") or {}
+        edits = se.get("edits") or {}
+        hygiene = se.get("hygiene") or {}
+        return QualityGateConfig.from_skillopt_settings(
+            skillopt,
+            se_max_skill_tokens=int(edits.get("max_skill_tokens", 2000) or 2000),
+            se_max_rules=int(hygiene.get("max_rules", 40) or 40),
+        )
+    except (OSError, ValueError, TypeError, ImportError):
+        return QualityGateConfig(
+            benchmark_id_patterns=[r"\bjv_[a-z0-9_]+\b"],
+        )
+
+
+def build_run_quality_from_artifacts(
+    opt_dir: Path,
+    run_id: str,
+    *,
+    quality_config: Any | None = None,
+) -> dict | None:
+    """从已有 optimization 产物即时计算 run quality（旧 run 无 report 时）。"""
+    history = _read_json(opt_dir / "history.json")
+    if not isinstance(history, list) or not history:
+        return None
+    best_path = opt_dir / "best_skill.md"
+    if not best_path.is_file():
+        return None
+
+    from code_to_skill.skillopt_loop.skill_quality import build_run_quality_report
+
+    best_skill = best_path.read_text(encoding="utf-8")
+    runtime_cfg = _read_json(opt_dir / "config.json")
+    initial_chars = 0
+    if isinstance(runtime_cfg, dict):
+        initial_chars = int(runtime_cfg.get("initial_skill_chars", 0) or 0)
+    initial_skill = " " * initial_chars if initial_chars > 0 else ""
+
+    test_report = _read_json(opt_dir / "test_report.json")
+    if not isinstance(test_report, dict):
+        test_report = {}
+    report_path = str(test_report.get("report_path") or "")
+    resolved_report = Path(report_path) if report_path else None
+    if resolved_report and not resolved_report.is_file():
+        for candidate in (
+            Path.cwd() / report_path if report_path else None,
+            opt_dir / "final_eval" / "test_eval_report.json",
+        ):
+            if candidate and candidate.is_file():
+                test_report = {**test_report, "report_path": str(candidate)}
+                break
+    elif resolved_report and not resolved_report.is_absolute() and resolved_report.is_file():
+        test_report = {**test_report, "report_path": str(resolved_report.resolve())}
+
+    best_score = float(history[-1].get("best_score", 0) or 0)
+    qcfg = quality_config or _quality_config_for_inspect()
+    return build_run_quality_report(
+        run_id=run_id,
+        initial_skill=initial_skill,
+        best_skill=best_skill,
+        best_score=best_score,
+        history=history,
+        test_report=test_report or None,
+        quality_config=qcfg,
+    )
+
+
+def resolve_run_quality_report(opt_dir: Path, run_id: str) -> dict | None:
+    """读取或即时计算 run_quality_report.json。"""
+    saved = _read_json(opt_dir / "run_quality_report.json")
+    if isinstance(saved, dict):
+        return saved
+    return build_run_quality_from_artifacts(opt_dir, run_id)
 
 
 def summarize_run(
@@ -76,7 +161,7 @@ def summarize_run(
             f"n={test_report.get('n_items', 0)}"
         )
 
-    run_quality = _read_json(opt / "run_quality_report.json")
+    run_quality = resolve_run_quality_report(opt, run_dir.name)
     if isinstance(run_quality, dict):
         mono = run_quality.get("best_score_monotonic")
         mono_flag = "✓" if mono else "✗"
