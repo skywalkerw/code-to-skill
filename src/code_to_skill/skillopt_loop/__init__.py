@@ -961,6 +961,7 @@ def run_skillopt_loop(
                     gate_score=candidate_gate,
                     hard=candidate_hard,
                     soft=candidate_soft,
+                    output_dir=output_dir,
                 )
                 write_selection_eval_report(output_dir, step_counter, sel_report)
 
@@ -1321,6 +1322,17 @@ def run_skillopt_loop(
             n_items=test_report["n_items"],
             best_score=best_score,
         )
+
+    if quality_cfg.write_selection_eval_report:
+        from .test_eval import refresh_selection_eval_trace_links
+        refreshed = refresh_selection_eval_trace_links(output_dir)
+        if refreshed.get("reports"):
+            logger.info(
+                "[M4] refreshed selection eval traces: reports=%d missing %d→%d",
+                refreshed.get("reports", 0),
+                refreshed.get("trace_missing_before", 0),
+                refreshed.get("trace_missing_after", 0),
+            )
 
     curve.finalize(best_step=best_step, test_report=test_report or None)
 

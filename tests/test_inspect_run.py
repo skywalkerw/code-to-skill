@@ -46,6 +46,16 @@ def test_compare_optimization_dirs_baseline():
     assert any("optimization vs" in ln for ln in lines)
 
 
+def test_summarize_run_uses_selected_optimization_best_score():
+    run_dir = Path("demo-project/runs/20260612-105003")
+    if not (run_dir / "optimization-07" / "run_quality_report.json").is_file():
+        return
+    lines = summarize_run(run_dir.resolve(), optimization_dir="optimization-07")
+    joined = "\n".join(lines)
+    assert "Optimization: optimization-07" in joined
+    assert "Best score: 0.778" in joined
+
+
 def test_resolve_prefers_saved_report(tmp_path):
     opt = tmp_path / "optimization"
     opt.mkdir(parents=True)

@@ -126,7 +126,7 @@
     },
     {
       "id": "jv_overdraft_001",
-      "question": "储蓄透支取款 200.00",
+      "question": "储蓄透支（overdraft）取款 200.00，其中 200.00 全部为透支金额",
       "task_type": "journal_entry",
       "context_refs": [
         "fineract-provider/src/main/java/org/apache/fineract/accounting/journalentry/service/CashBasedAccountingProcessorForSavings.java#isOverdraftTransaction",

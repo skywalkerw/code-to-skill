@@ -98,6 +98,30 @@ def resolve_run_quality_report(opt_dir: Path, run_id: str) -> dict | None:
     return build_run_quality_from_artifacts(opt_dir, run_id)
 
 
+def _selected_best_score(
+    run_quality: dict | None,
+    runtime_state: dict | None,
+    history: list | None,
+    manifest_summary: dict | None = None,
+) -> float | None:
+    """Best score for the selected optimization directory.
+
+    ``run_manifest.json`` belongs to the original run directory, so alternate
+    optimization dirs such as ``optimization-07`` must prefer their local
+    artifacts.
+    """
+    for source in (run_quality, runtime_state):
+        if isinstance(source, dict) and source.get("best_score") is not None:
+            return float(source.get("best_score") or 0.0)
+    if isinstance(history, list) and history:
+        last = history[-1]
+        if isinstance(last, dict) and last.get("best_score") is not None:
+            return float(last.get("best_score") or 0.0)
+    if isinstance(manifest_summary, dict) and manifest_summary.get("best_score") is not None:
+        return float(manifest_summary.get("best_score") or 0.0)
+    return None
+
+
 def summarize_run(
     run_dir: Path,
     *,
@@ -115,6 +139,9 @@ def summarize_run(
     lines.append(f"Run: {run_dir.name}")
     lines.append(f"Path: {run_dir}")
     lines.append(f"Optimization: {opt.name}")
+    history = _read_json(opt / "history.json")
+    runtime_state = _read_json(opt / "runtime_state.json")
+    run_quality = resolve_run_quality_report(opt, run_dir.name)
 
     manifest = _read_json(run_dir / "run_manifest.json")
     if isinstance(manifest, dict):
@@ -136,10 +163,15 @@ def summarize_run(
             extra = f" — {reason}" if reason else ""
             lines.append(f"  {name}: {status} ({dur:.1f}s){extra}")
         summary = manifest.get("summary") or {}
-        if summary.get("best_score") is not None:
-            lines.append(f"Best score: {summary['best_score']:.3f}")
+        best_score = _selected_best_score(
+            run_quality if isinstance(run_quality, dict) else None,
+            runtime_state if isinstance(runtime_state, dict) else None,
+            history if isinstance(history, list) else None,
+            summary if isinstance(summary, dict) else None,
+        )
+        if best_score is not None:
+            lines.append(f"Best score: {best_score:.3f}")
 
-    history = _read_json(opt / "history.json")
     if isinstance(history, list) and history:
         last = history[-1]
         lines.append(
@@ -165,7 +197,6 @@ def summarize_run(
             f"n={test_report.get('n_items', 0)}"
         )
 
-    run_quality = resolve_run_quality_report(opt, run_dir.name)
     if isinstance(run_quality, dict):
         mono = run_quality.get("best_score_monotonic")
         mono_flag = "✓" if mono else "✗"

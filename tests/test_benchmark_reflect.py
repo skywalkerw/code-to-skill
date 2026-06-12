@@ -15,7 +15,11 @@ from code_to_skill.skillopt_loop.reflect_helpers import (
     skill_compact_for_reflect,
 )
 from code_to_skill.skillopt_loop.scoring import score_benchmark_item, score_rollout_result
-from code_to_skill.skillopt_loop.test_eval import evaluate_test_split
+from code_to_skill.skillopt_loop.test_eval import (
+    build_selection_eval_report,
+    evaluate_test_split,
+    refresh_selection_eval_trace_links,
+)
 from code_to_skill.skillopt_loop.types import EditOp
 
 
@@ -416,6 +420,76 @@ class TestFinalEvalObservability:
         assert row["score_type"] == "python_script"
         assert row["passed_checks"] == ["ok"]
         assert row["scorer_justification"] == "custom scorer used"
+
+    def test_selection_eval_report_refreshes_trace_links(self, tmp_path):
+        run_dir = tmp_path / "run"
+        opt_dir = run_dir / "optimization"
+        trace_dir = run_dir / "traces"
+        calls_dir = trace_dir / "calls"
+        calls_dir.mkdir(parents=True)
+        call_file = "0001_target_rollout.json"
+        trace_record = {
+            "schema_version": "1.0",
+            "call_index": 1,
+            "call_file": call_file,
+            "created_at": "2026-06-12T12:00:00+08:00",
+            "backend_id": "mock",
+            "request": {
+                "request_id": "req-selection-1",
+                "role": "target",
+                "stage": "rollout",
+            },
+            "response": {
+                "request_id": "req-selection-1",
+                "status": "ok",
+                "finish_reason": "stop",
+                "tool_calls": [],
+            },
+        }
+
+        results = [{
+            "id": "sel-1",
+            "question": "Q",
+            "expected_checks": ["ok"],
+            "passed_checks": ["ok"],
+            "missed_checks": [],
+            "hard": 1,
+            "soft": 1.0,
+            "predicted_answer": "ok",
+            "trace_request_id": "req-selection-1",
+        }]
+        items = [{"id": "sel-1", "question": "Q", "expected_checks": ["ok"]}]
+        report = build_selection_eval_report(results, items, step=1)
+        assert report["summary"]["trace_missing_ids"] == ["sel-1"]
+
+        step_dir = opt_dir / "steps" / "step_0001"
+        step_dir.mkdir(parents=True)
+        (step_dir / "selection_eval_report.json").write_text(
+            json.dumps(report, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        (trace_dir / "traces.jsonl").write_text(
+            json.dumps(trace_record, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        (calls_dir / call_file).write_text(
+            json.dumps(trace_record, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        summary = refresh_selection_eval_trace_links(str(opt_dir))
+        assert summary == {
+            "reports": 1,
+            "trace_missing_before": 1,
+            "trace_missing_after": 0,
+        }
+        refreshed = json.loads(
+            (step_dir / "selection_eval_report.json").read_text(encoding="utf-8")
+        )
+        row = refreshed["per_item"][0]
+        assert refreshed["summary"]["trace_missing_ids"] == []
+        assert row["trace_call_files"] == [call_file]
+        assert row["trace_missing"] is False
 
 
 class TestEditValidator:

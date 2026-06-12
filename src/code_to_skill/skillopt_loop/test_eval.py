@@ -148,6 +148,33 @@ def _result_report_item(
     }
 
 
+def _refresh_report_trace_links(report: dict, output_dir: str) -> dict:
+    """Refresh trace fields in an already-built eval report.
+
+    Selection reports are written during training, while the run-level trace
+    file may still be growing. Refreshing at the end avoids false
+    trace_missing rows without rerunning rollout or scoring.
+    """
+    trace_index, trace_dir = _load_trace_index(output_dir)
+    per_item = report.get("per_item")
+    if not isinstance(per_item, list):
+        return report
+
+    for row in per_item:
+        if not isinstance(row, dict):
+            continue
+        trace_request_id = str(row.get("trace_request_id") or "")
+        trace_calls = trace_index.get(trace_request_id, []) if trace_request_id else []
+        row["trace_call_files"] = [
+            c.get("call_file", "") for c in trace_calls if c.get("call_file")
+        ]
+        row["trace_calls"] = trace_calls
+        row["trace_missing"] = bool(trace_request_id and not trace_calls)
+    report["trace_dir"] = trace_dir
+    report["summary"] = _report_summary([r for r in per_item if isinstance(r, dict)])
+    return report
+
+
 def _report_summary(per_item: list[dict]) -> dict:
     scorer_counts: dict[str, int] = {}
     failed_ids: list[str] = []
@@ -293,10 +320,11 @@ def build_selection_eval_report(
     gate_score: float = 0.0,
     hard: float = 0.0,
     soft: float = 0.0,
+    output_dir: str = "",
 ) -> dict:
     """Build per-step selection eval report (same schema as test eval per_item)."""
     item_by_id = {str(item.get("id") or ""): item for item in items}
-    trace_index: dict[str, list[dict]] = {}
+    trace_index, trace_dir = _load_trace_index(output_dir) if output_dir else ({}, "")
     per_item = [
         _result_report_item(
             r,
@@ -312,6 +340,7 @@ def build_selection_eval_report(
         "hard": round(hard, 3),
         "soft": round(soft, 3),
         "gate_score": round(gate_score, 3),
+        "trace_dir": trace_dir,
         "summary": _report_summary(per_item),
         "per_item": per_item,
     }
@@ -328,6 +357,36 @@ def write_selection_eval_report(
     with open(path, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2, ensure_ascii=False)
     return str(path)
+
+
+def refresh_selection_eval_trace_links(output_dir: str) -> dict:
+    """Refresh all step selection reports with the final run trace index."""
+    steps_dir = Path(output_dir) / "steps"
+    summary = {
+        "reports": 0,
+        "trace_missing_before": 0,
+        "trace_missing_after": 0,
+    }
+    if not steps_dir.is_dir():
+        return summary
+
+    for path in sorted(steps_dir.glob("step_*/selection_eval_report.json")):
+        try:
+            with open(path, encoding="utf-8") as f:
+                report = json.load(f)
+            if not isinstance(report, dict):
+                continue
+            before = (report.get("summary") or {}).get("trace_missing_ids") or []
+            summary["trace_missing_before"] += len(before)
+            refreshed = _refresh_report_trace_links(report, output_dir)
+            after = (refreshed.get("summary") or {}).get("trace_missing_ids") or []
+            summary["trace_missing_after"] += len(after)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(refreshed, f, indent=2, ensure_ascii=False)
+            summary["reports"] += 1
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("[TestEval] Failed to refresh selection report %s: %s", path, exc)
+    return summary
 
 
 # ── Step 内部 Checkpoint ────────────────────────────────────
