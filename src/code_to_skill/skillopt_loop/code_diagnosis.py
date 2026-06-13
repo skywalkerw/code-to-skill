@@ -565,3 +565,92 @@ def format_diagnoses_for_reflect(diagnoses: list[dict]) -> str:
             elif (fact.get("snippet") or "").strip():
                 lines.append(f"  ref={fact.get('ref')}: {fact.get('snippet', '')[:200]}")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# 设计 09 §11：code_retrieval 产物写入
+# ---------------------------------------------------------------------------
+
+def save_code_retrieval_step_artifacts(
+    output_dir: str,
+    step: int,
+    step_diagnoses: list[dict],
+) -> None:
+    """从 step_diagnoses 提取并写入 code_retrieval 产物（设计 09 §11）。
+
+    写入：
+    - code_retrieval/step_NNNN/query_plans.jsonl
+    - code_retrieval/step_NNNN/candidates.jsonl
+    - code_retrieval/step_NNNN/code_facts.jsonl
+    - code_retrieval/step_NNNN/summary.json
+    """
+    step_dir = os.path.join(output_dir, "code_retrieval", f"step_{step:04d}")
+    os.makedirs(step_dir, exist_ok=True)
+
+    all_plans: list[dict] = []
+    all_candidates: list[dict] = []
+    all_facts: list[dict] = []
+    total = 0
+    with_facts = 0
+    glue_top1 = 0
+    sources: dict[str, int] = {}
+
+    for diag in step_diagnoses:
+        total += 1
+        code_facts = diag.get("code_facts") or []
+        retrieval_metrics = diag.get("code_retrieval_metrics") or {}
+
+        # query plan
+        plan = retrieval_metrics.get("query_plan")
+        if plan:
+            all_plans.append(plan)
+
+        # candidates
+        candidates = retrieval_metrics.get("candidates") or retrieval_metrics.get("top_candidates") or []
+        for c in candidates:
+            all_candidates.append(c)
+
+        # code facts
+        if code_facts:
+            with_facts += 1
+        for fact in code_facts:
+            all_facts.append(fact)
+
+        source = retrieval_metrics.get("top_source", "")
+        if source:
+            sources[source] = sources.get(source, 0) + 1
+        if retrieval_metrics.get("top_role") in {
+            "handler_only", "swagger", "configuration", "starter",
+            "controller", "resource_api", "api_resource",
+        }:
+            glue_top1 += 1
+
+    # Write files
+    _write_jsonl(os.path.join(step_dir, "query_plans.jsonl"), all_plans)
+    _write_jsonl(os.path.join(step_dir, "candidates.jsonl"), all_candidates)
+    _write_jsonl(os.path.join(step_dir, "code_facts.jsonl"), all_facts)
+
+    summary = {
+        "schema_version": "1.0",
+        "step": step,
+        "cases": total,
+        "query_plans": len(all_plans),
+        "candidates": len(all_candidates),
+        "facts": len(all_facts),
+        "cases_with_facts": with_facts,
+        "code_facts_rate": round(with_facts / max(total, 1), 3),
+        "top_sources": sources,
+        "downranked_glue_top1": glue_top1,
+    }
+    with open(os.path.join(step_dir, "summary.json"), "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2, ensure_ascii=False)
+
+
+def _write_jsonl(path: str, items: list[dict]) -> None:
+    if not items:
+        return
+    with open(path, "w", encoding="utf-8") as f:
+        for item in items:
+            f.write(json.dumps(item, ensure_ascii=False) + "\n")
+
+import os

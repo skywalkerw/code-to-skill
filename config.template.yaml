@@ -40,6 +40,20 @@ settings:
     confidence_tier_1_max: 0.95
     llm_adjustment: 0.05
     max_source_refs_per_atom: 24
+    # 设计 09：代码角色感知过滤 — 优先业务代码，降权 glue code
+    code_first:
+      enabled: false
+      downrank_handlers: false
+      accepted_roles:
+        - service
+        - processor
+        - domain
+        - dto
+        - enum
+      downrank_roles:
+        - handler_only
+        - swagger
+        - configuration
 
   # ── 模块 4：SkillOpt 优化 ──────────────────────────────────
   skillopt:
@@ -95,6 +109,38 @@ settings:
       write_gate_decision_report: true
       write_run_quality_report: true
     # 设计 08：输出卫生 / 规则库 / 代码诊断 / replay gate
+    # 设计 09：代码优先检索 — 确定性 QueryPlan → 多路召回 → 角色重排 → CodeFact
+    code_retrieval:
+      enabled: true
+      max_candidates: 8
+      max_facts_per_case: 4
+      max_snippet_chars: 1200
+      require_code_facts_for_business_rules: true
+      query_plan:
+        use_context_refs: true
+        use_missed_checks: true
+        use_scorer_diagnostics: true
+        use_atom_refs: true
+      rerank:
+        enabled: true
+        prefer_roles:
+          - processor
+          - service
+          - domain
+          - dto
+          - enum
+        downrank_path_patterns:
+          - "**/*Swagger*.java"
+          - "**/*CommandHandler.java"
+          - "**/*Configuration.java"
+      rollout:
+        use_prefetched_facts: true
+        disable_free_search_when_facts_exist: true
+      observability:
+        write_query_plan: true
+        write_code_candidates: true
+        write_code_facts: true
+
     output_hygiene:
       enabled: true
       retry_on_prompt_echo: true
@@ -111,7 +157,7 @@ settings:
       max_snippet_chars: 800
       max_cases_per_step: 8
       write_jsonl: true
-      require_code_facts_for_rules: false
+      require_code_facts_for_rules: true   # 设计 09 默认强制
     warm_start:
       from_best_skill: ""
     rule_bank:
@@ -122,6 +168,7 @@ settings:
       min_support_score: 0.55
       exclude_regressed: true
       write_back: true
+      require_evidence_refs: true  # 设计 09：无代码证据的业务规则不进入 rule bank
     replay_gate:
       enabled: true
       pool_max_items: 12

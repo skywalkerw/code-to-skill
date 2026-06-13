@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import re
+import json
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -356,5 +358,59 @@ def build_run_quality_report(
         "replay_hard": round(replay_hard, 3),
         "replay_regressed_ids": replay_regressed_ids,
         "diagnosis_metrics": diagnosis_metrics,
+        "code_retrieval_metrics": _collect_code_retrieval_run_metrics(optimization_dir),
         "recommendations": recommendations,
+    }
+
+
+def _collect_code_retrieval_run_metrics(optimization_dir: str) -> dict[str, Any]:
+    """从 code_retrieval/step_*/summary.json 聚合 run 级指标（设计 09 §12）。"""
+    if not optimization_dir:
+        return {}
+    from pathlib import Path
+    from collections import Counter
+
+    root = Path(optimization_dir) / "code_retrieval"
+    if not root.is_dir():
+        return {}
+
+    total_plans = 0
+    total_candidates = 0
+    total_facts = 0
+    total_cases = 0
+    cases_with_facts = 0
+    all_sources: Counter[str] = Counter()
+    glue_top1_total = 0
+    steps = 0
+
+    for summary_path in sorted(root.glob("step_*/summary.json")):
+        steps += 1
+        try:
+            row = json.loads(summary_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        total_plans += int(row.get("query_plans", 0) or 0)
+        total_candidates += int(row.get("candidates", 0) or 0)
+        total_facts += int(row.get("facts", 0) or 0)
+        total_cases += int(row.get("cases", 0) or 0)
+        cases_with_facts += int(row.get("cases_with_facts", 0) or 0)
+        for src, count in (row.get("top_sources") or {}).items():
+            all_sources[src] += int(count or 0)
+        glue_top1_total += int(row.get("downranked_glue_top1", 0) or 0)
+
+    import operator
+    return {
+        "steps_with_retrieval": steps,
+        "query_plan_count": total_plans,
+        "total_candidates": total_candidates,
+        "total_facts": total_facts,
+        "cases_with_code_facts": cases_with_facts,
+        "code_facts_rate": round(cases_with_facts / max(total_cases, 1), 3),
+        "avg_candidates_per_case": round(total_candidates / max(total_cases, 1), 1),
+        "avg_facts_per_case": round(total_facts / max(total_cases, 1), 1),
+        "top_sources": dict(all_sources.most_common(5)),
+        "glue_code_top1_rate": round(glue_top1_total / max(steps, 1), 3),
+        "business_rules_with_evidence_rate": round(
+            cases_with_facts / max(total_cases, 1), 3,
+        ),
     }

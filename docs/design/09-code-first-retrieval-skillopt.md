@@ -1,6 +1,6 @@
 # 09：代码优先的精准检索与 SkillOpt 利用设计
 
-> 状态: 设计中  
+> 状态: 已实现  
 > 日期: 2026-06-12  
 > 关联文档: `03-skillatom-extraction.md`、`04-skillopt-loop.md`、`07-skillopt-run-quality-optimization.md`、`08-code-diagnosis-driven-skillopt.md`  
 > 目标: 让代码成为 SkillOpt 的主信息源，通过确定性检索、结构化代码事实和证据约束，稳定生成可复用 skill 规则
@@ -550,59 +550,52 @@ summary 示例：
 
 ## 13. 实施计划
 
-### Phase 1：确定性 QueryPlan 与聚合检索
+> **状态（2026-06-13）**：Phase 1–5 均已落地。以下为各阶段目标与当前实现。
 
-- 新增 `code_retrieval.py`。
-- 实现 `build_code_query_plan()`。
-- 实现 `find_relevant_code()` 内部 API。
-- 写入 query/candidates/facts 产物。
+### Phase 1：确定性 QueryPlan 与聚合检索 ✅
+
+`tool/code_retrieval.py` 已实现：`CodeQueryPlan`、`CodeCandidate`、`CodeFact`、`build_code_query_plan()`、`find_relevant_code()`。
+多路并行召回：anchor refs、symbol search、trace、content search、evidence_index。
+产物写入 `code_retrieval/step_NNNN/{query_plans,candidates,code_facts}.jsonl` + `summary.json`。
 
 验收：
-
 - 对已有 Fineract benchmark，失败 case 至少 70% 能产生 code facts。
-- `jv_purchase_001` 不再只输出 “根据 missed checks 补库存”，而是带代码或明确 `needs_review`。
+- `jv_purchase_001` 不再只输出 "根据 missed checks 补库存"，而是带代码或明确 `needs_review`。
 
-### Phase 2：Role-aware rerank
+### Phase 2：Role-aware rerank ✅
 
-- 从 path/symbol/graph role 推断代码角色。
-- 对 handler/swagger/config 降权。
-- 对 processor/service/domain/dto/enum 升权。
+`_classify_code_role()` + `_role_aware_rerank()` 已实现。评分公式：
+`0.35*anchor + 0.25*role + 0.20*semantic + 0.10*callchain + 0.10*evidence_idx - 0.25*glue_penalty`。
 
 验收：
-
-- M3 accepted atoms 不再以 command handler / constructor injection 为主体。
+- M3 `atom_extractor.code_first.enabled=true` 时，accepted atoms 不再以 command handler / constructor injection 为主体。
 - reflect evidence top1 大多是业务实现代码。
 
-### Phase 3：Reflect 与 rule bank 证据门禁
+### Phase 3：Reflect 与 rule bank 证据门禁 ✅
 
-- reflect prompt 强制业务规则依赖 `CodeFact`。
-- `upsert_candidate_rules()` 增加 evidence 校验。
-- 配置默认 `require_code_facts_for_business_rules=true`。
+`REFLECT_SYSTEM_PROMPT` 新增 Code-Fact Grounding 约束。
+`upsert_candidate_rules()` → `remove_no_evidence_business_rules()` 过滤无代码证据业务规则。
+配置默认 `code_diagnosis.require_code_facts_for_rules: true`，`rule_bank.require_evidence_refs: true`。
 
 验收：
-
 - rule bank 中业务规则都有 `evidence_refs`。
 - 无代码证据的 missed-check 规则不会进入 active rule bank。
 
-### Phase 4：Rollout 预取事实与工具收敛
+### Phase 4：Rollout 预取事实与工具收敛 ✅
 
-- `build_rollout_item_context()` 优先使用 `_code_facts`。
-- 有 facts 时减少 rollout tool rounds。
-- 工具循环失败时回退到 facts，而不是回退到 skill echo 风险输出。
+`prefetch_code_facts_for_items()` 在 rollout 前写入 `_code_facts`。
+`build_rollout_item_context()` 三路优先级：预取 _code_facts → context_refs → question hints。
+有 facts 时减少 rollout_max_tool_rounds。
 
 验收：
-
 - rollout 平均 tool rounds 降低。
 - final eval 中 backend/tool-loop error 不再导致 hard fail。
 
-### Phase 5：Run quality 与 inspect 增强
+### Phase 5：Run quality 与 inspect 增强 ✅
 
-- `inspect_run --show-diagnosis` 展示 query plan、code facts、glue hit rate。
-- `run_quality_report` 增加 `code_retrieval_metrics`。
-
-验收：
-
-- 一眼能判断“这轮优化是否真的利用了代码”。
+`skill-lab inspect run --show-diagnosis` 展示 code_retrieval 末步指标。
+`run_quality_report.json` 含 `code_retrieval_metrics`。
+M3 `atom_extractor.code_first` 配置 + `_apply_role_aware_filter()` 实现。
 
 ## 14. 测试计划
 
@@ -612,6 +605,7 @@ summary 示例：
 tests/test_code_retrieval.py
 tests/test_code_retrieval_rerank.py
 tests/test_code_fact_gate.py
+tests/test_m3_role_filter.py
 ```
 
 覆盖：

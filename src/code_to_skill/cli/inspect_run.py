@@ -264,6 +264,21 @@ def summarize_run(
                     f"regressed={len(last_r.get('regressed_ids') or [])} "
                     f"reason={last_r.get('reason', '?')}"
                 )
+        # 设计 09 代码检索指标
+        retrieval_root = opt / "code_retrieval"
+        if retrieval_root.is_dir():
+            retrieval_summaries = sorted(retrieval_root.glob("step_*/summary.json"))
+            if retrieval_summaries:
+                last_rs = _read_json(retrieval_summaries[-1])
+                if isinstance(last_rs, dict):
+                    lines.append(
+                        f"Code retrieval (last step): "
+                        f"cases={last_rs.get('cases', 0)} "
+                        f"facts={last_rs.get('facts', 0)} "
+                        f"rate={last_rs.get('code_facts_rate', 0):.2f} "
+                        f"glue_top1={last_rs.get('downranked_glue_top1', 0)} "
+                        f"sources={last_rs.get('top_sources', {})}"
+                    )
         rb_path = None
         try:
             from code_to_skill.cli.config_loader import load_config
@@ -294,6 +309,15 @@ def summarize_run(
                 f"Diagnosis metrics: steps={dm.get('diagnosis_steps', 0)} "
                 f"code_facts_rate={dm.get('code_facts_rate', 0):.2f} "
                 f"needs_review={dm.get('needs_review_count', 0)}"
+            )
+        # 设计 09 代码检索指标
+        crm = run_quality.get("code_retrieval_metrics") or {}
+        if crm:
+            lines.append(
+                f"Code retrieval: facts_rate={crm.get('code_facts_rate', 0):.2f} "
+                f"glue_top1_rate={crm.get('glue_code_top1_rate', 0):.2f} "
+                f"avg_cands={crm.get('avg_candidates_per_case', 0)} "
+                f"avg_facts={crm.get('avg_facts_per_case', 0)}"
             )
         if run_quality.get("replay_hard"):
             lines.append(

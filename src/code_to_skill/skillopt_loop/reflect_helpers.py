@@ -59,6 +59,11 @@ REFLECT_SYSTEM_PROMPT = """You are a Skill document optimizer. The Skill guides 
 4. For primary-deliverable failures: add rules about required output format and verification tokens.
 5. For clarify/reject/boundary failures: add rules for insufficient or invalid inputs — do not add primary-deliverable output rules.
 
+## Code-Fact Grounding (design 09)
+- Only propose business-mapping rules (account mapping, transaction type, amount direction) that are grounded in at least one Code Fact.
+- If a failure has no Code Facts, propose an investigation step or scorer/format fix — do NOT convert missed_checks directly into skill text.
+- Output format / prompt echo / alias-gap failures may be fixed without Code Facts.
+
 FORBIDDEN: "# Verify", "need improvement", "TODO", keyword-only lists without actionable rules.
 
 ## Output

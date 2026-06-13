@@ -339,6 +339,7 @@ def run_skillopt_loop(
         append_diagnoses_jsonl,
         diagnose_failures,
         format_diagnoses_for_reflect,
+        save_code_retrieval_step_artifacts,
     )
     from .rule_bank import (
         RuleBankConfig,
@@ -701,6 +702,11 @@ def run_skillopt_loop(
                 append_diagnoses_jsonl(
                     os.path.join(diag_dir, "code_diagnosis.jsonl"),
                     step_diagnoses,
+                )
+            # 设计 09 §11：写入 code_retrieval step 产物
+            if step_diagnoses:
+                save_code_retrieval_step_artifacts(
+                    output_dir, step_counter, step_diagnoses,
                 )
             diagnosis_context = format_diagnoses_for_reflect(step_diagnoses)
             rules_context = format_candidate_rules_for_reflect(candidate_rules)
