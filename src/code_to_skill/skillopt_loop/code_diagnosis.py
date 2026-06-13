@@ -233,9 +233,15 @@ def _collect_code_facts(
     设计 09 优化：full_retrieval_result 含 candidates / query_plan / metrics。
     """
     max_candidates = getattr(retrieval_cfg, "max_candidates", 8) if retrieval_cfg else 8
+    max_facts = getattr(retrieval_cfg, "max_facts_per_case", 4) if retrieval_cfg else 4
+    retrieval_max_chars = (
+        getattr(retrieval_cfg, "max_snippet_chars", max_chars)
+        if retrieval_cfg else max_chars
+    )
+    retrieval_enabled = getattr(retrieval_cfg, "enabled", True) if retrieval_cfg else True
 
     # 尝试新检索管线
-    if code_tools is not None and hasattr(code_tools, "execute"):
+    if retrieval_enabled and code_tools is not None and hasattr(code_tools, "execute"):
         try:
             from code_to_skill.tool.code_retrieval import find_relevant_code
 
@@ -244,10 +250,10 @@ def _collect_code_facts(
                 code_tools,
                 graph_sidecars=graph_sidecars,
                 max_candidates=max_candidates,
-                max_snippet_chars=max_chars,
+                max_snippet_chars=retrieval_max_chars,
             )
             facts: list[dict[str, str]] = []
-            for fact in retrieval.facts:
+            for fact in retrieval.facts[:max_facts]:
                 facts.append({
                     "ref": fact.evidence_refs[0] if fact.evidence_refs else "",
                     "snippet": fact.evidence_quotes[0] if fact.evidence_quotes else "",
@@ -299,7 +305,7 @@ def _collect_code_facts(
         result, facts, graph_sidecars=graph_sidecars, max_chars=max_chars,
     )
     diagnosis_source = diagnosis_source or sidecar_src
-    return facts, diagnosis_source, None
+    return facts[:max_facts], diagnosis_source, None
 
 
 def _diagnosis_status(
@@ -315,6 +321,21 @@ def _diagnosis_status(
     if require_code_facts:
         return "needs_review"
     return "ready"
+
+
+def _requires_code_facts_for_failure(
+    failure_type: str,
+    cfg: CodeDiagnosisConfig,
+    retrieval_cfg: Any = None,
+) -> bool:
+    """Only business-mapping failures require code facts by default."""
+    if failure_type != "missing_business_rule":
+        return False
+    require_business = (
+        getattr(retrieval_cfg, "require_code_facts_for_business_rules", True)
+        if retrieval_cfg is not None else True
+    )
+    return bool(cfg.require_code_facts_for_rules and require_business)
 
 
 def _suggest_general_rule(failure_type: str, result: dict) -> str:
@@ -372,7 +393,9 @@ def diagnose_failure(
     status = _diagnosis_status(
         failure_type,
         code_facts,
-        require_code_facts=cfg.require_code_facts_for_rules,
+        require_code_facts=_requires_code_facts_for_failure(
+            failure_type, cfg, retrieval_cfg,
+        ),
     )
     general_rule = _suggest_general_rule(failure_type, result)
     diag: dict[str, Any] = {
@@ -491,6 +514,8 @@ def collect_diagnosis_run_metrics(output_dir: str | Path) -> dict[str, Any]:
     retrieval_glue_top1 = 0
     retrieval_scores: list[float] = []
     retrieval_top_roles: list[str] = []
+    retrieval_candidate_total = 0
+    retrieval_fact_total = 0
 
     for summary_path in sorted(root.glob("step_*/summary.json")):
         steps += 1
@@ -510,25 +535,51 @@ def collect_diagnosis_run_metrics(output_dir: str | Path) -> dict[str, Any]:
                 if row.get("item_id"):
                     diagnosed_ids.add(str(row.get("item_id")))
                 code_facts = row.get("code_facts") or []
+                retrieval_metrics = row.get("code_retrieval_metrics") or {}
                 if code_facts:
                     with_facts += 1
-                    retrieval_cases_with_facts += 1
-                retrieval_cases_total += 1
+                if retrieval_metrics:
+                    retrieval_cases_total += 1
+                    if code_facts:
+                        retrieval_cases_with_facts += 1
+                    candidates = retrieval_metrics.get("candidates") or []
+                    if isinstance(candidates, list):
+                        retrieval_candidate_total += len(candidates)
+                    else:
+                        try:
+                            retrieval_candidate_total += int(candidates or 0)
+                        except (TypeError, ValueError):
+                            pass
+                    if not candidates:
+                        try:
+                            retrieval_candidate_total += int(
+                                retrieval_metrics.get("top_candidates")
+                                or retrieval_metrics.get("ranked_candidates")
+                                or 0
+                            )
+                        except (TypeError, ValueError):
+                            pass
+                    top_role = str(retrieval_metrics.get("top_role") or "")
+                    if top_role:
+                        retrieval_top_roles.append(top_role)
+                    if top_role in (
+                        "handler_only", "swagger", "configuration", "resource_api",
+                    ):
+                        retrieval_glue_top1 += 1
 
                 # per-fact metrics
                 for fact in code_facts:
+                    retrieval_fact_total += 1
                     src = str(fact.get("source") or "")
                     retrieval_fact_sources[src] = retrieval_fact_sources.get(src, 0) + 1
                     role = str(fact.get("role") or "")
-                    retrieval_top_roles.append(role)
+                    if role:
+                        retrieval_top_roles.append(role)
                     try:
                         conf = float(fact.get("confidence") or 0)
                         retrieval_scores.append(conf)
                     except (ValueError, TypeError):
                         pass
-                    if fact is code_facts[0]:
-                        if role in ("handler_only", "swagger", "configuration", "resource_api"):
-                            retrieval_glue_top1 += 1
 
         except (OSError, json.JSONDecodeError):
             continue
@@ -554,8 +605,8 @@ def collect_diagnosis_run_metrics(output_dir: str | Path) -> dict[str, Any]:
         if retrieval_cases_total > 0 else 0.0
     )
     glue_top1_rate = (
-        retrieval_glue_top1 / max(retrieval_cases_with_facts, 1)
-        if retrieval_cases_with_facts > 0 else 0.0
+        retrieval_glue_top1 / max(retrieval_cases_total, 1)
+        if retrieval_cases_total > 0 else 0.0
     )
     avg_score = (
         sum(retrieval_scores) / len(retrieval_scores) if retrieval_scores else 0.0
@@ -579,9 +630,12 @@ def collect_diagnosis_run_metrics(output_dir: str | Path) -> dict[str, Any]:
                 + retrieval_fact_sources.get("code_retrieval:symbol_search", 0)
             ) / max(sum(retrieval_fact_sources.values()), 1) if retrieval_fact_sources else 0.0,
             "glue_code_top1_rate": round(glue_top1_rate, 3),
-            "avg_candidates_per_case": 0,  # 候选数需在 retrieval 执行时写入
+            "avg_candidates_per_case": round(
+                retrieval_candidate_total / max(retrieval_cases_total, 1),
+                1,
+            ) if retrieval_cases_total > 0 else 0.0,
             "avg_facts_per_case": round(
-                sum(retrieval_fact_sources.values()) / max(retrieval_cases_total, 1),
+                retrieval_fact_total / max(retrieval_cases_total, 1),
                 1,
             ) if retrieval_cases_total > 0 else 0.0,
             "avg_fact_confidence": round(avg_score, 3),

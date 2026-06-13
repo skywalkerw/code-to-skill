@@ -44,19 +44,20 @@ def diagnoses_to_candidate_rules(
         if not text or text in seen:
             continue
         code_facts = row.get("code_facts") or []
-        if require_code_facts and not code_facts:
-            continue
         scan = scan_skill_quality(f"- {text}\n", cfg)
         if not scan.get("passed"):
             continue
-        seen.add(text)
         failure_type = str(row.get("failure_type") or "")
+        rule_type = _RULE_TYPE_BY_FAILURE.get(failure_type, "business_mapping")
+        if require_code_facts and rule_type == "business_mapping" and not code_facts:
+            continue
+        seen.add(text)
         out.append({
             "rule_id": _slug(text),
             "text": text,
             "source_item": row.get("item_id", ""),
             "failure_type": failure_type,
-            "rule_type": _RULE_TYPE_BY_FAILURE.get(failure_type, "business_mapping"),
+            "rule_type": rule_type,
             "status": "ready" if code_facts else "candidate",
             "evidence_refs": [f.get("ref") for f in code_facts if f.get("ref")][:4],
         })

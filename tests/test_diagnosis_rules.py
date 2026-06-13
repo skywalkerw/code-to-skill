@@ -44,6 +44,19 @@ def test_require_code_facts_excludes_empty():
     assert rules == []
 
 
+def test_require_code_facts_allows_non_business_rules():
+    diagnoses = [{
+        "item_id": "fmt",
+        "failure_type": "output_format_error",
+        "status": "ready",
+        "general_rule": "Present accounting answers as a compact table with clear columns.",
+        "code_facts": [],
+    }]
+    rules = diagnoses_to_candidate_rules(diagnoses, require_code_facts=True)
+    assert len(rules) == 1
+    assert rules[0]["rule_type"] == "output_policy"
+
+
 def test_write_diagnosis_step_summary(tmp_path: Path):
     path = write_diagnosis_step_summary(
         str(tmp_path),

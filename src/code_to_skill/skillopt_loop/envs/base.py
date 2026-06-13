@@ -260,13 +260,16 @@ class DEFAULTAdapter(EnvAdapter):
                 from ..code_evidence import prefetch_code_facts_for_items
 
                 kr_kwargs = code_retrieval_kwargs or {}
-                sidecars = getattr(self, "graph_sidecars", None)
-                prefetch_code_facts_for_items(
-                    items,
-                    self.code_tools,
-                    sidecars=sidecars,
-                    max_candidates=kr_kwargs.get("max_candidates", 8),
-                )
+                if kr_kwargs.get("enabled", True):
+                    sidecars = getattr(self, "graph_sidecars", None)
+                    prefetch_code_facts_for_items(
+                        items,
+                        self.code_tools,
+                        sidecars=sidecars,
+                        max_candidates=kr_kwargs.get("max_candidates", 8),
+                        max_facts_per_case=kr_kwargs.get("max_facts_per_case", 4),
+                        max_snippet_chars=kr_kwargs.get("max_snippet_chars", 1200),
+                    )
             except Exception:
                 logger.debug("prefetch_code_facts_for_items failed", exc_info=True)
 

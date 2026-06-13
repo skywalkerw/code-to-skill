@@ -604,7 +604,10 @@ def run_skillopt_loop(
             results = adapter.rollout(
                 current_skill, batch, target_backend=backend_mgr.target,
                 code_retrieval_kwargs={
+                    "enabled": code_retrieval_cfg.enabled,
                     "max_candidates": code_retrieval_cfg.max_candidates,
+                    "max_facts_per_case": code_retrieval_cfg.max_facts_per_case,
+                    "max_snippet_chars": code_retrieval_cfg.max_snippet_chars,
                 },
             )
             acc.add_batch(results)
@@ -696,7 +699,10 @@ def run_skillopt_loop(
             candidate_rules = diagnoses_to_candidate_rules(
                 step_diagnoses,
                 quality_config=quality_cfg,
-                require_code_facts=diagnosis_cfg.require_code_facts_for_rules,
+                require_code_facts=(
+                    diagnosis_cfg.require_code_facts_for_rules
+                    and code_retrieval_cfg.require_code_facts_for_business_rules
+                ),
             )
             if step_diagnoses:
                 write_diagnosis_step_summary(
