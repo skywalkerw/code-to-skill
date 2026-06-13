@@ -49,6 +49,30 @@ class CodeDiagnosisConfig:
         )
 
 
+@dataclass
+class CodeRetrievalConfig:
+    """设计 09 §10：代码检索管线配置（从 config.yaml 读取，消除硬编码）。"""
+
+    enabled: bool = True
+    max_candidates: int = 8
+    max_facts_per_case: int = 4
+    max_snippet_chars: int = 1200
+    require_code_facts_for_business_rules: bool = True
+
+    @classmethod
+    def from_skillopt_settings(cls, skillopt_settings: dict[str, Any] | None) -> "CodeRetrievalConfig":
+        raw = (skillopt_settings or {}).get("code_retrieval") or {}
+        return cls(
+            enabled=bool(raw.get("enabled", True)),
+            max_candidates=int(raw.get("max_candidates", 8) or 8),
+            max_facts_per_case=int(raw.get("max_facts_per_case", 4) or 4),
+            max_snippet_chars=int(raw.get("max_snippet_chars", 1200) or 1200),
+            require_code_facts_for_business_rules=bool(
+                raw.get("require_code_facts_for_business_rules", True)
+            ),
+        )
+
+
 def _looks_like_alias_gap(
     missed_checks: list,
     predicted: str,
@@ -198,12 +222,18 @@ def _collect_code_facts(
     graph_sidecars: Any = None,
     max_files: int = 2,
     max_chars: int = 800,
-) -> tuple[list[dict[str, str]], str]:
+    retrieval_cfg: Any = None,
+) -> tuple[list[dict[str, str]], str, dict[str, Any] | None]:
     """代码事实收集（设计 09 Phase 3 升级版）。
 
     优先使用确定性检索管线 (CodeQueryPlan → find_relevant_code)；
     回退到旧版 context_refs → evidence_index → role/entrypoint → code read。
+
+    Returns (facts, diagnosis_source, full_retrieval_result_or_None).
+    设计 09 优化：full_retrieval_result 含 candidates / query_plan / metrics。
     """
+    max_candidates = getattr(retrieval_cfg, "max_candidates", 8) if retrieval_cfg else 8
+
     # 尝试新检索管线
     if code_tools is not None and hasattr(code_tools, "execute"):
         try:
@@ -213,21 +243,26 @@ def _collect_code_facts(
                 result,
                 code_tools,
                 graph_sidecars=graph_sidecars,
-                max_candidates=8,
+                max_candidates=max_candidates,
                 max_snippet_chars=max_chars,
             )
-            if retrieval.facts:
-                facts: list[dict[str, str]] = []
-                for fact in retrieval.facts:
-                    facts.append({
-                        "ref": fact.evidence_refs[0] if fact.evidence_refs else "",
-                        "snippet": fact.evidence_quotes[0] if fact.evidence_quotes else "",
-                        "fact": fact.statement,
-                        "source": f"code_retrieval:{fact.source}",
-                        "confidence": str(fact.confidence),
-                        "role": fact.role,
-                    })
-                return facts, "code_retrieval"
+            facts: list[dict[str, str]] = []
+            for fact in retrieval.facts:
+                facts.append({
+                    "ref": fact.evidence_refs[0] if fact.evidence_refs else "",
+                    "snippet": fact.evidence_quotes[0] if fact.evidence_quotes else "",
+                    "fact": fact.statement,
+                    "source": f"code_retrieval:{fact.source}",
+                    "confidence": str(fact.confidence),
+                    "role": fact.role,
+                })
+            # 设计 09 优化：返回完整 retrieval result（含 candidates / query_plan / metrics）
+            retrieval_dict: dict[str, Any] = {
+                "candidates": [c.to_dict() for c in retrieval.candidates],
+                "query_plan": retrieval.query_plan.to_dict() if retrieval.query_plan else None,
+            }
+            retrieval_dict.update(retrieval.metrics)
+            return facts, "code_retrieval", retrieval_dict
         except Exception:
             logger.debug("code_retrieval fallback to legacy collection", exc_info=True)
 
@@ -264,7 +299,7 @@ def _collect_code_facts(
         result, facts, graph_sidecars=graph_sidecars, max_chars=max_chars,
     )
     diagnosis_source = diagnosis_source or sidecar_src
-    return facts, diagnosis_source
+    return facts, diagnosis_source, None
 
 
 def _diagnosis_status(
@@ -318,6 +353,7 @@ def diagnose_failure(
     hygiene_cfg: OutputHygieneConfig | None = None,
     config: CodeDiagnosisConfig | None = None,
     check_aliases: dict[str, list[str]] | None = None,
+    retrieval_cfg: Any = None,
 ) -> dict[str, Any]:
     cfg = config or CodeDiagnosisConfig()
     failure_type = _classify_failure_type(
@@ -325,12 +361,13 @@ def diagnose_failure(
         hygiene_cfg=hygiene_cfg,
         check_aliases=check_aliases,
     )
-    code_facts, diagnosis_source = _collect_code_facts(
+    code_facts, diagnosis_source, retrieval_full = _collect_code_facts(
         result,
         code_tools=code_tools,
         graph_sidecars=graph_sidecars,
         max_files=cfg.max_context_files,
         max_chars=cfg.max_snippet_chars,
+        retrieval_cfg=retrieval_cfg,
     )
     status = _diagnosis_status(
         failure_type,
@@ -338,7 +375,7 @@ def diagnose_failure(
         require_code_facts=cfg.require_code_facts_for_rules,
     )
     general_rule = _suggest_general_rule(failure_type, result)
-    return {
+    diag: dict[str, Any] = {
         "schema_version": "1.0",
         "step": step,
         "item_id": result.get("id", ""),
@@ -355,6 +392,10 @@ def diagnose_failure(
         "status": status,
         "diagnosed_at": local_timestamp(),
     }
+    # 设计 09 优化：完整 retrieval result 写入 diagnosis
+    if retrieval_full:
+        diag["code_retrieval_metrics"] = retrieval_full
+    return diag
 
 
 def diagnose_failures(
@@ -366,6 +407,7 @@ def diagnose_failures(
     hygiene_cfg: OutputHygieneConfig | None = None,
     config: CodeDiagnosisConfig | None = None,
     check_aliases: dict[str, list[str]] | None = None,
+    retrieval_cfg: Any = None,
 ) -> list[dict[str, Any]]:
     cfg = config or CodeDiagnosisConfig()
     if not cfg.enabled:
@@ -383,6 +425,7 @@ def diagnose_failures(
                 hygiene_cfg=hygiene_cfg,
                 config=cfg,
                 check_aliases=check_aliases,
+                retrieval_cfg=retrieval_cfg,
             )
         )
     return out
@@ -583,6 +626,8 @@ def save_code_retrieval_step_artifacts(
     - code_retrieval/step_NNNN/candidates.jsonl
     - code_retrieval/step_NNNN/code_facts.jsonl
     - code_retrieval/step_NNNN/summary.json
+
+    候选 schema 对齐 CodeCandidate.to_dict()（设计 09 §6.2）：ref/path/symbol/kind/role/source/score/score_reasons/snippet_preview/call_chain。
     """
     step_dir = os.path.join(output_dir, "code_retrieval", f"step_{step:04d}")
     os.makedirs(step_dir, exist_ok=True)
@@ -605,10 +650,23 @@ def save_code_retrieval_step_artifacts(
         if plan:
             all_plans.append(plan)
 
-        # candidates
-        candidates = retrieval_metrics.get("candidates") or retrieval_metrics.get("top_candidates") or []
+        # candidates — use proper CodeCandidate schema from the full retrieval result
+        candidates = retrieval_metrics.get("candidates") or []
         for c in candidates:
-            all_candidates.append(c)
+            # 规范化 schema：确保使用 CodeCandidate.to_dict() 字段名
+            normalized = {
+                "ref": str(c.get("ref", "")),
+                "path": str(c.get("path", "")),
+                "symbol": str(c.get("symbol", "")),
+                "kind": str(c.get("kind", "")),
+                "role": str(c.get("role", "")),
+                "source": str(c.get("source", "")),
+                "score": float(c.get("score", 0)),
+                "score_reasons": list(c.get("score_reasons") or []),
+                "snippet_preview": str(c.get("snippet_preview", "") or c.get("snippet", "") or "")[:200],
+                "call_chain": str(c.get("call_chain", "")),
+            }
+            all_candidates.append(normalized)
 
         # code facts
         if code_facts:

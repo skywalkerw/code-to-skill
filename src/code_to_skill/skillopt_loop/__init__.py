@@ -336,6 +336,7 @@ def run_skillopt_loop(
     )
     from .code_diagnosis import (
         CodeDiagnosisConfig,
+        CodeRetrievalConfig,
         append_diagnoses_jsonl,
         diagnose_failures,
         format_diagnoses_for_reflect,
@@ -372,6 +373,9 @@ def run_skillopt_loop(
     )
 
     diagnosis_cfg = CodeDiagnosisConfig.from_skillopt_settings(
+        skillopt_settings if isinstance(skillopt_settings, dict) else None,
+    )
+    code_retrieval_cfg = CodeRetrievalConfig.from_skillopt_settings(
         skillopt_settings if isinstance(skillopt_settings, dict) else None,
     )
     rule_bank_cfg = RuleBankConfig.from_skillopt_settings(
@@ -596,8 +600,13 @@ def run_skillopt_loop(
             step_diagnoses: list[dict] = []
             candidate_rules: list[dict] = []
 
-            # 1. Rollout（通过 adapter）
-            results = adapter.rollout(current_skill, batch, target_backend=backend_mgr.target)
+            # 1. Rollout（通过 adapter），传递 code_retrieval_kwargs 消除硬编码
+            results = adapter.rollout(
+                current_skill, batch, target_backend=backend_mgr.target,
+                code_retrieval_kwargs={
+                    "max_candidates": code_retrieval_cfg.max_candidates,
+                },
+            )
             acc.add_batch(results)
 
             # Accumulation：未积累够则继续下一批
@@ -682,6 +691,7 @@ def run_skillopt_loop(
                 config=diagnosis_cfg,
                 check_aliases=(skillopt_settings or {}).get("check_aliases")
                 if isinstance(skillopt_settings, dict) else None,
+                retrieval_cfg=code_retrieval_cfg,
             )
             candidate_rules = diagnoses_to_candidate_rules(
                 step_diagnoses,

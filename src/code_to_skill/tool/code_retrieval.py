@@ -868,7 +868,10 @@ def _extract_code_facts_from_candidates(
     candidates: list[CodeCandidate],
     plan: CodeQueryPlan,
 ) -> list[CodeFact]:
-    """从高置信度候选结果提取 CodeFact。"""
+    """从高置信度候选结果提取业务事实摘要（设计 09 升级版）。
+
+    结构化提取：方法调用、枚举、借贷/账户/金额变量。
+    """
     facts: list[CodeFact] = []
     for cand in candidates[:8]:
         if cand.score < 0.3:
@@ -878,40 +881,16 @@ def _extract_code_facts_from_candidates(
         if not _is_business_role(cand.role) and cand.role != "call_chain" and cand.score < 0.6:
             continue
 
-        statement_parts = []
-        if cand.symbol:
-            if cand.kind in ("method", "function"):
-                statement_parts.append(f"{cand.symbol} implements")
-            elif cand.kind in ("class", "interface"):
-                statement_parts.append(f"{cand.symbol} class")
-            else:
-                statement_parts.append(cand.symbol)
-        if cand.role:
-            statement_parts.append(f"({cand.role})")
-        if cand.snippet:
-            first_lines = [
-                l.strip() for l in cand.snippet.split("\n")
-                if l.strip()
-                and not l.strip().startswith(("//", "*", "/*", "import", "package"))
-            ]
-            if first_lines:
-                statement_parts.append(f"- {first_lines[0][:120]}")
-        if not statement_parts:
+        snippet = cand.snippet or ""
+        effective_lines = _get_effective_lines(snippet)
+
+        # 结构化提取
+        statement = _build_business_statement(cand, effective_lines)
+        if not statement:
             continue
 
-        statement = " ".join(statement_parts)
-
-        quotes: list[str] = []
-        if cand.snippet:
-            # 提取有效的代码行（非注释、非 import/package）作为证据引文
-            effective_lines = [
-                l.strip()[:200]
-                for l in cand.snippet.split("\n")
-                if l.strip()
-                and not l.strip().startswith(("//", "*", "/*", "import", "package"))
-                and not l.strip().startswith(("@", "package "))
-            ]
-            quotes = effective_lines[:3]
+        # 提取证据引文（优先包含业务变量的代码行）
+        quotes = _extract_business_quotes(effective_lines)
 
         confidence_sources = {
             "context_ref": 0.85,
@@ -940,6 +919,218 @@ def _extract_code_facts_from_candidates(
             role=cand.role,
         ))
     return facts
+
+
+# ── 业务事实提取 helpers ──────────────────────────────────────────────
+
+# 金融业务变量关键词
+_CREDIT_KEYWORDS = {"credit", "credited", "cred"}
+_DEBIT_KEYWORDS = {"debit", "debited", "deb"}
+_AMOUNT_KEYWORDS = {"amount", "transactionamount", "tranamount", "money", "value", "price"}
+_ACCOUNT_KEYWORDS = {"account", "accountid", "glaccount", "glaccountid", "officeid", "savings", "loan"}
+
+# Java 方法调用模式：identifier.identifier.methodName(...)
+_METHOD_CALL_RE = re.compile(
+    r'(\w[\w.]*\.)?(\w[\w]*)\.(\w[\w]*)\((.*?)\)',
+    re.IGNORECASE,
+)
+
+# Java 枚举值模式：ClassName.VALUE 或 EnumName.XXX
+_ENUM_REF_RE = re.compile(
+    r'\b([A-Z][a-zA-Z0-9_]+Enum(?:erations)?|' +
+    r'[A-Z][a-zA-Z0-9_]+Type|' +
+    r'[A-Z][a-zA-Z0-9_]+Enums|' +
+    r'[A-Z][a-zA-Z0-9_]+Status)\s*\.\s*([A-Z_][A-Z0-9_]*)',
+)
+
+# 嵌入式枚举/常量引用
+_ENUM_CONST_RE = re.compile(
+    r'\b([A-Z][a-zA-Z0-9_]{3,})\.([A-Z_][A-Z0-9_]{2,})\b',
+)
+
+
+def _get_effective_lines(snippet: str) -> list[str]:
+    """提取有效代码行（非注释、非 import/package）。"""
+    return [
+        l.strip()[:200]
+        for l in snippet.split("\n")
+        if l.strip()
+        and not l.strip().startswith(("//", "*", "/*", "import", "package"))
+        and not l.strip().startswith(("@", "package "))
+    ]
+
+
+def _build_business_statement(cand: CodeCandidate, lines: list[str]) -> str:
+    """从代码候选构建业务事实摘要语句。
+
+    策略：
+    1. 优先提取方法调用关系
+    2. 提取枚举/常量引用
+    3. 提取金融变量（借贷/账户/金额）
+    4. 回退到符号名 + 首行摘要
+    """
+    all_text = " ".join(lines)
+
+    # 1. 提取方法调用
+    method_calls = _extract_method_calls(all_text)
+    # 2. 提取枚举/常量引用
+    enum_refs = _extract_enum_refs(all_text)
+    # 3. 提取金融变量
+    fin_vars = _extract_financial_variables(lines)
+
+    statement_parts: list[str] = []
+
+    # 符号描述
+    if cand.symbol:
+        prefix = ""
+        if cand.kind in ("method", "function"):
+            prefix = f"Method {cand.symbol}"
+        elif cand.kind in ("class", "interface"):
+            prefix = f"Class {cand.symbol}"
+        else:
+            prefix = f"{cand.symbol}"
+
+        if cand.role:
+            prefix += f" ({cand.role})"
+
+        # 方法调用事实
+        if method_calls:
+            unique_calls = list(dict.fromkeys(method_calls))[:3]  # 去重
+            calls_str = ", ".join(unique_calls)
+            statement_parts.append(f"{prefix} calls: {calls_str}")
+        # 枚举引用事实
+        elif enum_refs:
+            unique_enums = list(dict.fromkeys(enum_refs))[:3]
+            enums_str = ", ".join(unique_enums)
+            statement_parts.append(f"{prefix} references enum(s): {enums_str}")
+        # 金融变量事实
+        elif fin_vars:
+            statement_parts.append(f"{prefix} uses: {', '.join(fin_vars)}")
+        else:
+            if lines:
+                statement_parts.append(f"{prefix} - {lines[0][:120]}")
+            else:
+                statement_parts.append(prefix)
+
+    # 符号缺失时用首行
+    elif lines:
+        snippet_preview = lines[0][:120]
+        if method_calls:
+            statement_parts.append(f"calls: {', '.join(list(dict.fromkeys(method_calls))[:3])}")
+        elif enum_refs:
+            statement_parts.append(f"refs enum(s): {', '.join(list(dict.fromkeys(enum_refs))[:3])}")
+        elif fin_vars:
+            statement_parts.append(f"uses financial vars: {', '.join(fin_vars)}")
+        else:
+            statement_parts.append(snippet_preview)
+
+    return " | ".join(statement_parts)
+
+
+def _extract_method_calls(text: str) -> list[str]:
+    """从代码文本提取有意义的业务方法调用。
+
+    返回去噪后的调用列表（过滤 setter/getter/toString 等）。
+    """
+    calls: list[str] = []
+    seen: set[str] = set()
+    for m in _METHOD_CALL_RE.finditer(text):
+        call_name = m.group(3)
+        # 过滤 trivial 方法
+        if call_name in ("get", "set", "toString", "equals", "hashCode", "add", "put", "remove", "size", "isEmpty"):
+            continue
+        if call_name.startswith(("get", "set", "is")) and len(call_name) > 3 and call_name[3].isupper():
+            continue  # getXxx / setXxx
+        call_str = f"{call_name}()"
+        if call_str not in seen:
+            seen.add(call_str)
+            calls.append(call_str)
+    return calls
+
+
+def _extract_enum_refs(text: str) -> list[str]:
+    """从代码文本提取枚举/常量引用。"""
+    refs: list[str] = []
+    seen: set[str] = set()
+    for m in _ENUM_REF_RE.finditer(text):
+        enum_name = m.group(1)
+        value = m.group(2)
+        ref_str = f"{enum_name}.{value}"
+        if ref_str not in seen:
+            seen.add(ref_str)
+            refs.append(ref_str)
+    # 回退到通用常量引用
+    if not refs:
+        for m in _ENUM_CONST_RE.finditer(text):
+            prefix = m.group(1)
+            if prefix in ("import", "package", "class", "public", "private", "protected", "static", "final", "return", "throw", "new"):
+                continue
+            val = m.group(2)
+            ref_str = f"{prefix}.{val}"
+            if ref_str not in seen:
+                seen.add(ref_str)
+                refs.append(ref_str)
+    return refs
+
+
+def _extract_financial_variables(lines: list[str]) -> list[str]:
+    """从代码行提取金融业务变量（借贷/账户/金额/枚举）。"""
+    vars_found: dict[str, str] = {}  # 变量名 → 类别
+
+    for line in lines:
+        # 扫描标识符
+        words = re.findall(r'\b([a-zA-Z_]\w{2,})\b', line)
+        word_lower_set = {w.lower() for w in words}
+
+        for w in words:
+            wl = w.lower()
+            if wl in _CREDIT_KEYWORDS:
+                vars_found[w] = "credit"
+            elif wl in _DEBIT_KEYWORDS:
+                vars_found[w] = "debit"
+            elif wl in _AMOUNT_KEYWORDS:
+                vars_found[w] = "amount"
+            elif wl in _ACCOUNT_KEYWORDS:
+                vars_found[w] = "account"
+
+        # 也检查组合词（如 debitAccountId → matches debit+account）
+        for w in words:
+            wl = w.lower()
+            if wl not in vars_found:
+                if any(k in wl for k in _CREDIT_KEYWORDS) and any(k in wl for k in _ACCOUNT_KEYWORDS):
+                    vars_found[w] = "credit_account"
+                elif any(k in wl for k in _DEBIT_KEYWORDS) and any(k in wl for k in _ACCOUNT_KEYWORDS):
+                    vars_found[w] = "debit_account"
+                elif any(k in wl for k in _CREDIT_KEYWORDS) and any(k in wl for k in _AMOUNT_KEYWORDS):
+                    vars_found[w] = "credit_amount"
+                elif any(k in wl for k in _DEBIT_KEYWORDS) and any(k in wl for k in _AMOUNT_KEYWORDS):
+                    vars_found[w] = "debit_amount"
+
+    # 按类别排序输出
+    priority = {"debit_account": 0, "credit_account": 1, "debit_amount": 2, "credit_amount": 3,
+                "debit": 4, "credit": 5, "account": 6, "amount": 7}
+    sorted_vars = sorted(vars_found.items(), key=lambda x: priority.get(x[1], 99))
+    return [f"{var} ({cat})" for var, cat in sorted_vars[:6]]
+
+
+def _extract_business_quotes(lines: list[str]) -> list[str]:
+    """提取优先包含业务变量/方法调用的证据行。
+
+    优先选择含业务关键词的行，不足 3 行时补首行。
+    """
+    business_lines: list[str] = []
+    other_lines: list[str] = []
+
+    biz_kws = _CREDIT_KEYWORDS | _DEBIT_KEYWORDS | _AMOUNT_KEYWORDS | _ACCOUNT_KEYWORDS
+    biz_kws.update({"enum", "create", "process", "validate", "accounting", "journal", "entry", "transaction"})
+
+    for line in lines:
+        if any(kw in line.lower() for kw in biz_kws):
+            business_lines.append(line)
+        else:
+            other_lines.append(line)
+
+    return (business_lines + other_lines)[:3]
 
 
 def _make_fact_id(case_id: str, name: str) -> str:

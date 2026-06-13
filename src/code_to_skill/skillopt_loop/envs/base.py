@@ -241,6 +241,7 @@ class DEFAULTAdapter(EnvAdapter):
         items: list[dict],
         target_backend: Any = None,
         out_dir: str = "",
+        code_retrieval_kwargs: dict | None = None,
     ) -> list[dict]:
         """默认 rollout：LLM 优先，降级关键词规则。
 
@@ -258,12 +259,13 @@ class DEFAULTAdapter(EnvAdapter):
             try:
                 from ..code_evidence import prefetch_code_facts_for_items
 
+                kr_kwargs = code_retrieval_kwargs or {}
                 sidecars = getattr(self, "graph_sidecars", None)
                 prefetch_code_facts_for_items(
                     items,
                     self.code_tools,
                     sidecars=sidecars,
-                    max_candidates=8,
+                    max_candidates=kr_kwargs.get("max_candidates", 8),
                 )
             except Exception:
                 logger.debug("prefetch_code_facts_for_items failed", exc_info=True)

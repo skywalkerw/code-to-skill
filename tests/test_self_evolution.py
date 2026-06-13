@@ -328,7 +328,7 @@ class _OfflineSelfEvolveAdapter:
     def setup(self, cfg=None):
         return None
 
-    def rollout(self, skill, items, target_backend=None, out_dir=""):
+    def rollout(self, skill, items, target_backend=None, out_dir="", code_retrieval_kwargs=None):
         out = []
         for item in items:
             checks = list(item.get("expected_checks") or [])
@@ -361,7 +361,7 @@ class _OfflineAllSuccessAdapter:
     def setup(self, cfg=None):
         return None
 
-    def rollout(self, skill, items, target_backend=None, out_dir=""):
+    def rollout(self, skill, items, target_backend=None, out_dir="", code_retrieval_kwargs=None):
         out = []
         for item in items:
             checks = list(item.get("expected_checks") or [])
@@ -411,7 +411,7 @@ class _OfflineKnowledgeToleranceAdapter(_OfflineAllSuccessAdapter):
             })
         return out
 
-    def rollout(self, skill, items, target_backend=None, out_dir=""):
+    def rollout(self, skill, items, target_backend=None, out_dir="", code_retrieval_kwargs=None):
         downgraded = self._downgraded_results(skill, items)
         if downgraded is not None:
             return downgraded

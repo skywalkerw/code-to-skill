@@ -391,6 +391,7 @@ project:
         ref: develop
         include:
           - "fineract-provider/src/main/java/org/apache/fineract/accounting/**"
+          - "fineract-provider/fineract-accounting/**"
           - "fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/**"
           - "fineract-provider/src/main/java/org/apache/fineract/portfolio/savings/**"
           - "fineract-provider/src/main/java/org/apache/fineract/portfolio/paymenttype/**"

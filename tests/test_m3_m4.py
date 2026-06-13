@@ -203,7 +203,7 @@ class _OfflineStubAdapter:
     def setup(self, cfg=None):
         return None
 
-    def rollout(self, skill, items, target_backend=None, out_dir=""):
+    def rollout(self, skill, items, target_backend=None, out_dir="", code_retrieval_kwargs=None):
         out = []
         for item in items:
             checks = item.get("expected_checks", [])
