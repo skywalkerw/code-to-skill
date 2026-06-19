@@ -1410,6 +1410,32 @@ def run_skillopt_loop(
                     candidate_slow = apply_slow_update(
                         current_skill, slow_result["slow_update_content"],
                     )
+                    # 质量门禁：先扫描 slow update 产物，泄漏即拒绝整个应用（设计 09 §10）
+                    slow_quality_ok = True
+                    if quality_cfg.enabled:
+                        from .skill_quality import scan_skill_quality
+                        slow_scan = scan_skill_quality(candidate_slow, quality_cfg)
+                        slow_q_pass = slow_scan.get("passed", False)
+                        slow_q_case_ids = slow_scan.get("case_id_count", 0)
+                        if not slow_q_pass:
+                            slow_quality_ok = False
+                            logger.warning(
+                                "[M4] slow update quality gate: ✗ case_ids=%d leakage=%d tokens=%d",
+                                slow_q_case_ids,
+                                slow_scan.get("leakage_count", 0),
+                                slow_scan.get("estimated_tokens", 0),
+                            )
+                    if not slow_quality_ok:
+                        apply_slow = False
+                        slow_action = "reject"
+                        slow_result["gate_action"] = "reject"
+                        slow_result["gate_reason"] = "quality_gate_case_id_leak"
+                        _save_slow_update_artifacts(
+                            output_dir, epoch + 1, slow_result,
+                            prev_epoch_skill, current_skill,
+                        )
+                        logger.info("[M4] Slow update rejected by quality gate (leak detected before apply)")
+                        continue  # 直接跳过整个 slow update 应用段
                     apply_slow = True
                     slow_action = "force_apply"
                     if slow_update_gate and selection_items:
@@ -1449,39 +1475,18 @@ def run_skillopt_loop(
                             current_hard = slow_hard
                             current_soft = slow_soft
                     if apply_slow:
+                        # 质量门禁已在前方统一执行，此处直接应用
                         current_skill = candidate_slow
-                        # 质量门禁：slow update 产物必须通过 scan_skill_quality
-                        slow_quality_ok = True
-                        if quality_cfg.enabled:
-                            from .skill_quality import scan_skill_quality
-                            slow_scan = scan_skill_quality(current_skill, quality_cfg)
-                            slow_q_pass = slow_scan.get("passed", False)
-                            slow_q_case_ids = slow_scan.get("case_id_count", 0)
-                            if not slow_q_pass:
-                                slow_quality_ok = False
-                                logger.warning(
-                                    "[M4] slow update quality gate: ✗ case_ids=%d leakage=%d tokens=%d",
-                                    slow_q_case_ids,
-                                    slow_scan.get("leakage_count", 0),
-                                    slow_scan.get("estimated_tokens", 0),
-                                )
-                        if slow_quality_ok:
-                            if not slow_update_gate or not selection_items:
-                                best_skill = apply_slow_update(
-                                    best_skill, slow_result["slow_update_content"],
-                                )
-                            elif slow_action == "accept_new_best":
-                                pass  # best_skill already set above
-                            logger.info(
-                                "[M4] Slow update applied: %d chars (gate=%s)",
-                                len(slow_result["slow_update_content"]), slow_action,
+                        if not slow_update_gate or not selection_items:
+                            best_skill = apply_slow_update(
+                                best_skill, slow_result["slow_update_content"],
                             )
-                        else:
-                            logger.info(
-                                "[M4] Slow update rejected by quality gate (case_id leak)"
-                            )
-                            slow_result["gate_action"] = "reject"
-                            slow_result["gate_reason"] = "quality_gate_case_id_leak"
+                        elif slow_action == "accept_new_best":
+                            pass  # best_skill already set above (line 1472)
+                        logger.info(
+                            "[M4] Slow update applied: %d chars (gate=%s)",
+                            len(slow_result["slow_update_content"]), slow_action,
+                        )
                         _save_slow_update_artifacts(
                             output_dir, epoch + 1, {**slow_result, "gate_action": slow_action},
                             prev_epoch_skill, current_skill,

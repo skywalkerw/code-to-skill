@@ -1,0 +1,23 @@
+  已修好的点
+
+  - config.yaml 的 include 已修正为 fineract-accounting/src/main/java/**，工具现在能读到 JournalEntryDataValidator.java。skill-lab tool code search-code JournalEntryDataValidator 也从
+    旧的 416 个可读文件变成当前 563 个可读文件。
+  - transfer alias 已加入：transfer: ["转账", "转帐"]。我用 scorer 验证过，答案只包含“转账”时，expected_checks=["transfer"] 已能 hard pass。
+  - QueryPlan 过滤已生效：会计凭证 / 借 / 贷 / 借贷校验 / 现金 / 库存 等 scorer 诊断词不再进入主搜索词。测试样例中 intent_terms 只剩 储蓄 / 取款 / 客户储蓄取款。
+  - CodeFact 抽取增强已生效一部分：贷款发放现在能抽到 debit→LOAN_PORTFOLIO(贷款组合资产)，比旧 run 里只有方法名强。
+
+  仍有问题
+
+  - jv_purchase_001 现在能召回 1 个 candidate，但还是 0 fact。原因是它的 context_ref 指向 JournalEntryDataValidator.java，这是 validator 文件，role 是 unknown，不是会计处理业务代码。
+    include 修好了，但 benchmark 的引用本身仍不够好。
+  - CodeFact 还没完整抽出借贷双边。贷款发放只抽到 debit→LOAN_PORTFOLIO，没有抽到对应 credit/fund source。说明参数追踪还不够完整。
+  - slow update 质量门禁还有顺序 bug：src/code_to_skill/skillopt_loop/__init__.py:1438 里 accept_new_best 时先把 best_skill = candidate_slow，后面才做 scan_skill_quality。如果扫描失
+    败，只是日志拒绝，没有回滚 best_skill/current_skill，case id 仍可能进最终 skill。这个需要再修。
+
+  验证
+
+  - python -m compileall src/code_to_skill/tool src/code_to_skill/skillopt_loop src/code_to_skill/cli 通过。
+  - 定向测试通过：119 passed, 2 warnings。
+
+  结论：config、alias、查询过滤、部分 CodeFact 增强都修到了；但如果现在直接重跑，purchase 证据仍可能不足，slow update 仍可能把不合格 skill 写进最终 best。建议先修 slow update 顺序问
+  题。

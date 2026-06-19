@@ -6,7 +6,7 @@
       "question": "购买办公用品",
       "task_type": "journal_entry",
       "context_refs": [
-        "fineract-accounting/src/main/java/org/apache/fineract/accounting/journalentry/data/JournalEntryDataValidator.java"
+        "fineract-provider/src/main/java/org/apache/fineract/accounting/journalentry/service/JournalEntryWritePlatformServiceJpaRepositoryImpl.java#createJournalEntry"
       ],
       "expected_checks": [
         "待确认",
@@ -264,7 +264,7 @@
       "question": "买入原材料 花费 350.00",
       "task_type": "journal_entry",
       "context_refs": [
-        "fineract-accounting/src/main/java/org/apache/fineract/accounting/journalentry/data/JournalEntryDataValidator.java"
+        "fineract-provider/src/main/java/org/apache/fineract/accounting/journalentry/service/JournalEntryWritePlatformServiceJpaRepositoryImpl.java#createJournalEntry"
       ],
       "expected_checks": [
         "会计凭证",
