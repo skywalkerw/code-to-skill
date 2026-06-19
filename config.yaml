@@ -66,6 +66,7 @@ settings:
       资产: ["设备资产", "固定资产", "固定资产科目"]
       费用: ["Fee", "手续费", "费用收入", "fee"]
       Charge: ["Client charge", "Fee charge", "charge", "客户费用"]
+      transfer: ["转账", "转帐"]
     gate:
       strict_best_monotonic: true
       knowledge_updates_current_only: true
@@ -391,7 +392,7 @@ project:
         ref: develop
         include:
           - "fineract-provider/src/main/java/org/apache/fineract/accounting/**"
-          - "fineract-provider/fineract-accounting/**"
+          - "fineract-accounting/src/main/java/**"
           - "fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/**"
           - "fineract-provider/src/main/java/org/apache/fineract/portfolio/savings/**"
           - "fineract-provider/src/main/java/org/apache/fineract/portfolio/paymenttype/**"
