@@ -65,19 +65,16 @@ _CAMEL_CASE_PATTERN = re.compile(r"\b([A-Z][a-zA-Z0-9]{2,}(?:\.[A-Z][a-zA-Z0-9]+
 # 中文词模式
 _CJK_PATTERN = re.compile(r"[\u4e00-\u9fff]+")
 
-# 评分器诊断词 — 这些词由 scorer/check 注入，对代码搜索价值低
-# 它们不是业务代码内容，而是 scorer 用来检查输出格式/内容的元词
-_SCORER_DIAGNOSTIC_TERMS: dict[str, bool] = {
-    # 会计凭证 scorer 检查词
-    "会计凭证": True, "借": True, "贷": True, "借贷校验": True,
-    "借贷": True, "借方": True, "贷方": True, "借贷平衡": True,
-    "余额": True, "库存": True, "银行": True, "现金": True,
-    "会计": True, "凭证": True, "分录": True,
-    # 通用格式检查词
-    "verify": True, "ensure": True, "confirm": True, "check": True,
-    "must": True, "should": True, "output": True, "format": True,
-    "include": True, "return": True, "table": True, "markdown": True,
-}
+# 评分器/提示诊断词默认只保留跨领域通用词；项目或 benchmark 的领域词
+# 通过 config.yaml 的 skillopt.code_retrieval.query_plan.diagnostic_terms 注入。
+_DEFAULT_DIAGNOSTIC_TERMS = frozenset({
+    "verify", "ensure", "confirm", "check", "must", "should",
+    "output", "format", "include", "return", "table", "markdown",
+    "expected_checks", "scorer", "keyword", "keywords",
+})
+
+_INTERNAL_SNIPPET_CHARS = 6000
+_SYMBOL_SOURCE_MAX_LINES = 160
 
 # ---------------------------------------------------------------------------
 # 角色分类
@@ -402,6 +399,7 @@ def build_code_query_plan(
     scorer_diagnostics: dict | None = None,
     atom_ids: list[str] | None = None,
     source_atom_ids: list[str] | None = None,
+    diagnostic_terms: list[str] | None = None,
 ) -> CodeQueryPlan:
     """从失败 item/result 构建 CodeQueryPlan（设计 09 §7.1）。
 
@@ -491,10 +489,12 @@ def build_code_query_plan(
     exclude_roles = list(_GLUE_ROLES)
 
     intent_terms = business_checks + [t for t in biz_terms if t not in business_checks]
-    # 排除 scorer 诊断词（会计凭证/借/贷/借贷校验等），它们对代码搜索价值低
+    diagnostics = set(_DEFAULT_DIAGNOSTIC_TERMS)
+    diagnostics.update(str(t).strip().lower() for t in (diagnostic_terms or []) if str(t).strip())
+    # 排除 scorer/config 注入的诊断词；领域相关词由配置控制，纯工具层不硬编码。
     intent_terms = [
         t for t in intent_terms
-        if t.lower() not in _SCORER_DIAGNOSTIC_TERMS
+        if t.lower() not in diagnostics
     ]
 
     return CodeQueryPlan(
@@ -535,6 +535,110 @@ def _execute_code_tool(
         return {}
 
 
+def _norm_path(path: str) -> str:
+    return (path or "").replace("\\", "/").lstrip("./")
+
+
+def _path_matches(expected: str, actual: str) -> bool:
+    exp = _norm_path(expected)
+    act = _norm_path(actual)
+    if not exp or not act:
+        return False
+    return exp == act or act.endswith("/" + exp) or exp.endswith("/" + act)
+
+
+def _read_result_source(
+    code_tools: Any,
+    file_path: str,
+    *,
+    start_line: int | None = None,
+    end_line: int | None = None,
+    max_lines: int = _SYMBOL_SOURCE_MAX_LINES,
+) -> str:
+    if not file_path:
+        return ""
+    start = max(1, int(start_line or 1))
+    if end_line and int(end_line) >= start:
+        end = min(int(end_line), start + max_lines - 1)
+    else:
+        end = start + max_lines - 1
+    data = _execute_code_tool(code_tools, "read_code_file", {
+        "path": file_path,
+        "start_line": start,
+        "end_line": end,
+    })
+    return str(data.get("content") or "")[:_INTERNAL_SNIPPET_CHARS]
+
+
+def _extract_symbol_snippet_from_file(content: str, symbol: str, *, max_lines: int = _SYMBOL_SOURCE_MAX_LINES) -> str:
+    """从指定文件内容中抽取符号片段，优先选择公开声明而不是同名内部调用。"""
+    if not content or not symbol:
+        return ""
+    lines = content.splitlines()
+    sym = re.escape(symbol)
+    decl_re = re.compile(
+        rf"^\s*(?:(?:public|protected|private|static|final|abstract|synchronized)\s+)*"
+        rf"(?:[\w<>\[\],.?]+\s+)+{sym}\s*\(",
+    )
+    candidates: list[tuple[int, int]] = []
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("//", "*", "/*")):
+            continue
+        if not decl_re.search(line):
+            continue
+        score = 0
+        if stripped.startswith("public "):
+            score += 20
+        elif stripped.startswith("protected "):
+            score += 12
+        elif stripped.startswith("private "):
+            score -= 5
+        candidates.append((score, idx))
+    if not candidates:
+        return ""
+    _, start_idx = sorted(candidates, key=lambda x: (-x[0], x[1]))[0]
+    end_idx = min(len(lines), start_idx + max_lines)
+    brace_balance = 0
+    seen_open = False
+    for idx in range(start_idx, end_idx):
+        line = lines[idx]
+        brace_balance += line.count("{") - line.count("}")
+        if "{" in line:
+            seen_open = True
+        if seen_open and brace_balance <= 0:
+            end_idx = idx + 1
+            break
+        if not seen_open and ";" in line:
+            end_idx = idx + 1
+            break
+    return "\n".join(lines[start_idx:end_idx])[:_INTERNAL_SNIPPET_CHARS]
+
+
+def _find_scoped_symbol_result(
+    code_tools: Any,
+    symbol: str,
+    file_path: str,
+) -> dict[str, Any] | None:
+    if not symbol or not file_path:
+        return None
+    data = _execute_code_tool(code_tools, "search_symbol", {
+        "query": symbol,
+        "max_results": 20,
+    })
+    fallback: dict[str, Any] | None = None
+    for result in data.get("results") or []:
+        result_path = result.get("file_path") or result.get("path") or ""
+        if not _path_matches(file_path, result_path):
+            continue
+        name = str(result.get("name") or "")
+        if name == symbol:
+            return result
+        if fallback is None:
+            fallback = result
+    return fallback
+
+
 def _search_anchor_refs(
     plan: CodeQueryPlan,
     code_tools: Any,
@@ -555,11 +659,45 @@ def _search_anchor_refs(
             continue
 
         if symbol:
-            data = _execute_code_tool(code_tools, "explore_symbol", {
-                "symbol": symbol,
-                "include_source": True,
-                "max_lines": 60,
-            })
+            data: dict[str, Any] = {}
+            if file_path:
+                file_data = _execute_code_tool(code_tools, "read_code_file", {
+                    "path": file_path,
+                    "start_line": 1,
+                    "end_line": _SYMBOL_SOURCE_MAX_LINES,
+                })
+                file_symbol_source = _extract_symbol_snippet_from_file(
+                    str(file_data.get("content") or ""),
+                    symbol,
+                )
+                if file_symbol_source:
+                    data = {
+                        "file_path": file_path,
+                        "kind": "method",
+                        "source": file_symbol_source,
+                    }
+            if not data and file_path:
+                scoped = _find_scoped_symbol_result(code_tools, symbol, file_path)
+                if scoped:
+                    scoped_path = scoped.get("file_path") or scoped.get("path") or file_path
+                    data = {
+                        "file_path": scoped_path,
+                        "kind": scoped.get("kind", ""),
+                        "source": _read_result_source(
+                            code_tools,
+                            scoped_path,
+                            start_line=scoped.get("start_line"),
+                            end_line=scoped.get("end_line"),
+                        ),
+                    }
+            if not data:
+                data = _execute_code_tool(code_tools, "explore_symbol", {
+                    "symbol": symbol,
+                    "include_source": True,
+                    "max_lines": _SYMBOL_SOURCE_MAX_LINES,
+                })
+                if file_path and data and not data.get("error") and not _path_matches(file_path, data.get("file_path", "")):
+                    data = {}
             if data and not data.get("error"):
                 candidates.append(CodeCandidate(
                     ref=ref,
@@ -572,7 +710,7 @@ def _search_anchor_refs(
                     score_reasons=["context_ref_hit"] + (
                         ["business_logic_role"] if _is_business_role(role) else []
                     ),
-                    snippet=(data.get("source") or "")[:1200],
+                    snippet=(data.get("source") or "")[:_INTERNAL_SNIPPET_CHARS],
                 ))
                 continue
 
@@ -591,7 +729,7 @@ def _search_anchor_refs(
                     source="context_ref",
                     score=0.3,
                     score_reasons=["context_ref_hit", "file_only"],
-                    snippet=str(data["content"])[:1200],
+                    snippet=str(data["content"])[:_INTERNAL_SNIPPET_CHARS],
                 ))
 
 
@@ -616,6 +754,12 @@ def _search_symbols(
             role = _classify_code_role(file_path, name, result.get("kind", ""))
             if role in plan.exclude_roles:
                 continue
+            snippet = _read_result_source(
+                code_tools,
+                file_path,
+                start_line=result.get("start_line"),
+                end_line=result.get("end_line"),
+            )
             candidates.append(CodeCandidate(
                 ref=f"{file_path}#{name}",
                 path=file_path,
@@ -627,6 +771,7 @@ def _search_symbols(
                 score_reasons=["symbol_search"] + (
                     ["business_logic_role"] if _is_business_role(role) else []
                 ),
+                snippet=snippet,
             ))
 
 
@@ -706,6 +851,14 @@ def _search_content(
             role = _classify_code_role(file_path, "")
             if role in plan.exclude_roles:
                 continue
+            snippet = result.get("content") or result.get("snippet", "")
+            if result.get("start_line") or result.get("end_line"):
+                snippet = _read_result_source(
+                    code_tools,
+                    file_path,
+                    start_line=result.get("start_line"),
+                    end_line=result.get("end_line"),
+                ) or snippet
             scores = ["content_search"]
             if _is_business_role(role):
                 scores.append("business_logic_role")
@@ -718,7 +871,7 @@ def _search_content(
                 source="content_search",
                 score=0.3 + (0.15 if _is_business_role(role) else 0.0),
                 score_reasons=scores,
-                snippet=(result.get("content") or result.get("snippet", ""))[:800],
+                snippet=str(snippet)[:_INTERNAL_SNIPPET_CHARS],
             ))
 
         ctx_data = _execute_code_tool(code_tools, "get_code_context", {
@@ -743,7 +896,7 @@ def _search_content(
                 source="content_search",
                 score=0.35 + (0.2 if _is_business_role(role) else 0.0),
                 score_reasons=scores,
-                snippet=(blk.get("content") or "")[:800],
+                snippet=(blk.get("content") or "")[:_INTERNAL_SNIPPET_CHARS],
             ))
 
 
@@ -892,12 +1045,18 @@ def _extract_code_facts_from_candidates(
     结构化提取：方法调用、枚举、借贷/账户/金额变量。
     """
     facts: list[CodeFact] = []
+    seen_statements: set[str] = set()
     for cand in candidates[:8]:
         if cand.score < 0.3:
             continue
         if cand.role in plan.exclude_roles:
             continue
-        if not _is_business_role(cand.role) and cand.role != "call_chain" and cand.score < 0.6:
+        if (
+            not _is_business_role(cand.role)
+            and cand.role != "call_chain"
+            and cand.source != "context_ref"
+            and cand.score < 0.6
+        ):
             continue
 
         snippet = cand.snippet or ""
@@ -907,6 +1066,10 @@ def _extract_code_facts_from_candidates(
         statement = _build_business_statement(cand, effective_lines)
         if not statement:
             continue
+        statement_key = re.sub(r"\s+", " ", statement).strip().lower()
+        if statement_key in seen_statements:
+            continue
+        seen_statements.add(statement_key)
 
         # 提取证据引文（优先包含业务变量的代码行）
         quotes = _extract_business_quotes(effective_lines)
@@ -923,7 +1086,7 @@ def _extract_code_facts_from_candidates(
         score_bonus = min(0.1, cand.score * 0.15)
         confidence = min(0.95, base_conf + role_bonus + score_bonus)
 
-        fact_id = _make_fact_id(plan.case_id, cand.symbol or cand.path)
+        fact_id = _make_fact_id(plan.case_id, f"{cand.path}#{cand.symbol}" if cand.symbol else cand.path)
 
         facts.append(CodeFact(
             fact_id=fact_id,
@@ -1064,31 +1227,8 @@ _DEBIT_CREDIT_CALL_PATTERN = re.compile(
     r'|createDebitJournalEntryForLoanCharges'
     r'|createCreditJournalEntryForLoanCharges'
     r')\((.*?)\)',
-    re.IGNORECASE,
+    re.IGNORECASE | re.DOTALL,
 )
-
-# 会计科目类型名映射（AccountingConstants 中的枚举名 → 中文含义）
-_ACCOUNT_TYPE_MEANING: dict[str, str] = {
-    "FUND_SOURCE": "资金来源",
-    "LOAN_PORTFOLIO": "贷款组合(资产)",
-    "INTEREST_ON_LOANS": "贷款利息收入",
-    "INCOME_FROM_FEES": "费用收入",
-    "INCOME_FROM_PENALTIES": "罚金收入",
-    "LOSSES_WRITTEN_OFF": "核销损失",
-    "INTEREST_RECEIVABLE": "应收利息",
-    "FEES_RECEIVABLE": "应收费用",
-    "PENALTIES_RECEIVABLE": "应收罚金",
-    "TRANSFERS_SUSPENSE": "转账暂记",
-    "OVERPAYMENT": "超额还款(负债)",
-    "GOODWILL_CREDIT": "商誉贷记",
-    "INCOME_FROM_RECOVERY": "回收收入",
-    "INCOME_FROM_CHARGE_OFF_INTEREST": "核销利息回收",
-    "INCOME_FROM_CHARGE_OFF_FEES": "核销费用回收",
-    "CHARGE_OFF_EXPENSE": "核销费用",
-    "INCOME_FROM_CHARGE_OFF_PENALTY": "核销罚金回收",
-    "DEFERRED_INCOME_LIABILITY": "递延收入债务",
-}
-
 
 def _extract_debit_credit_call_facts(text: str) -> str:
     """从代码文本提取借贷分录调用的业务事实。
@@ -1139,14 +1279,10 @@ def _extract_debit_credit_call_facts(text: str) -> str:
 
         if account_types:
             for at in account_types[:2]:
-                meaning = _ACCOUNT_TYPE_MEANING.get(at, at)
                 key = f"{prefix}_{at}"
                 if key not in seen:
                     seen.add(key)
-                    fact_str = f"{prefix}→{at}"
-                    if meaning and meaning != at:
-                        fact_str += f"({meaning})"
-                    facts.append(fact_str)
+                    facts.append(f"{prefix}→{at}")
 
         if amount_hints and not account_types:
             facts.append(f"{prefix} {', '.join(amount_hints)}")
@@ -1284,6 +1420,7 @@ def find_relevant_code(
     max_snippet_chars: int = 1200,
     atom_ids: list[str] | None = None,
     source_atom_ids: list[str] | None = None,
+    diagnostic_terms: list[str] | None = None,
 ) -> CodeRetrievalResult:
     """聚合检索入口（设计 09 §7.2）。
 
@@ -1298,6 +1435,7 @@ def find_relevant_code(
         scorer_diagnostics=scorer_diagnostics,
         atom_ids=atom_ids,
         source_atom_ids=source_atom_ids,
+        diagnostic_terms=diagnostic_terms,
     )
 
     candidates: list[CodeCandidate] = []
@@ -1311,11 +1449,11 @@ def find_relevant_code(
     ranked = _role_aware_rerank(candidates, plan)
     top = ranked[:max_candidates]
 
+    facts = _extract_code_facts_from_candidates(top, plan)
+
     for c in top:
         if len(c.snippet or "") > max_snippet_chars:
             c.snippet = c.snippet[:max_snippet_chars]
-
-    facts = _extract_code_facts_from_candidates(top, plan)
 
     metrics = {
         "query_plan": plan.to_dict(),
@@ -1386,6 +1524,7 @@ def batch_find_relevant_code(
     graph_sidecars: Any = None,
     scorer_diagnostics: dict | None = None,
     max_candidates: int = 8,
+    diagnostic_terms: list[str] | None = None,
 ) -> dict[str, CodeRetrievalResult]:
     """对多个 item 批量执行代码检索。"""
     results: dict[str, CodeRetrievalResult] = {}
@@ -1399,5 +1538,6 @@ def batch_find_relevant_code(
             graph_sidecars=graph_sidecars,
             scorer_diagnostics=scorer_diagnostics,
             max_candidates=max_candidates,
+            diagnostic_terms=diagnostic_terms,
         )
     return results

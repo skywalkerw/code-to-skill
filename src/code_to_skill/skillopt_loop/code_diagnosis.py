@@ -58,10 +58,12 @@ class CodeRetrievalConfig:
     max_facts_per_case: int = 4
     max_snippet_chars: int = 1200
     require_code_facts_for_business_rules: bool = True
+    diagnostic_terms: list[str] | None = None
 
     @classmethod
     def from_skillopt_settings(cls, skillopt_settings: dict[str, Any] | None) -> "CodeRetrievalConfig":
         raw = (skillopt_settings or {}).get("code_retrieval") or {}
+        query_plan = raw.get("query_plan") or {}
         return cls(
             enabled=bool(raw.get("enabled", True)),
             max_candidates=int(raw.get("max_candidates", 8) or 8),
@@ -69,6 +71,11 @@ class CodeRetrievalConfig:
             max_snippet_chars=int(raw.get("max_snippet_chars", 1200) or 1200),
             require_code_facts_for_business_rules=bool(
                 raw.get("require_code_facts_for_business_rules", True)
+            ),
+            diagnostic_terms=list(
+                raw.get("diagnostic_terms")
+                or query_plan.get("diagnostic_terms")
+                or []
             ),
         )
 
@@ -251,6 +258,7 @@ def _collect_code_facts(
                 graph_sidecars=graph_sidecars,
                 max_candidates=max_candidates,
                 max_snippet_chars=retrieval_max_chars,
+                diagnostic_terms=getattr(retrieval_cfg, "diagnostic_terms", None),
             )
             facts: list[dict[str, str]] = []
             for fact in retrieval.facts[:max_facts]:

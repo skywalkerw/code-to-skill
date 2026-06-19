@@ -608,6 +608,7 @@ def run_skillopt_loop(
                     "max_candidates": code_retrieval_cfg.max_candidates,
                     "max_facts_per_case": code_retrieval_cfg.max_facts_per_case,
                     "max_snippet_chars": code_retrieval_cfg.max_snippet_chars,
+                    "diagnostic_terms": code_retrieval_cfg.diagnostic_terms,
                 },
             )
             acc.add_batch(results)
@@ -1428,71 +1429,89 @@ def run_skillopt_loop(
                     if not slow_quality_ok:
                         apply_slow = False
                         slow_action = "reject"
+                        epoch_slow_gate = "reject"
+                        epoch_slow_reason = "quality_gate_case_id_leak"
                         slow_result["gate_action"] = "reject"
-                        slow_result["gate_reason"] = "quality_gate_case_id_leak"
+                        slow_result["gate_reason"] = epoch_slow_reason
+                        slow_result["quality_gate"] = slow_scan if quality_cfg.enabled else {}
                         _save_slow_update_artifacts(
                             output_dir, epoch + 1, slow_result,
                             prev_epoch_skill, current_skill,
                         )
                         logger.info("[M4] Slow update rejected by quality gate (leak detected before apply)")
-                        continue  # 直接跳过整个 slow update 应用段
-                    apply_slow = True
-                    slow_action = "force_apply"
-                    if slow_update_gate and selection_items:
-                        slow_hash = compute_semantic_hash(candidate_slow)
-                        cached_slow = cache.get(slow_hash)
-                        if cached_slow is not None:
-                            slow_hard = cached_slow.get("hard", cached_slow["gate_score"])
-                            slow_soft = cached_slow.get("soft", cached_slow["gate_score"])
-                            slow_gate = cached_slow["gate_score"]
-                        else:
-                            slow_eval = adapter.evaluate(
-                                candidate_slow, selection_items, target_backend=backend_mgr.target,
-                            )
-                            slow_hard = slow_eval.get("accuracy", 0.0)
-                            slow_soft = slow_eval["soft"]
-                            slow_gate = select_gate_score(
-                                slow_hard, slow_soft, metric=gate.metric, mixed_weight=gate.mixed_weight,
-                            )
-                            cache.put(slow_hash, slow_hard, slow_soft, slow_gate, epoch + 1, step_counter)
-                        slow_decision = gate.evaluate(
-                            slow_hard, slow_soft, best_score, current_score,
-                        )
-                        slow_action = slow_decision.action
-                        apply_slow = slow_action != "reject"
-                        epoch_slow_gate = slow_action
-                        epoch_slow_reason = slow_decision.reason
-                        logger.info(
-                            "[M4] slow update gate: %s (%s)",
-                            _gate_icon(slow_action), slow_decision.reason,
-                        )
-                        if apply_slow:
-                            if slow_action == "accept_new_best":
-                                best_score = slow_decision.candidate_score
-                                best_skill = candidate_slow
-                                best_step = step_counter
-                            current_score = slow_decision.candidate_score
-                            current_hard = slow_hard
-                            current_soft = slow_soft
-                    if apply_slow:
-                        # 质量门禁已在前方统一执行，此处直接应用
-                        current_skill = candidate_slow
-                        if not slow_update_gate or not selection_items:
-                            best_skill = apply_slow_update(
-                                best_skill, slow_result["slow_update_content"],
-                            )
-                        elif slow_action == "accept_new_best":
-                            pass  # best_skill already set above (line 1472)
-                        logger.info(
-                            "[M4] Slow update applied: %d chars (gate=%s)",
-                            len(slow_result["slow_update_content"]), slow_action,
-                        )
-                        _save_slow_update_artifacts(
-                            output_dir, epoch + 1, {**slow_result, "gate_action": slow_action},
-                            prev_epoch_skill, current_skill,
-                        )
                     else:
-                        logger.info("[M4] Slow update rejected by selection gate")
+                        apply_slow = True
+                        slow_action = "force_apply"
+                        epoch_slow_gate = slow_action
+                        epoch_slow_reason = (
+                            "selection_gate_disabled"
+                            if not slow_update_gate else "no_selection_items"
+                        )
+                        if slow_update_gate and selection_items:
+                            slow_hash = compute_semantic_hash(candidate_slow)
+                            cached_slow = cache.get(slow_hash)
+                            if cached_slow is not None:
+                                slow_hard = cached_slow.get("hard", cached_slow["gate_score"])
+                                slow_soft = cached_slow.get("soft", cached_slow["gate_score"])
+                                slow_gate = cached_slow["gate_score"]
+                            else:
+                                slow_eval = adapter.evaluate(
+                                    candidate_slow, selection_items, target_backend=backend_mgr.target,
+                                )
+                                slow_hard = slow_eval.get("accuracy", 0.0)
+                                slow_soft = slow_eval["soft"]
+                                slow_gate = select_gate_score(
+                                    slow_hard, slow_soft, metric=gate.metric, mixed_weight=gate.mixed_weight,
+                                )
+                                cache.put(slow_hash, slow_hard, slow_soft, slow_gate, epoch + 1, step_counter)
+                            slow_decision = gate.evaluate(
+                                slow_hard, slow_soft, best_score, current_score,
+                            )
+                            slow_action = slow_decision.action
+                            apply_slow = slow_action != "reject"
+                            epoch_slow_gate = slow_action
+                            epoch_slow_reason = slow_decision.reason
+                            slow_result["gate_action"] = slow_action
+                            slow_result["gate_reason"] = epoch_slow_reason
+                            logger.info(
+                                "[M4] slow update gate: %s (%s)",
+                                _gate_icon(slow_action), slow_decision.reason,
+                            )
+                            if apply_slow:
+                                if slow_action == "accept_new_best":
+                                    best_score = slow_decision.candidate_score
+                                    best_skill = candidate_slow
+                                    best_step = step_counter
+                                current_score = slow_decision.candidate_score
+                                current_hard = slow_hard
+                                current_soft = slow_soft
+                        if apply_slow:
+                            # 质量门禁已在前方统一执行，此处直接应用
+                            current_skill = candidate_slow
+                            if not slow_update_gate or not selection_items:
+                                best_skill = apply_slow_update(
+                                    best_skill, slow_result["slow_update_content"],
+                                )
+                            elif slow_action == "accept_new_best":
+                                pass  # best_skill already set above
+                            logger.info(
+                                "[M4] Slow update applied: %d chars (gate=%s)",
+                                len(slow_result["slow_update_content"]), slow_action,
+                            )
+                            slow_result["gate_action"] = slow_action
+                            slow_result["gate_reason"] = epoch_slow_reason or ""
+                            _save_slow_update_artifacts(
+                                output_dir, epoch + 1, slow_result,
+                                prev_epoch_skill, current_skill,
+                            )
+                        else:
+                            slow_result["gate_action"] = "reject"
+                            slow_result["gate_reason"] = epoch_slow_reason or "selection_gate_reject"
+                            _save_slow_update_artifacts(
+                                output_dir, epoch + 1, slow_result,
+                                prev_epoch_skill, current_skill,
+                            )
+                            logger.info("[M4] Slow update rejected by selection gate")
 
             if slow_result.get("comparison_pairs"):
                 epoch_comparison = slow_result["comparison_pairs"]
@@ -1951,15 +1970,18 @@ def _save_slow_update_artifacts(
 ) -> None:
     ep_dir = os.path.join(output_dir, "slow_update", f"epoch_{epoch:02d}")
     os.makedirs(ep_dir, exist_ok=True)
-    with open(os.path.join(ep_dir, "slow_update.json"), "w") as f:
+    with open(os.path.join(ep_dir, "slow_update.json"), "w", encoding="utf-8") as f:
         json.dump({
             "comparison_pairs": slow_result.get("comparison_pairs", {}),
             "content": slow_result.get("slow_update_content", ""),
             "action": slow_result.get("action", ""),
+            "gate_action": slow_result.get("gate_action", ""),
+            "gate_reason": slow_result.get("gate_reason", ""),
+            "quality_gate": slow_result.get("quality_gate", {}),
         }, f, indent=2, ensure_ascii=False)
-    with open(os.path.join(ep_dir, "prev_skill.md"), "w") as f:
+    with open(os.path.join(ep_dir, "prev_skill.md"), "w", encoding="utf-8") as f:
         f.write(prev_skill)
-    with open(os.path.join(ep_dir, "curr_skill.md"), "w") as f:
+    with open(os.path.join(ep_dir, "curr_skill.md"), "w", encoding="utf-8") as f:
         f.write(curr_skill)
     logger.debug("Saved slow_update epoch %d artifacts", epoch)
 

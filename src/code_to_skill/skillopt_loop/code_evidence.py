@@ -692,6 +692,7 @@ def prefetch_code_facts_for_items(
     max_candidates: int = 8,
     max_facts_per_case: int = 4,
     max_snippet_chars: int = 1200,
+    diagnostic_terms: list[str] | None = None,
 ) -> list[dict]:
     """批量预取 CodeFact，写入 item 的 ``_code_facts`` / ``_code_candidates``。
 
@@ -714,6 +715,7 @@ def prefetch_code_facts_for_items(
             scorer_diagnostics=scorer_diagnostics,
             max_candidates=max_candidates,
             max_snippet_chars=max_snippet_chars,
+            diagnostic_terms=diagnostic_terms,
         )
         item["_code_facts"] = [f.to_dict() for f in result.facts[:max_facts_per_case]]
         item["_code_candidates"] = [c.to_dict() for c in result.candidates]

@@ -269,6 +269,7 @@ class DEFAULTAdapter(EnvAdapter):
                         max_candidates=kr_kwargs.get("max_candidates", 8),
                         max_facts_per_case=kr_kwargs.get("max_facts_per_case", 4),
                         max_snippet_chars=kr_kwargs.get("max_snippet_chars", 1200),
+                        diagnostic_terms=kr_kwargs.get("diagnostic_terms"),
                     )
             except Exception:
                 logger.debug("prefetch_code_facts_for_items failed", exc_info=True)

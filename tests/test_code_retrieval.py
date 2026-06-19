@@ -1,6 +1,7 @@
 """Tests for code_retrieval module (设计 09 §14)."""
 
 import pytest
+import json
 
 from code_to_skill.tool.code_retrieval import (
     CodeCandidate,
@@ -11,11 +12,13 @@ from code_to_skill.tool.code_retrieval import (
     _filter_generic_words,
     _extract_symbol_hints,
     _extract_content_terms,
+    _extract_debit_credit_call_facts,
     _is_business_role,
     _is_glue_role,
     _is_searchable_content,
     _role_aware_rerank,
     build_code_query_plan,
+    find_relevant_code,
     format_code_facts_for_context,
 )
 
@@ -175,6 +178,23 @@ class TestQueryPlan:
         assert "CashBasedAccountingProcessorForLoan" in plan.anchor_refs[0]
         assert "表格" not in plan.intent_terms  # should be filtered
 
+    def test_configured_diagnostic_terms_do_not_drop_business_terms(self):
+        item = {
+            "id": "jv_001",
+            "question": "买入 A物品 花费 100.00",
+            "missed_checks": ["会计凭证", "借", "贷", "库存", "银行", "现金", "借贷校验"],
+            "context_refs": [],
+        }
+        plan = build_code_query_plan(
+            item,
+            diagnostic_terms=["会计凭证", "借", "贷", "借贷校验"],
+        )
+        assert "会计凭证" not in plan.intent_terms
+        assert "借贷校验" not in plan.intent_terms
+        assert "库存" in plan.intent_terms
+        assert "银行" in plan.intent_terms
+        assert "现金" in plan.intent_terms
+
     def test_plan_with_scorer_diagnostics(self):
         item = {
             "id": "loan_001",
@@ -292,3 +312,74 @@ class TestCodeFactFormatting:
 
     def test_format_empty_facts(self):
         assert format_code_facts_for_context([]) == ""
+
+
+class TestCodeFactExtraction:
+    def test_extract_debit_credit_call_facts_from_full_method(self):
+        text = """
+            this.helper.createDebitJournalEntryForLoan(office, currencyCode,
+                CashAccountsForLoan.LOAN_PORTFOLIO.getValue(), loanProductId,
+                paymentTypeId, loanId, transactionId, transactionDate, principalPortion);
+            this.helper.createCreditJournalEntryForLoan(office, currencyCode,
+                CashAccountsForLoan.FUND_SOURCE.getValue(), loanProductId,
+                paymentTypeId, loanId, transactionId, transactionDate, loanTransactionDTO.getAmount());
+        """
+        facts = _extract_debit_credit_call_facts(text)
+        assert "debit→LOAN_PORTFOLIO" in facts
+        assert "credit→FUND_SOURCE" in facts
+
+    def test_context_ref_prefers_scoped_file_and_extracts_before_truncation(self):
+        class FakeCodeTools:
+            def execute(self, tool_call):
+                fn = tool_call["function"]
+                name = fn["name"]
+                args = json.loads(fn.get("arguments") or "{}")
+                if name == "search_symbol":
+                    return json.dumps({
+                        "results": [
+                            {
+                                "name": "createJournalEntry",
+                                "file_path": "src/JournalEntryWritePlatformService.java",
+                                "kind": "method",
+                                "start_line": 1,
+                                "end_line": 1,
+                            },
+                            {
+                                "name": "createJournalEntry",
+                                "file_path": "src/JournalEntryWritePlatformServiceJpaRepositoryImpl.java",
+                                "kind": "method",
+                                "start_line": 10,
+                                "end_line": 25,
+                            },
+                        ],
+                    })
+                if name == "read_code_file":
+                    if args["path"].endswith("JpaRepositoryImpl.java"):
+                        return json.dumps({
+                            "content": (
+                                "void createJournalEntry() {\n"
+                                "  helper.createDebitJournalEntryForLoan(office, currencyCode, "
+                                "CashAccountsForLoan.LOAN_PORTFOLIO.getValue(), loanProductId, "
+                                "paymentTypeId, loanId, transactionId, transactionDate, amount);\n"
+                                + ("  noop();\n" * 80)
+                                + "  helper.createCreditJournalEntryForLoan(office, currencyCode, "
+                                "CashAccountsForLoan.FUND_SOURCE.getValue(), loanProductId, "
+                                "paymentTypeId, loanId, transactionId, transactionDate, amount);\n"
+                                "}\n"
+                            )
+                        })
+                    return json.dumps({"content": "interface declaration;"})
+                return json.dumps({"results": [], "blocks": []})
+
+        item = {
+            "id": "jv_001",
+            "question": "journal entry",
+            "context_refs": [
+                "src/JournalEntryWritePlatformServiceJpaRepositoryImpl.java#createJournalEntry"
+            ],
+            "missed_checks": ["loan"],
+        }
+        result = find_relevant_code(item, FakeCodeTools(), max_snippet_chars=120)
+        assert result.candidates[0].path.endswith("JpaRepositoryImpl.java")
+        assert len(result.candidates[0].snippet) <= 120
+        assert any("credit→FUND_SOURCE" in fact.statement for fact in result.facts)
