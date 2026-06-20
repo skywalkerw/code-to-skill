@@ -664,11 +664,23 @@ def format_diagnoses_for_reflect(diagnoses: list[dict]) -> str:
             f"missed={d.get('missed_checks')} "
             f"rule={d.get('general_rule')}"
         )
-        for fact in (d.get("code_facts") or [])[:1]:
+        for fact in (d.get("code_facts") or [])[:2]:
             if fact.get("fact"):
-                lines.append(f"  evidence: {fact.get('fact')[:200]}")
+                ref = f" ref={fact.get('ref')}" if fact.get("ref") else ""
+                lines.append(f"  evidence{ref}: {fact.get('fact')[:220]}")
+                if (fact.get("snippet") or "").strip():
+                    lines.append(f"  quote: {fact.get('snippet', '')[:180]}")
             elif (fact.get("snippet") or "").strip():
                 lines.append(f"  ref={fact.get('ref')}: {fact.get('snippet', '')[:200]}")
+        retrieval = d.get("code_retrieval_metrics") or {}
+        candidates = retrieval.get("candidates") or []
+        if candidates:
+            top = candidates[0]
+            lines.append(
+                "  top_candidate: "
+                f"{top.get('path') or top.get('ref')}#{top.get('symbol', '')} "
+                f"role={top.get('role')} source={top.get('source')}"
+            )
     return "\n".join(lines)
 
 

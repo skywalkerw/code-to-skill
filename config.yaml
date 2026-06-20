@@ -63,7 +63,7 @@ settings:
     rollout_workers: 8
     expose_expected_checks_to_target: false
     check_aliases:
-      资产: ["设备资产", "固定资产", "固定资产科目"]
+      资产: ["设备资产", "固定资产", "固定资产科目", "库存", "存货", "库存/存货", "库存商品"]
       费用: ["Fee", "手续费", "费用收入", "fee"]
       Charge: ["Client charge", "Fee charge", "charge", "客户费用"]
       transfer: ["转账", "转帐"]
@@ -405,6 +405,7 @@ project:
         include:
           - "fineract-provider/src/main/java/org/apache/fineract/accounting/**"
           - "fineract-accounting/src/main/java/**"
+          - "fineract-core/src/main/java/org/apache/fineract/accounting/common/**"
           - "fineract-provider/src/main/java/org/apache/fineract/portfolio/loanaccount/**"
           - "fineract-provider/src/main/java/org/apache/fineract/portfolio/savings/**"
           - "fineract-provider/src/main/java/org/apache/fineract/portfolio/paymenttype/**"

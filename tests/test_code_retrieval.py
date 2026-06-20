@@ -328,6 +328,40 @@ class TestCodeFactExtraction:
         assert "debit→LOAN_PORTFOLIO" in facts
         assert "credit→FUND_SOURCE" in facts
 
+    def test_extract_journal_entries_for_loan_with_nested_get_value(self):
+        text = """
+            this.helper.createJournalEntriesForLoan(office, currencyCode,
+                CashAccountsForLoan.LOAN_PORTFOLIO.getValue(),
+                CashAccountsForLoan.FUND_SOURCE.getValue(),
+                loanProductId, paymentTypeId, loanId, transactionId,
+                transactionDate, principalAmount);
+        """
+        facts = _extract_debit_credit_call_facts(text)
+        assert "debit→LOAN_PORTFOLIO" in facts
+        assert "credit→FUND_SOURCE" in facts
+
+    def test_extract_populate_credit_debit_maps_direction(self):
+        text = """
+            populateCreditDebitMaps(loanProductId, principalAmount, paymentTypeId,
+                CashAccountsForLoan.INCOME_FROM_RECOVERY.getValue(),
+                CashAccountsForLoan.FUND_SOURCE.getValue(), glAccountBalanceHolder);
+        """
+        facts = _extract_debit_credit_call_facts(text)
+        assert "credit→INCOME_FROM_RECOVERY" in facts
+        assert "debit→FUND_SOURCE" in facts
+
+    def test_extract_savings_cash_based_direction(self):
+        text = """
+            this.helper.createCashBasedJournalEntriesAndReversalsForSavings(office, currencyCode,
+                CashAccountsForSavings.OVERDRAFT_PORTFOLIO_CONTROL.getValue(),
+                CashAccountsForSavings.SAVINGS_REFERENCE.getValue(), savingsProductId,
+                paymentTypeId, savingsId, transactionId, transactionDate,
+                overdraftAmount, isReversal);
+        """
+        facts = _extract_debit_credit_call_facts(text)
+        assert "debit→OVERDRAFT_PORTFOLIO_CONTROL" in facts
+        assert "credit→SAVINGS_REFERENCE" in facts
+
     def test_context_ref_prefers_scoped_file_and_extracts_before_truncation(self):
         class FakeCodeTools:
             def execute(self, tool_call):

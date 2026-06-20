@@ -209,7 +209,9 @@ class TestProposals:
         assert not fail_p
         assert succ_p
         assert patches
-        assert "jv_a" in patches[0]["edits"][0]["content"]
+        assert "jv_a" not in patches[0]["edits"][0]["content"]
+        assert "cover verified checks" not in patches[0]["edits"][0]["content"]
+        assert "loan disbursement" in patches[0]["edits"][0]["content"]
         assert "CashBasedAccountingProcessorForLoan" in patches[0]["edits"][0]["content"]
 
     def test_success_proposals_use_configured_domain_filters(self):
@@ -245,6 +247,8 @@ class TestProposals:
         assert "还款" in rule
         assert "金额只取用户输入" in rule
         assert "会计凭证" not in rule
+        assert "jv_a" not in rule
+        assert "cover verified checks" not in rule
 
 
 class TestArtifactQuality:

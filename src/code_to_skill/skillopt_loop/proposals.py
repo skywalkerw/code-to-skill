@@ -56,7 +56,6 @@ def _semantic_checks(
 
 
 def _success_scenario_line(trace: dict, config: SelfEvolutionConfig) -> str:
-    item_id = trace.get("item_id") or trace.get("id") or "unknown"
     question = (trace.get("question") or "").strip()
     q_short = question[:48] + ("..." if len(question) > 48 else "")
     checks = _semantic_checks(trace, config)
@@ -70,9 +69,10 @@ def _success_scenario_line(trace: dict, config: SelfEvolutionConfig) -> str:
     ref_hint = f"; ref {refs[0]}" if refs else ""
     tail = getattr(config, "success_rule_tail", "").strip()
     tail_text = f"; {tail}" if tail else ""
+    scene = f"「{q_short}」这类场景" if q_short else "同类场景"
     return (
-        f"- **{item_id}** ({q_short}): cover verified checks "
-        f"[{checks_text}]{tail_text}{ref_hint}."
+        f"- 对于{scene}，保留成功输出模式：业务要点包括"
+        f"「{checks_text}」{tail_text}{ref_hint}."
     )
 
 
@@ -98,8 +98,8 @@ def _success_candidate_rule(
         tail = getattr(config, "success_rule_tail", "").strip()
         tail_text = f"; {tail}" if tail else ""
         return (
-            f"- For {task_type}, preserve the successful handling of "
-            f"「{checks}」{tail_text}."
+            f"- For {task_type}, preserve the successful handling pattern for "
+            f"business points 「{checks}」{tail_text}."
         )
     tail = getattr(config, "success_rule_tail", "").strip()
     if tail:

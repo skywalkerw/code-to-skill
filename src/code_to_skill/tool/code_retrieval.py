@@ -1219,16 +1219,120 @@ def _build_business_statement(cand: CodeCandidate, lines: list[str]) -> str:
     return " | ".join(statement_parts)
 
 
-# 借贷分录方法名模式
-_DEBIT_CREDIT_CALL_PATTERN = re.compile(
-    r'\b(?:helper|this\.helper)?\.(createDebitJournalEntryForLoan'
-    r'|createCreditJournalEntryForLoan'
-    r'|createJournalEntriesForLoan'
-    r'|createDebitJournalEntryForLoanCharges'
-    r'|createCreditJournalEntryForLoanCharges'
-    r')\((.*?)\)',
-    re.IGNORECASE | re.DOTALL,
+# 借贷分录方法名。调用参数常包含嵌套 getValue()，不能用简单正则抓到
+# 第一个 ")" 就停止，所以下面用轻量括号匹配器抽取完整参数列表。
+_JOURNAL_CALL_NAMES = (
+    "createDebitJournalEntryForLoan",
+    "createCreditJournalEntryForLoan",
+    "createJournalEntriesForLoan",
+    "createDebitJournalEntryForLoanCharges",
+    "createCreditJournalEntryForLoanCharges",
+    "createCashBasedJournalEntriesAndReversalsForSavings",
+    "createCashBasedJournalEntriesAndReversalsForSavingsCharges",
+    "createCashBasedJournalEntriesAndReversalsForSavingsTax",
+    "createJournalEntriesForSavings",
+    "populateCreditDebitMaps",
 )
+_JOURNAL_CALL_NAME_RE = re.compile(
+    r"\b(?:(?:this\.)?helper\.)?("
+    + "|".join(re.escape(name) for name in _JOURNAL_CALL_NAMES)
+    + r")\s*\(",
+    re.IGNORECASE,
+)
+_ACCOUNT_REF_RE = re.compile(
+    r"\b("
+    r"(?:Cash|Accrual)?AccountsFor(?:Loan|Savings|Shares)"
+    r"|FinancialActivity"
+    r")\.(\w+)\b"
+)
+
+
+def _iter_journal_call_args(text: str) -> list[tuple[str, str]]:
+    """Return complete method call args with nested parentheses preserved."""
+    calls: list[tuple[str, str]] = []
+    for match in _JOURNAL_CALL_NAME_RE.finditer(text):
+        method_name = match.group(1)
+        pos = match.end()
+        depth = 1
+        in_string = False
+        quote = ""
+        escaped = False
+        for idx in range(pos, len(text)):
+            ch = text[idx]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == quote:
+                    in_string = False
+                continue
+            if ch in ('"', "'"):
+                in_string = True
+                quote = ch
+                continue
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    calls.append((method_name, text[pos:idx]))
+                    break
+    return calls
+
+
+def _split_top_level_args(args_str: str) -> list[str]:
+    """Split Java call args on top-level commas."""
+    args: list[str] = []
+    start = 0
+    depth = 0
+    in_string = False
+    quote = ""
+    escaped = False
+    for idx, ch in enumerate(args_str):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == quote:
+                in_string = False
+            continue
+        if ch in ('"', "'"):
+            in_string = True
+            quote = ch
+            continue
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth = max(0, depth - 1)
+        elif ch == "," and depth == 0:
+            args.append(args_str[start:idx].strip())
+            start = idx + 1
+    tail = args_str[start:].strip()
+    if tail:
+        args.append(tail)
+    return args
+
+
+def _extract_account_ref(arg: str) -> str:
+    match = _ACCOUNT_REF_RE.search(arg or "")
+    return match.group(2) if match else ""
+
+
+def _add_directional_fact(
+    facts: list[str],
+    seen: set[str],
+    direction: str,
+    account: str,
+) -> None:
+    if not account:
+        return
+    key = f"{direction}_{account}"
+    if key in seen:
+        return
+    seen.add(key)
+    facts.append(f"{direction}→{account}")
 
 def _extract_debit_credit_call_facts(text: str) -> str:
     """从代码文本提取借贷分录调用的业务事实。
@@ -1240,24 +1344,9 @@ def _extract_debit_credit_call_facts(text: str) -> str:
     facts: list[str] = []
     seen: set[str] = set()
 
-    for m in _DEBIT_CREDIT_CALL_PATTERN.finditer(text):
-        method_name = m.group(1)
-        args_str = m.group(2)
-
-        # 提取账户类型参数（AccountingConstants 枚举名引用）
-        account_types = re.findall(
-            r'\b(?:Cash|Accrual)?AccountsFor(?:Loan|Savings)\.(\w+)\b',
-            args_str,
-        )
-        # 也提取 AccountingConstants.AccrualAccountsForLoan.XXX 格式
-        account_types += re.findall(
-            r'AccrualAccountsForLoan\.(\w+)\b',
-            args_str,
-        )
-        account_types += re.findall(
-            r'CashAccountsForLoan\.(\w+)\b',
-            args_str,
-        )
+    for method_name, args_str in _iter_journal_call_args(text):
+        args = _split_top_level_args(args_str)
+        method_low = method_name.lower()
 
         # 提取金额参数（通过变量名或字面量推断）
         amount_hints = []
@@ -1268,23 +1357,40 @@ def _extract_debit_credit_call_facts(text: str) -> str:
         if amount_var_match:
             amount_hints.append(f"amount={amount_var_match.group(1)}")
 
-        # 构建事实
-        fact_parts = []
-        if "debit" in method_name.lower():
+        if "debitjournalentry" in method_low:
             prefix = "debit"
-        elif "credit" in method_name.lower():
+            account_types = [_extract_account_ref(a) for a in args]
+            for at in account_types:
+                _add_directional_fact(facts, seen, prefix, at)
+        elif "creditjournalentry" in method_low:
             prefix = "credit"
+            account_types = [_extract_account_ref(a) for a in args]
+            for at in account_types:
+                _add_directional_fact(facts, seen, prefix, at)
+        elif method_low == "populatecreditdebitmaps":
+            prefix = "journal"
+            # Signature: (..., creditAccountType, debitAccountType, holder)
+            credit_account = _extract_account_ref(args[3]) if len(args) > 3 else ""
+            debit_account = _extract_account_ref(args[4]) if len(args) > 4 else ""
+            _add_directional_fact(facts, seen, "credit", credit_account)
+            _add_directional_fact(facts, seen, "debit", debit_account)
+        elif method_low in {
+            "createjournalentriesforloan",
+            "createcashbasedjournalentriesandreversalsforsavings",
+            "createcashbasedjournalentriesandreversalsforsavingscharges",
+            "createcashbasedjournalentriesandreversalsforsavingstax",
+            "createjournalentriesforsavings",
+        }:
+            prefix = "journal"
+            # Common helper shape: office, currency, debitAccountType, creditAccountType, ...
+            debit_account = _extract_account_ref(args[2]) if len(args) > 2 else ""
+            credit_account = _extract_account_ref(args[3]) if len(args) > 3 else ""
+            _add_directional_fact(facts, seen, "debit", debit_account)
+            _add_directional_fact(facts, seen, "credit", credit_account)
         else:
             prefix = "journal"
 
-        if account_types:
-            for at in account_types[:2]:
-                key = f"{prefix}_{at}"
-                if key not in seen:
-                    seen.add(key)
-                    facts.append(f"{prefix}→{at}")
-
-        if amount_hints and not account_types:
+        if amount_hints and not any(f.startswith(("debit→", "credit→")) for f in facts):
             facts.append(f"{prefix} {', '.join(amount_hints)}")
 
     if not facts:
